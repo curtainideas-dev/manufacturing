@@ -1,12 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
 import { XIcon, TrashIcon } from './Icons'
+import { formulaDescription } from '../lib/bomEngine'
 
 const COST_TYPES = [
-  { val: 'fixed',            label: 'Fixed',  note: 'Same qty always' },
-  { val: 'width_based',      label: 'Width',  note: 'Based on width' },
-  { val: 'drop_based',       label: 'Drop',   note: 'Based on drop' },
-  { val: 'width_drop_based', label: 'W × D',  note: 'Fabric / area' },
-  { val: 'labour',           label: 'Labour', note: 'Hours per unit' },
+  { val: 'fixed',            label: 'Fixed',     note: 'Same qty always' },
+  { val: 'width_based',      label: 'Width',     note: 'Based on width' },
+  { val: 'drop_based',       label: 'Drop',      note: 'Based on drop' },
+  { val: 'width_drop_based', label: 'W × D',     note: 'Fabric / area' },
+  { val: 'per_interval',     label: 'Interval',  note: 'Base + per Xmm' },
+  { val: 'perimeter',        label: 'Perimeter', note: '2×(W+D)' },
+  { val: 'labour',           label: 'Labour',    note: 'Hours per unit' },
 ]
 
 const DEFAULT = {
@@ -15,28 +18,17 @@ const DEFAULT = {
   formula_deduction: 0,
   formula_buffer: 1,
   formula_divisor: 75,
-}
-
-function preview(form, unit = 'each') {
-  const d = Number(form.formula_deduction)
-  const b = Number(form.formula_buffer)
-  switch (form.cost_type) {
-    case 'fixed':            return `Quantity = ${b} ${unit} per unit`
-    case 'width_based':      return `Quantity = window width − ${d}mm`
-    case 'drop_based':       return `Quantity = window drop − ${d}mm`
-    case 'width_drop_based': return `Quantity = (width − ${d}mm) × (drop − ${b}mm)`
-    case 'labour':           return `Labour = ${b} hours per unit`
-    default: return ''
-  }
+  formula_interval: 500,
+  colour_variant: null,
 }
 
 export default function ProductComponentModal({
   open, productComponent, allComponents, onClose, onSave, onRemove, saving
 }) {
-  const [form, setForm]           = useState(DEFAULT)
-  const [dirty, setDirty]         = useState(false)
+  const [form, setForm]               = useState(DEFAULT)
+  const [dirty, setDirty]             = useState(false)
   const [showUnsaved, setShowUnsaved] = useState(false)
-  const initialForm               = useRef(DEFAULT)
+  const initialForm                   = useRef(DEFAULT)
 
   useEffect(() => {
     if (open) {
@@ -48,33 +40,25 @@ export default function ProductComponentModal({
     }
   }, [open, productComponent])
 
-  const set = (k, v) => {
-    setForm(p => ({ ...p, [k]: v }))
-    setDirty(true)
-  }
+  const set = (k, v) => { setForm(p => ({ ...p, [k]: v })); setDirty(true) }
 
-  // When user tries to close with unsaved changes, show confirmation instead
-  const handleClose = () => {
-    if (dirty) {
-      setShowUnsaved(true)
-    } else {
-      onClose()
-    }
-  }
+  const handleClose = () => { dirty ? setShowUnsaved(true) : onClose() }
+  const handleOverlayClick = (e) => { if (e.target === e.currentTarget) handleClose() }
 
-  // Clicking the overlay also goes through handleClose
-  const handleOverlayClick = (e) => {
-    if (e.target === e.currentTarget) handleClose()
-  }
+  const selectedComp    = allComponents.find(c => c.id === form.component_id)
+  const displayComp     = selectedComp || productComponent?.component
+  const unit            = displayComp?.unit || 'each'
+  const colourVariants  = displayComp?.colour_variants || []
+  const hasColours      = colourVariants.length > 0
 
-  const selectedComp = allComponents.find(c => c.id === form.component_id)
-  const unit         = selectedComp?.unit || productComponent?.component?.unit || 'each'
-  const baseUnitCost = selectedComp?.unit_cost ?? productComponent?.component?.unit_cost ?? 0
+  // Build live formula preview using the shared helper
+  const previewPc = { ...form, component: displayComp }
+  const preview   = formulaDescription(previewPc)
 
-  const NumField = ({ id, label, hint, step = '0.1' }) => (
+  const NumField = ({ id, label, hint, step = '0.1', min }) => (
     <div className="field" style={{ marginBottom: hint ? 14 : 10 }}>
       <label className="field-label">{label}</label>
-      <input className="field-input" type="number" step={step}
+      <input className="field-input" type="number" step={step} min={min}
         value={form[id]} onChange={e => set(id, e.target.value)} />
       {hint && <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>{hint}</div>}
     </div>
@@ -83,14 +67,17 @@ export default function ProductComponentModal({
   const FormulaFields = () => {
     switch (form.cost_type) {
       case 'fixed':
-        return <NumField id="formula_buffer" label="Quantity per unit"
+        return <NumField id="formula_buffer" label="Quantity per unit" step="1" min="0"
           hint="How many of this component per unit — e.g. 2 for a centre open" />
+
       case 'width_based':
         return <NumField id="formula_deduction" label="Deduction (mm)"
           hint="Subtracted from window width — e.g. 13mm means result = width − 13mm" />
+
       case 'drop_based':
         return <NumField id="formula_deduction" label="Deduction (mm)"
           hint="Subtracted from window drop" />
+
       case 'width_drop_based':
         return (
           <div className="grid-2">
@@ -98,9 +85,41 @@ export default function ProductComponentModal({
             <NumField id="formula_buffer"    label="Drop deduction (mm)" />
           </div>
         )
+
+      case 'per_interval':
+        return (
+          <>
+            <div className="grid-2">
+              <NumField id="formula_buffer"   label="Base qty" step="1" min="0"
+                hint="Starting quantity before intervals are counted" />
+              <NumField id="formula_interval" label="Interval (mm)" step="50" min="1"
+                hint="Add 1 unit per this many mm of width" />
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4 }}>
+              e.g. {Number(form.formula_buffer)} base + floor(width ÷ {Number(form.formula_interval)}mm)
+            </div>
+          </>
+        )
+
+      case 'perimeter':
+        return (
+          <>
+            <div style={{ fontSize: 11, color: 'var(--warm-300)', marginBottom: 10 }}>
+              Starts with 2 × (width + drop), then apply offsets below.
+            </div>
+            <div className="grid-2">
+              <NumField id="formula_deduction" label="Deduction (mm)"
+                hint="Subtract from perimeter — e.g. 200mm" />
+              <NumField id="formula_buffer"    label="Addition (mm)"
+                hint="Add to perimeter — e.g. 500mm tail allowance" />
+            </div>
+          </>
+        )
+
       case 'labour':
-        return <NumField id="formula_buffer" label="Hours per unit"
+        return <NumField id="formula_buffer" label="Hours per unit" step="0.25"
           hint="Labour hours per unit produced" />
+
       default: return null
     }
   }
@@ -144,23 +163,25 @@ export default function ProductComponentModal({
         </div>
 
         <div className="modal-body">
+
           {/* Component picker — only when adding */}
           {!productComponent && (
             <div className="field">
               <label className="field-label">Component</label>
               <select className="field-input" value={form.component_id}
-                onChange={e => set('component_id', e.target.value)}>
+                onChange={e => { set('component_id', e.target.value); set('colour_variant', null) }}>
                 <option value="">— Select a component —</option>
                 {allComponents.map(c => (
                   <option key={c.id} value={c.id}>
                     {c.name} (${Number(c.unit_cost).toFixed(2)}/{c.unit})
+                    {(c.colour_variants || []).length > 0 ? ` · ${c.colour_variants.length} colours` : ''}
                   </option>
                 ))}
               </select>
             </div>
           )}
 
-          {/* Component name display when editing */}
+          {/* Component display when editing */}
           {productComponent && (
             <div style={{
               background: 'var(--warm-100)', borderRadius: 'var(--radius-sm)',
@@ -174,16 +195,55 @@ export default function ProductComponentModal({
             </div>
           )}
 
+          {/* Colour variant picker — shown when the component has colours defined */}
+          {hasColours && (
+            <div className="field">
+              <label className="field-label">Colour</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
+                {colourVariants.map((v, i) => {
+                  const selected = form.colour_variant?.suffix === v.suffix
+                  return (
+                    <button key={i} type="button"
+                      onClick={() => set('colour_variant', selected ? null : v)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 7,
+                        padding: '7px 12px', borderRadius: 8, cursor: 'pointer',
+                        border: `1.5px solid ${selected ? 'var(--accent)' : 'var(--warm-200)'}`,
+                        background: selected ? 'var(--accent-bg)' : 'var(--warm-100)',
+                        fontWeight: selected ? 700 : 500, fontSize: 13,
+                        color: selected ? 'var(--accent-dark)' : 'var(--ink)',
+                      }}>
+                      <div style={{
+                        width: 16, height: 16, borderRadius: 4,
+                        background: colourPreview(v.name),
+                        border: '1px solid var(--warm-200)', flexShrink: 0,
+                      }} />
+                      {v.name}
+                      <span style={{ fontSize: 10, fontFamily: 'monospace', color: 'var(--warm-300)' }}>
+                        {v.suffix}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+              {form.colour_variant && (
+                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
+                  Part no: {displayComp?.supplier_pn ? `${displayComp.supplier_pn}-${form.colour_variant.suffix}` : form.colour_variant.suffix}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Cost type */}
           <div className="field" style={{ marginBottom: 8 }}>
             <label className="field-label">Cost Type</label>
           </div>
-          <div className="cost-type-grid">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 16 }}>
             {COST_TYPES.map(ct => (
               <button key={ct.val} type="button"
                 className={`cost-type-btn ${form.cost_type === ct.val ? 'selected' : ''}`}
                 onClick={() => set('cost_type', ct.val)}>
-                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>{ct.label}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 2 }}>{ct.label}</div>
                 <div style={{ fontSize: 10, color: 'var(--warm-300)', fontWeight: 400 }}>{ct.note}</div>
               </button>
             ))}
@@ -193,9 +253,8 @@ export default function ProductComponentModal({
           <div className="formula-box">
             <div className="formula-box-title">Formula Settings</div>
             <FormulaFields />
-            <div className="formula-preview">{preview(form, unit)}</div>
+            {preview && <div className="formula-preview">{preview}</div>}
           </div>
-
 
           {/* Remove when editing */}
           {productComponent && onRemove && (
@@ -219,4 +278,17 @@ export default function ProductComponentModal({
       </div>
     </div>
   )
+}
+
+function colourPreview(name) {
+  const n = name.toLowerCase()
+  if (n.includes('white') || n.includes('wht')) return '#f8f8f8'
+  if (n.includes('black') || n.includes('blk')) return '#1a1a1a'
+  if (n.includes('silver') || n.includes('sil')) return '#c0c0c0'
+  if (n.includes('grey') || n.includes('gray')) return '#808080'
+  if (n.includes('bronze') || n.includes('brz')) return '#8B6914'
+  if (n.includes('gold')) return '#FFD700'
+  if (n.includes('cream')) return '#FFFDD0'
+  if (n.includes('brown')) return '#8B4513'
+  return 'var(--warm-200)'
 }

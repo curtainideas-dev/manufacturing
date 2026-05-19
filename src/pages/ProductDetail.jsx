@@ -1,26 +1,14 @@
 import { useState } from 'react'
 import { ChevronLeftIcon, PlusIcon, TrashIcon } from '../components/Icons'
 import ProductComponentModal from '../components/ProductComponentModal'
-import { calcCostAtWidth, GRID_WIDTHS, fmt } from '../lib/bomEngine'
+import { calcCostAtWidth, GRID_WIDTHS, fmt, formulaDescription } from '../lib/bomEngine'
 
 const COST_TYPE_LABELS = {
   fixed: 'Fixed qty', width_based: 'Width-based',
   drop_based: 'Drop-based', width_drop_based: 'W × D', labour: 'Labour',
 }
 
-function formulaText(pc) {
-  const d = Number(pc.formula_deduction)
-  const b = Number(pc.formula_buffer)
-  const unit = pc.component?.unit || ''
-  switch (pc.cost_type) {
-    case 'fixed':            return `${b} ${unit} each`
-    case 'width_based':      return `width − ${d}mm`
-    case 'drop_based':       return `drop − ${d}mm`
-    case 'width_drop_based': return `(W−${d}) × (D−${b})mm`
-    case 'labour':           return `${b}h per unit`
-    default: return ''
-  }
-}
+
 
 export default function ProductDetail({
   product, productComponents, allComponents,
@@ -129,7 +117,8 @@ export default function ProductDetail({
                 <div className="component-info">
                   <div className="component-name">{pc.component?.name || '—'}</div>
                   <div className="component-sub">
-                    {formulaText(pc)}
+                    {formulaDescription(pc)}
+                    {pc.colour_variant ? ` · ${pc.colour_variant.name}` : ''}
                     {pc.component?.supplier ? ` · ${pc.component.supplier}` : ''}
                   </div>
                 </div>

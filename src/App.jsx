@@ -99,7 +99,8 @@ export default function App() {
       discount:    Number(formData.discount) || 0,
       supplier:    formData.supplier?.trim() || null,
       supplier_pn: formData.supplier_pn?.trim() || null,
-      notes:       formData.notes?.trim() || null,
+      notes:            formData.notes?.trim() || null,
+      colour_variants:  formData.colour_variants || [],
     }
     const result = editingComp
       ? await supabase.from('components').update(payload).eq('id', editingComp.id)
@@ -167,6 +168,8 @@ export default function App() {
         formula_deduction: pc.formula_deduction,
         formula_buffer:    pc.formula_buffer,
         formula_divisor:   pc.formula_divisor,
+        formula_interval:  pc.formula_interval || 500,
+        colour_variant:    pc.colour_variant || null,
         discount:          Number(pc.discount) || 0,
         sort_order:        pc.sort_order,
       }))
@@ -202,6 +205,8 @@ export default function App() {
       formula_deduction: Number(formData.formula_deduction) || 0,
       formula_buffer:    Number(formData.formula_buffer) || 0,
       formula_divisor:   Number(formData.formula_divisor) || 1,
+      formula_interval:  Number(formData.formula_interval) || 500,
+      colour_variant:    formData.colour_variant || null,
     }).eq('id', id)
     showToast('Updated ✓', 'success')
     await loadAll()
