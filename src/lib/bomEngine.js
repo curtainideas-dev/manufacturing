@@ -107,14 +107,21 @@ export function calcJobSummary(windowsWithBOM) {
       const key = `${line.component_id}__${colourKey}`
       if (!map[key]) {
         map[key] = {
-          component:   line.component,
+          component:      line.component,
           colour_variant: line.colour_variant,
-          display_pn:  line.display_pn,
-          total_qty:   0,
-          unit_cost:   line.unit_cost_snapshot,
+          display_pn:     line.display_pn,
+          total_qty:      0,
+          unit_cost:      line.unit_cost_snapshot,
+          cuts:           [], // individual cut lengths in mm, for bar components
         }
       }
       map[key].total_qty += line.qty
+      // Track per-window cut lengths for bar components so bin packing can work correctly
+      if (line.component?.order_type === 'bar' && line.qty > 0) {
+        const unit  = line.component?.unit || 'each'
+        const cutMm = unit === 'metres' ? Math.round(line.qty * 1000) : Math.round(line.qty)
+        map[key].cuts.push(cutMm)
+      }
     })
   })
   return Object.values(map)

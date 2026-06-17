@@ -23,11 +23,12 @@ const DEFAULT = {
 }
 
 export default function ProductComponentModal({
-  open, productComponent, allComponents, onClose, onSave, onRemove, saving
+  open, productComponent, allComponents, suppliers = [], onClose, onSave, onRemove, saving
 }) {
   const [form, setForm]               = useState(DEFAULT)
   const [dirty, setDirty]             = useState(false)
   const [showUnsaved, setShowUnsaved] = useState(false)
+  const [selectedSupplierId, setSelectedSupplierId] = useState('')
   const initialForm                   = useRef(DEFAULT)
 
   useEffect(() => {
@@ -37,6 +38,7 @@ export default function ProductComponentModal({
       initialForm.current = initial
       setDirty(false)
       setShowUnsaved(false)
+      setSelectedSupplierId('')
     }
   }, [open, productComponent])
 
@@ -44,6 +46,11 @@ export default function ProductComponentModal({
 
   const handleClose = () => { dirty ? setShowUnsaved(true) : onClose() }
   const handleOverlayClick = (e) => { if (e.target === e.currentTarget) handleClose() }
+
+  // Filter components by selected supplier — "All" shows everything
+  const filteredComponents = selectedSupplierId
+    ? allComponents.filter(c => c.supplier_id === selectedSupplierId)
+    : allComponents
 
   const selectedComp    = allComponents.find(c => c.id === form.component_id)
   const displayComp     = selectedComp || productComponent?.component
@@ -69,15 +76,12 @@ export default function ProductComponentModal({
       case 'fixed':
         return <NumField id="formula_buffer" label="Quantity per unit" step="1" min="0"
           hint="How many of this component per unit — e.g. 2 for a centre open" />
-
       case 'width_based':
         return <NumField id="formula_deduction" label="Deduction (mm)"
           hint="Subtracted from window width — e.g. 13mm means result = width − 13mm" />
-
       case 'drop_based':
         return <NumField id="formula_deduction" label="Deduction (mm)"
           hint="Subtracted from window drop" />
-
       case 'width_drop_based':
         return (
           <div className="grid-2">
@@ -85,7 +89,6 @@ export default function ProductComponentModal({
             <NumField id="formula_buffer"    label="Drop deduction (mm)" />
           </div>
         )
-
       case 'per_interval':
         return (
           <>
@@ -100,7 +103,6 @@ export default function ProductComponentModal({
             </div>
           </>
         )
-
       case 'perimeter':
         return (
           <>
@@ -115,11 +117,9 @@ export default function ProductComponentModal({
             </div>
           </>
         )
-
       case 'labour':
         return <NumField id="formula_buffer" label="Hours per unit" step="0.25"
           hint="Labour hours per unit produced" />
-
       default: return null
     }
   }
@@ -164,24 +164,51 @@ export default function ProductComponentModal({
 
         <div className="modal-body">
 
-          {/* Component picker — only when adding */}
+          {/* ---- ADDING: supplier filter then component picker ---- */}
           {!productComponent && (
-            <div className="field">
-              <label className="field-label">Component</label>
-              <select className="field-input" value={form.component_id}
-                onChange={e => { set('component_id', e.target.value); set('colour_variant', null) }}>
-                <option value="">— Select a component —</option>
-                {allComponents.map(c => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} (${Number(c.unit_cost).toFixed(2)}/{c.unit})
-                    {(c.colour_variants || []).length > 0 ? ` · ${c.colour_variants.length} colours` : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <>
+              {/* Step 1 — Supplier filter */}
+              <div className="field">
+                <label className="field-label">Supplier</label>
+                <select className="field-input" value={selectedSupplierId}
+                  onChange={e => {
+                    setSelectedSupplierId(e.target.value)
+                    // Reset component selection when supplier changes
+                    set('component_id', '')
+                    set('colour_variant', null)
+                  }}>
+                  <option value="">All suppliers</option>
+                  {suppliers.map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Step 2 — Component picker (filtered) */}
+              <div className="field">
+                <label className="field-label">
+                  Component
+                  {selectedSupplierId && (
+                    <span style={{ fontSize: 11, color: 'var(--warm-300)', marginLeft: 6, fontWeight: 400, textTransform: 'none' }}>
+                      ({filteredComponents.length} available)
+                    </span>
+                  )}
+                </label>
+                <select className="field-input" value={form.component_id}
+                  onChange={e => { set('component_id', e.target.value); set('colour_variant', null) }}>
+                  <option value="">— Select a component —</option>
+                  {filteredComponents.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} · ${Number(c.unit_cost).toFixed(2)}/{c.unit}
+                      {(c.colour_variants || []).length > 0 ? ` · ${c.colour_variants.length} colours` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </>
           )}
 
-          {/* Component display when editing */}
+          {/* ---- EDITING: show component name as read-only ---- */}
           {productComponent && (
             <div style={{
               background: 'var(--warm-100)', borderRadius: 'var(--radius-sm)',
@@ -190,12 +217,13 @@ export default function ProductComponentModal({
             }}>
               {productComponent.component?.name}
               <div style={{ fontSize: 12, color: 'var(--warm-300)', fontWeight: 400, marginTop: 2 }}>
+                {productComponent.component?.supplier && `${productComponent.component.supplier} · `}
                 ${Number(productComponent.component?.unit_cost || 0).toFixed(2)} per {productComponent.component?.unit}
               </div>
             </div>
           )}
 
-          {/* Colour variant picker — shown when the component has colours defined */}
+          {/* Colour variant picker */}
           {hasColours && (
             <div className="field">
               <label className="field-label">Colour</label>
@@ -234,27 +262,31 @@ export default function ProductComponentModal({
             </div>
           )}
 
-          {/* Cost type */}
-          <div className="field" style={{ marginBottom: 8 }}>
-            <label className="field-label">Cost Type</label>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 16 }}>
-            {COST_TYPES.map(ct => (
-              <button key={ct.val} type="button"
-                className={`cost-type-btn ${form.cost_type === ct.val ? 'selected' : ''}`}
-                onClick={() => set('cost_type', ct.val)}>
-                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 2 }}>{ct.label}</div>
-                <div style={{ fontSize: 10, color: 'var(--warm-300)', fontWeight: 400 }}>{ct.note}</div>
-              </button>
-            ))}
-          </div>
+          {/* Cost type — only show once a component is selected */}
+          {(form.component_id || productComponent) && (
+            <>
+              <div className="field" style={{ marginBottom: 8 }}>
+                <label className="field-label">Cost Type</label>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 16 }}>
+                {COST_TYPES.map(ct => (
+                  <button key={ct.val} type="button"
+                    className={`cost-type-btn ${form.cost_type === ct.val ? 'selected' : ''}`}
+                    onClick={() => set('cost_type', ct.val)}>
+                    <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 2 }}>{ct.label}</div>
+                    <div style={{ fontSize: 10, color: 'var(--warm-300)', fontWeight: 400 }}>{ct.note}</div>
+                  </button>
+                ))}
+              </div>
 
-          {/* Formula fields */}
-          <div className="formula-box">
-            <div className="formula-box-title">Formula Settings</div>
-            <FormulaFields />
-            {preview && <div className="formula-preview">{preview}</div>}
-          </div>
+              {/* Formula fields */}
+              <div className="formula-box">
+                <div className="formula-box-title">Formula Settings</div>
+                <FormulaFields />
+                {preview && <div className="formula-preview">{preview}</div>}
+              </div>
+            </>
+          )}
 
           {/* Remove when editing */}
           {productComponent && onRemove && (

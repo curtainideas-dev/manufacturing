@@ -12,7 +12,7 @@ const DownloadIcon = () => (
   </svg>
 )
 
-export default function JobDetail({ job, products, productComponentsMap, onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onConfirm }) {
+export default function JobDetail({ job, products, productComponentsMap, onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onConfirm, onDeductStock }) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(false)
 
@@ -73,6 +73,17 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
             }}>Confirm</button>
           )}
           {isConfirmed && <span className="pill pill-green"><CheckIcon size={10} /> Confirmed</span>}
+          {isConfirmed && hasWindows && (
+            <button onClick={onDeductStock} style={{
+              padding: '6px 12px', fontSize: 13, fontWeight: 600,
+              background: 'rgba(255,255,255,0.15)', color: '#fff',
+              border: '1px solid rgba(255,255,255,0.3)',
+              borderRadius: 8, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+              📦 Deduct Stock
+            </button>
+          )}
         </div>
       </div>
 

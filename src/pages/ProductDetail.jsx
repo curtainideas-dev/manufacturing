@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { ChevronLeftIcon, PlusIcon, TrashIcon } from '../components/Icons'
+import { ChevronLeftIcon, PlusIcon, TrashIcon, XIcon } from '../components/Icons'
 import ProductComponentModal from '../components/ProductComponentModal'
-import { calcCostAtWidth, GRID_WIDTHS, fmt, formulaDescription } from '../lib/bomEngine'
+import { calcCostAtWidth, calcQty, GRID_WIDTHS, fmt, fmtQty, formulaDescription } from '../lib/bomEngine'
 
 const COST_TYPE_LABELS = {
   fixed: 'Fixed qty', width_based: 'Width-based',
@@ -11,7 +11,7 @@ const COST_TYPE_LABELS = {
 
 
 export default function ProductDetail({
-  product, productComponents, allComponents,
+  product, productComponents, allComponents, suppliers = [],
   onBack, onUpdateProduct, onAddComponent, onUpdateComponent,
   onRemoveComponent, onDuplicate, onDeleteProduct, saving,
 }) {
@@ -19,6 +19,7 @@ export default function ProductDetail({
   const [editingPc, setEditingPc]     = useState(null)
   const [showDupMenu, setShowDupMenu] = useState(false)
   const [newName, setNewName]         = useState('')
+  const [showBreakdown, setShowBreakdown] = useState(false)
 
   const handleDuplicate = async () => {
     const name = newName.trim() || `${product.name} (copy)`
@@ -147,7 +148,15 @@ export default function ProductDetail({
           {/* Pricing grid — tracks only */}
           {isTrack && productComponents.length > 0 && (
             <>
-              <div className="section-title" style={{ padding: '0 0 8px' }}>Pricing Grid</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <div className="section-title" style={{ padding: 0 }}>Pricing Grid</div>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setShowBreakdown(true)}
+                >
+                  🔍 See Breakdown
+                </button>
+              </div>
               <div style={{
                 background: '#fff', border: '1px solid var(--warm-200)', borderRadius: 'var(--radius)',
                 overflow: 'hidden', marginBottom: 24,
@@ -215,6 +224,7 @@ export default function ProductDetail({
         open={addOpen}
         productComponent={null}
         allComponents={allComponents}
+        suppliers={suppliers}
         onClose={() => setAddOpen(false)}
         onSave={(data) => { onAddComponent(data); setAddOpen(false) }}
         saving={saving}
@@ -225,12 +235,123 @@ export default function ProductDetail({
           open={!!editingPc}
           productComponent={editingPc}
           allComponents={allComponents}
+          suppliers={suppliers}
           onClose={() => setEditingPc(null)}
           onSave={(data) => { onUpdateComponent(editingPc.id, data); setEditingPc(null) }}
           onRemove={() => { onRemoveComponent(editingPc.id); setEditingPc(null) }}
           saving={saving}
         />
       )}
+
+      {/* ---- BREAKDOWN MODAL ---- */}
+      {showBreakdown && isTrack && (
+        <div className="modal-overlay open" onClick={e => e.target === e.currentTarget && setShowBreakdown(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 768 }}>
+            <div className="modal-handle" />
+            <div className="modal-header">
+              <div>
+                <div className="modal-title">Component Breakdown</div>
+                <div style={{ fontSize: 12, color: 'var(--warm-300)', marginTop: 2 }}>{product.name}</div>
+              </div>
+              <button onClick={() => setShowBreakdown(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--warm-300)', padding: 4 }}>
+                <XIcon size={22} />
+              </button>
+            </div>
+            <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto' }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 900, fontSize: 12 }}>
+                <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
+                  {/* Width header row */}
+                  <tr style={{ background: 'var(--accent-dark)' }}>
+                    <th style={{
+                      padding: '10px 12px', textAlign: 'left', fontSize: 11,
+                      fontWeight: 700, color: 'rgba(255,255,255,0.7)',
+                      position: 'sticky', left: 0, background: 'var(--accent-dark)',
+                      minWidth: 140, whiteSpace: 'nowrap',
+                    }}>
+                      Component
+                    </th>
+                    {GRID_WIDTHS.map(w => (
+                      <th key={w} style={{
+                        padding: '10px 8px', textAlign: 'right', fontSize: 11,
+                        fontWeight: 700, color: 'rgba(255,255,255,0.85)',
+                        whiteSpace: 'nowrap', minWidth: 72,
+                      }}>
+                        {w.toLocaleString()}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {productComponents.map((pc, pcIdx) => {
+                    const base     = Number(pc.component?.unit_cost) || 0
+                    const discount = Number(pc.component?.discount) || 0
+                    const unitCost = base * (1 - discount / 100)
+                    return (
+                      <tr key={pc.id} style={{ background: pcIdx % 2 === 0 ? 'var(--warm-100)' : '#fff' }}>
+                        {/* Component name — sticky left */}
+                        <td style={{
+                          padding: '9px 12px',
+                          position: 'sticky', left: 0,
+                          background: pcIdx % 2 === 0 ? 'var(--warm-100)' : '#fff',
+                          borderRight: '1px solid var(--warm-200)',
+                        }}>
+                          <div style={{ fontWeight: 600, fontSize: 12 }}>{pc.component?.name}</div>
+                          <div style={{ fontSize: 10, color: 'var(--warm-300)', marginTop: 1 }}>
+                            ${unitCost.toFixed(4)}/{pc.component?.unit}
+                            {pc.colour_variant ? ` · ${pc.colour_variant.name}` : ''}
+                          </div>
+                        </td>
+                        {GRID_WIDTHS.map(w => {
+                          const qty      = calcQty(pc, w, 0)
+                          const lineCost = qty * unitCost
+                          return (
+                            <td key={w} style={{
+                              padding: '9px 8px', textAlign: 'right',
+                              borderLeft: '1px solid var(--warm-100)',
+                            }}>
+                              <div style={{ fontWeight: 600, color: 'var(--ink)' }}>{fmtQty(qty)}</div>
+                              <div style={{ fontSize: 10, color: 'var(--warm-300)', marginTop: 1 }}>
+                                ${fmt(lineCost)}
+                              </div>
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    )
+                  })}
+                  {/* Total row */}
+                  <tr style={{ background: 'var(--accent-bg)', borderTop: '2px solid var(--accent)' }}>
+                    <td style={{
+                      padding: '10px 12px', fontWeight: 700, fontSize: 13,
+                      color: 'var(--accent-dark)',
+                      position: 'sticky', left: 0, background: 'var(--accent-bg)',
+                      borderRight: '1px solid var(--warm-200)',
+                    }}>
+                      Total
+                    </td>
+                    {GRID_WIDTHS.map(w => (
+                      <td key={w} style={{
+                        padding: '10px 8px', textAlign: 'right',
+                        fontWeight: 700, fontSize: 13, color: 'var(--accent-dark)',
+                        borderLeft: '1px solid #c8e89a',
+                      }}>
+                        ${fmt(calcCostAtWidth(productComponents, w))}
+                      </td>
+                    ))}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary btn-block" onClick={() => setShowBreakdown(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </>
   )
 }
