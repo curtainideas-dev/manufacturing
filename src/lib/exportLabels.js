@@ -16,11 +16,14 @@
 const LABEL_W = 62          // mm — label width (62 mm roll)
 const LABEL_H = 40          // mm — label height
 
-// To print a real logo instead of the "Curtain Ideas" wordmark, paste a
-// black/mono PNG or JPEG data URL here (e.g. "data:image/png;base64,....").
-// Leave null to use the text wordmark.
+// The label header prints a black silhouette of this image (auto-converted at
+// print time so it prints cleanly on the black-only thermal printer). It's the
+// app favicon (same-origin) — replace that file to change the printed logo.
+const LOGO_URL = '/favicon.png'
+// Set to a data URL to override the auto-loaded logo; null uses LOGO_URL, and
+// if that can't load it falls back to the "Curtain Ideas" wordmark.
 const LOGO_DATA_URL = null
-const LOGO_MAX_H = 7        // mm — printed logo height when LOGO_DATA_URL is set
+const LOGO_MAX_H = 7        // mm — printed logo height
 
 const loadJsPDF = () => new Promise((resolve, reject) => {
   if (window.jspdf) return resolve(window.jspdf.jsPDF)
@@ -30,6 +33,44 @@ const loadJsPDF = () => new Promise((resolve, reject) => {
   s.onerror = reject
   document.head.appendChild(s)
 })
+
+// Load LOGO_URL and convert it to a black silhouette on a transparent
+// background (any non-white/opaque pixel → black). Prints cleanly on a
+// black-only thermal printer. Returns { url, aspect } or null on failure.
+async function loadMonoLogo() {
+  try {
+    const img = await new Promise((res, rej) => {
+      const im = new Image()
+      im.onload = () => res(im)
+      im.onerror = rej
+      im.src = LOGO_URL
+    })
+    const natW = img.naturalWidth || 1
+    const natH = img.naturalHeight || 1
+    const w = 240
+    const h = Math.max(1, Math.round(natH * (w / natW)))
+    const cv = document.createElement('canvas')
+    cv.width = w
+    cv.height = h
+    const ctx = cv.getContext('2d')
+    ctx.drawImage(img, 0, 0, w, h)
+    const imgData = ctx.getImageData(0, 0, w, h)
+    const px = imgData.data
+    for (let k = 0; k < px.length; k += 4) {
+      const a   = px[k + 3]
+      const lum = 0.299 * px[k] + 0.587 * px[k + 1] + 0.114 * px[k + 2]
+      if (a > 128 && lum < 240) {
+        px[k] = 0; px[k + 1] = 0; px[k + 2] = 0; px[k + 3] = 255
+      } else {
+        px[k + 3] = 0 // transparent
+      }
+    }
+    ctx.putImageData(imgData, 0, 0)
+    return { url: cv.toDataURL('image/png'), aspect: w / h }
+  } catch {
+    return null
+  }
+}
 
 // Format a 'YYYY-MM-DD' date string as dd/mm/yyyy (en-AU); '—' when empty.
 function fmtDate(d) {
@@ -52,6 +93,7 @@ function fitText(doc, text, maxWidth) {
 
 export async function exportJobLabels(job, windowsWithBOM, products) {
   const jsPDF = await loadJsPDF()
+  const logo  = LOGO_DATA_URL ? { url: LOGO_DATA_URL, aspect: null } : await loadMonoLogo()
 
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [LABEL_W, LABEL_H] })
   const PW = doc.internal.pageSize.getWidth()
@@ -68,9 +110,10 @@ export async function exportJobLabels(job, windowsWithBOM, products) {
     // ---- Header: logo / wordmark + item counter ----
     const counter = `${i + 1}/${windows.length}`
     let headerBottom = M + 6
-    if (LOGO_DATA_URL) {
-      const fmt = LOGO_DATA_URL.includes('image/jpeg') ? 'JPEG' : 'PNG'
-      doc.addImage(LOGO_DATA_URL, fmt, M, M, 0, LOGO_MAX_H)
+    if (logo) {
+      const fmt   = logo.url.includes('image/jpeg') ? 'JPEG' : 'PNG'
+      const logoW = logo.aspect ? LOGO_MAX_H * logo.aspect : 0 // 0 = auto from aspect
+      doc.addImage(logo.url, fmt, M, M, logoW, LOGO_MAX_H)
       headerBottom = M + LOGO_MAX_H
     } else {
       doc.setTextColor(0, 0, 0)
