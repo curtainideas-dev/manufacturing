@@ -1,7 +1,8 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon } from '../components/Icons'
 import { calcWindowBOM, calcJobSummary, fmt, fmtQty } from '../lib/bomEngine'
 import { exportJobPDF } from '../lib/exportPDF'
+import { exportJobLabels } from '../lib/exportLabels'
 
 // Download icon inline since it's only used here
 const DownloadIcon = () => (
@@ -12,9 +13,17 @@ const DownloadIcon = () => (
   </svg>
 )
 
-export default function JobDetail({ job, products, productComponentsMap, onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onConfirm, onDeductStock }) {
+export default function JobDetail({ job, products, productComponentsMap, onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onConfirm, onComplete, onReopen, onAttachPO, poUploading, onDeductStock }) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(false)
+  const [labeling, setLabeling]   = useState(false)
+  const poFileRef = useRef(null)
+
+  const handlePOFile = (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (file) onAttachPO(file)
+  }
 
   const windowsWithBOM = useMemo(() => {
     return (job.windows || []).map(win => {
@@ -25,8 +34,11 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
 
   const jobSummary = useMemo(() => calcJobSummary(windowsWithBOM), [windowsWithBOM])
   const jobTotal   = jobSummary.reduce((s, r) => s + r.total_cost, 0)
-  const isConfirmed = job.status === 'confirmed'
-  const hasWindows  = (job.windows || []).length > 0
+  const isReceived   = job.status === 'received'
+  const isInProgress = job.status === 'in_progress'
+  const isCompleted  = job.status === 'completed'
+  const locked       = !isReceived   // BOM/inputs locked once past Received
+  const hasWindows   = (job.windows || []).length > 0
 
   const handleExport = async () => {
     setExporting(true)
@@ -34,6 +46,15 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
       await exportJobPDF(job, windowsWithBOM, jobSummary, products)
     } finally {
       setExporting(false)
+    }
+  }
+
+  const handleLabels = async () => {
+    setLabeling(true)
+    try {
+      await exportJobLabels(job, windowsWithBOM, products)
+    } finally {
+      setLabeling(false)
     }
   }
 
@@ -65,15 +86,17 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
               {exporting ? 'Generating...' : 'PDF'}
             </button>
           )}
-          {!isConfirmed && (
+          {/* Received → confirm into In Progress */}
+          {isReceived && (
             <button onClick={onConfirm} style={{
               padding: '6px 14px', fontSize: 13, fontWeight: 700,
               background: 'var(--accent)', color: '#fff', border: 'none',
               borderRadius: 8, cursor: 'pointer'
             }}>Confirm</button>
           )}
-          {isConfirmed && <span className="pill pill-green"><CheckIcon size={10} /> Confirmed</span>}
-          {isConfirmed && hasWindows && (
+
+          {/* In Progress → deduct stock + mark complete */}
+          {isInProgress && hasWindows && (
             <button onClick={onDeductStock} style={{
               padding: '6px 12px', fontSize: 13, fontWeight: 600,
               background: 'rgba(255,255,255,0.15)', color: '#fff',
@@ -83,6 +106,36 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
             }}>
               📦 Deduct Stock
             </button>
+          )}
+          {isInProgress && hasWindows && (
+            <button onClick={handleLabels} disabled={labeling} style={{
+              padding: '6px 12px', fontSize: 13, fontWeight: 600,
+              background: 'rgba(255,255,255,0.15)', color: '#fff',
+              border: '1px solid rgba(255,255,255,0.3)',
+              borderRadius: 8, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+              opacity: labeling ? 0.6 : 1,
+            }}>
+              🏷️ {labeling ? 'Generating…' : 'Labels'}
+            </button>
+          )}
+          {isInProgress && (
+            <button onClick={onComplete} style={{
+              padding: '6px 14px', fontSize: 13, fontWeight: 700,
+              background: 'var(--success)', color: '#fff', border: 'none',
+              borderRadius: 8, cursor: 'pointer'
+            }}>Complete</button>
+          )}
+
+          {/* Completed → locked, allow reopen */}
+          {isCompleted && <span className="pill pill-green"><CheckIcon size={10} /> Completed</span>}
+          {isCompleted && (
+            <button onClick={onReopen} style={{
+              padding: '6px 12px', fontSize: 13, fontWeight: 600,
+              background: 'rgba(255,255,255,0.15)', color: '#fff',
+              border: '1px solid rgba(255,255,255,0.3)',
+              borderRadius: 8, cursor: 'pointer',
+            }}>Reopen</button>
           )}
         </div>
       </div>
@@ -104,16 +157,68 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
             <div className="grid-2">
               <div className="field" style={{ marginBottom: 0 }}>
                 <label className="field-label">Customer</label>
-                <input className="field-input" value={job.customer_name || ''} disabled={isConfirmed}
+                <input className="field-input" value={job.customer_name || ''} disabled={locked}
                   onChange={e => onUpdate({ customer_name: e.target.value })}
                   placeholder="Customer name" />
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
                 <label className="field-label">Job No.</label>
-                <input className="field-input" value={job.job_number || ''} disabled={isConfirmed}
+                <input className="field-input" value={job.job_number || ''} disabled={locked}
                   onChange={e => onUpdate({ job_number: e.target.value })}
                   placeholder="e.g. 2024-081" />
               </div>
+            </div>
+
+            {/* Manufacture / invoice dates — printed on labels; editable until completed */}
+            <div className="grid-2" style={{ marginTop: 12 }}>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label className="field-label">Date of Manufacture</label>
+                <input className="field-input" type="date" value={job.date_manufacture || ''} disabled={isCompleted}
+                  onChange={e => onUpdate({ date_manufacture: e.target.value || null })} />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label className="field-label">Date of Invoice</label>
+                <input className="field-input" type="date" value={job.date_invoice || ''} disabled={isCompleted}
+                  onChange={e => onUpdate({ date_invoice: e.target.value || null })} />
+              </div>
+            </div>
+
+            {/* Customer PO document */}
+            <div className="divider" style={{ margin: '14px 0' }} />
+            <input
+              ref={poFileRef}
+              type="file"
+              accept="application/pdf"
+              style={{ display: 'none' }}
+              onChange={handlePOFile}
+            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ fontSize: 22 }}>📄</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="field-label" style={{ marginBottom: 2 }}>Customer PO</div>
+                {job.po_pdf_url ? (
+                  <a href={job.po_pdf_url} target="_blank" rel="noopener noreferrer"
+                    style={{ fontSize: 14, color: 'var(--blue)', fontWeight: 600, textDecoration: 'none',
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>
+                    {job.po_pdf_name || 'View PO PDF'}
+                  </a>
+                ) : (
+                  <div style={{ fontSize: 13, color: 'var(--warm-300)' }}>No PO attached</div>
+                )}
+              </div>
+              {isReceived && (
+                <button
+                  onClick={() => poFileRef.current?.click()}
+                  disabled={poUploading}
+                  style={{
+                    padding: '6px 12px', fontSize: 13, fontWeight: 600,
+                    background: 'var(--warm-100)', color: 'var(--ink)',
+                    border: '1px solid var(--warm-200)', borderRadius: 8, cursor: 'pointer',
+                    flexShrink: 0, opacity: poUploading ? 0.6 : 1,
+                  }}>
+                  {poUploading ? 'Uploading…' : job.po_pdf_url ? 'Replace' : 'Attach PDF'}
+                </button>
+              )}
             </div>
           </div>
 
@@ -149,13 +254,13 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
                 })}
               </div>
 
-              {!isConfirmed && (
+              {isReceived && (
                 <button className="btn btn-secondary btn-block" onClick={onAddWindow}>
                   <PlusIcon size={16} /> Add Window
                 </button>
               )}
 
-              {!isConfirmed && hasWindows && (
+              {(isReceived || isInProgress) && (
                 <>
                   <div className="divider" />
                   <button className="btn btn-danger btn-block" onClick={onDelete}>

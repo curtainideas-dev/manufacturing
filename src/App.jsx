@@ -42,6 +42,7 @@ export default function App() {
   const [productComponentsMap, setProductComponentsMap] = useState({})
   const [jobs, setJobs]                                 = useState([])
   const [loading, setLoading]                           = useState(true)
+  const [poUploading, setPoUploading]                   = useState(false)
 
   // ---- UI state ----
   const [currentProduct, setCurrentProduct]   = useState(null)
@@ -351,12 +352,65 @@ export default function App() {
   const handleNewJob = async () => {
     const { data, error } = await supabase
       .from('mfg_jobs')
-      .insert({ customer_name: '', job_number: '', status: 'draft' })
+      .insert({ customer_name: '', job_number: '', status: 'received' })
       .select().single()
     if (error) { showToast('Failed to create job', 'error'); return }
     const job = { ...data, windows: [] }
     setJobs(prev => [job, ...prev])
     setCurrentJob(job)
+  }
+
+  // Upload a PO PDF to Supabase Storage → returns { url, name } or null
+  const uploadPOFile = async (file) => {
+    if (!file) return null
+    if (file.type !== 'application/pdf') {
+      showToast('Please choose a PDF file', 'error')
+      return null
+    }
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+    const path     = `po-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`
+    const { error } = await supabase.storage
+      .from('customer-orders')
+      .upload(path, file, { contentType: 'application/pdf', upsert: false })
+    if (error) {
+      showToast(`Upload failed: ${error.message}`, 'error')
+      return null
+    }
+    const { data } = supabase.storage.from('customer-orders').getPublicUrl(path)
+    return { url: data.publicUrl, name: file.name }
+  }
+
+  // Upload a PO and create a new "received" job from it
+  const handleCreateJobFromPO = async (file) => {
+    setPoUploading(true)
+    const uploaded = await uploadPOFile(file)
+    if (!uploaded) { setPoUploading(false); return }
+    const { data, error } = await supabase
+      .from('mfg_jobs')
+      .insert({
+        customer_name: '', job_number: '', status: 'received',
+        po_pdf_url: uploaded.url, po_pdf_name: uploaded.name,
+      })
+      .select().single()
+    if (error) {
+      showToast('Failed to create job', 'error')
+    } else {
+      const job = { ...data, windows: [] }
+      setJobs(prev => [job, ...prev])
+      setCurrentJob(job)
+      showToast('PO uploaded — job created ✓', 'success')
+    }
+    setPoUploading(false)
+  }
+
+  // Attach / replace the PO PDF on the current job
+  const handleAttachPO = async (file) => {
+    setPoUploading(true)
+    const uploaded = await uploadPOFile(file)
+    if (!uploaded) { setPoUploading(false); return }
+    await handleJobUpdate({ po_pdf_url: uploaded.url, po_pdf_name: uploaded.name })
+    showToast('PO attached ✓', 'success')
+    setPoUploading(false)
   }
 
   const handleJobUpdate = async (updates) => {
@@ -367,17 +421,44 @@ export default function App() {
   }
 
   const handleJobDelete = async () => {
-    if (!window.confirm('Delete this job and all its windows?')) return
-    await supabase.from('mfg_jobs').delete().eq('id', currentJob.id)
-    setJobs(prev => prev.filter(j => j.id !== currentJob.id))
+    const wasInProgress = currentJob.status === 'in_progress'
+    const msg = wasInProgress
+      ? 'Delete this in-progress job and all its windows?\n\nAny stock already deducted for it will NOT be returned.'
+      : 'Delete this job and all its windows?'
+    if (!window.confirm(msg)) return
+    const jobId = currentJob.id
+    // Clear rows that reference this job so the delete can't fail on a foreign key.
+    // (Deducted stock quantities are intentionally left as-is.)
+    await supabase.from('stock_movements').delete().eq('job_id', jobId)
+    await supabase.from('stock_bars').update({ job_id: null }).eq('job_id', jobId)
+    const { error } = await supabase.from('mfg_jobs').delete().eq('id', jobId)
+    if (error) { showToast('Delete failed', 'error'); return }
+    setJobs(prev => prev.filter(j => j.id !== jobId))
     setCurrentJob(null)
     showToast('Job deleted')
   }
 
   const handleJobConfirm = async () => {
     if (!window.confirm('Confirm this job? The BOM will be locked.')) return
-    await handleJobUpdate({ status: 'confirmed' })
+    const updates = { status: 'in_progress' }
+    // Default the manufacture date to today if not already set
+    if (!currentJob.date_manufacture) {
+      updates.date_manufacture = new Date().toISOString().slice(0, 10)
+    }
+    await handleJobUpdate(updates)
     showToast('Job confirmed ✓', 'success')
+  }
+
+  const handleJobComplete = async () => {
+    if (!window.confirm('Mark this job as completed and ready for pickup?')) return
+    await handleJobUpdate({ status: 'completed' })
+    showToast('Job completed ✓', 'success')
+  }
+
+  const handleJobReopen = async () => {
+    if (!window.confirm('Reopen this job back to In Progress?')) return
+    await handleJobUpdate({ status: 'in_progress' })
+    showToast('Job reopened')
   }
 
   const handleAddWindow = async (winData) => {
@@ -701,7 +782,7 @@ export default function App() {
           onBack={() => setCurrentWindow(null)}
           onUpdate={(updates) => handleWindowUpdate(currentWindow.idx, updates)}
           onDelete={() => handleWindowDelete(currentWindow.idx)}
-          readOnly={currentJob.status === 'confirmed'}
+          readOnly={currentJob.status !== 'received'}
         />
       )
     }
@@ -719,13 +800,17 @@ export default function App() {
           onAddWindow={() => setAddWindowOpen(true)}
           onOpenWindow={(win, idx) => setCurrentWindow({ win, idx })}
           onConfirm={handleJobConfirm}
+          onComplete={handleJobComplete}
+          onReopen={handleJobReopen}
+          onAttachPO={handleAttachPO}
+          poUploading={poUploading}
           onDeductStock={handleOpenDeductModal}
         />
       )
     }
 
     if (navTab === 'bom') {
-      return <JobList jobs={jobs} onOpen={setCurrentJob} onNew={handleNewJob} />
+      return <JobList jobs={jobs} onOpen={setCurrentJob} onNew={handleNewJob} onUploadPO={handleCreateJobFromPO} poUploading={poUploading} />
     }
 
     // Product detail
