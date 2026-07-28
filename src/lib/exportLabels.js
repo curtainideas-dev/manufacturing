@@ -17,15 +17,17 @@
 const PKG_W = 62, PKG_H = 40   // packaging label
 const TRK_W = 62, TRK_H = 15   // track/tube label
 const BUSINESS_EMAIL = 'sales@curtainideas.com.au'
+const BUSINESS_WEB   = 'curtainideas.com.au'
 
 // The packaging label prints a black silhouette of this image (auto-converted at
-// print time so it prints cleanly on the black-only printer). It's the app
-// favicon (same-origin) — replace that file to change the printed logo.
-const LOGO_URL = '/favicon.png'
+// print time so it prints cleanly on the black-only printer). Same-origin file
+// in /public — replace it to change the printed logo.
+const LOGO_URL = '/logo.png'
 // Set to a data URL to override the auto-loaded logo; null uses LOGO_URL, and
 // if that can't load it falls back to the "Curtain Ideas" wordmark.
 const LOGO_DATA_URL = null
-const LOGO_MAX_H = 6        // mm — printed logo height
+const LOGO_MAX_H = 8        // mm — max printed logo height
+const LOGO_MAX_W = 42       // mm — max printed logo width (wide wordmark)
 // The QL leaves ~3mm unprintable at the top and bottom of every label (a fixed
 // hardware feed margin). Keep all content this far from the top/bottom edges.
 const SAFE = 3.5           // mm
@@ -119,15 +121,22 @@ export async function exportPackagingLabels(job, windowsWithBOM, products) {
 
     // Header: logo/wordmark + item counter (kept inside the printable safe zone)
     const counter = `${i + 1}/${windows.length}`
-    let headerBottom = SAFE + LOGO_MAX_H
-    if (logo) {
+    let headerBottom
+    if (logo && logo.aspect) {
       const fmt   = logo.url.includes('image/jpeg') ? 'JPEG' : 'PNG'
-      const logoW = logo.aspect ? LOGO_MAX_H * logo.aspect : 0
-      doc.addImage(logo.url, fmt, M, SAFE, logoW, LOGO_MAX_H)
+      const logoH = Math.min(LOGO_MAX_H, LOGO_MAX_W / logo.aspect) // fit within the box
+      const logoW = logoH * logo.aspect
+      doc.addImage(logo.url, fmt, M, SAFE, logoW, logoH)
+      headerBottom = SAFE + Math.max(logoH, 5.5)
+    } else if (logo) {
+      const fmt = logo.url.includes('image/jpeg') ? 'JPEG' : 'PNG'
+      doc.addImage(logo.url, fmt, M, SAFE, 0, LOGO_MAX_H)
+      headerBottom = SAFE + LOGO_MAX_H
     } else {
       doc.setTextColor(0, 0, 0)
       doc.setFont('helvetica', 'bold'); doc.setFontSize(11)
       doc.text('Curtain Ideas', M, SAFE + 4)
+      headerBottom = SAFE + 6
     }
     doc.setTextColor(0, 0, 0)
     doc.setFont('helvetica', 'bold'); doc.setFontSize(11)
@@ -176,21 +185,24 @@ export async function exportTrackLabels(job, windowsWithBOM) {
     // Content kept inside the printable safe zone (~3mm unprintable top/bottom)
     // Line 1 (main): job number (left) + item counter (top-right)
     const counter = `${i + 1}/${windows.length}`
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(8)
-    doc.text(counter, PW - M, 5.6, { align: 'right' })
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7)
+    doc.text(counter, PW - M, 5.1, { align: 'right' })
     const counterW = doc.getTextWidth(counter)
-    doc.setFontSize(9)
-    doc.text(fitText(doc, job.job_number ? `Job #${job.job_number}` : 'No job #', PW - M * 2 - counterW - 2), M, 5.6)
+    doc.setFontSize(8)
+    doc.text(fitText(doc, job.job_number ? `Job #${job.job_number}` : 'No job #', PW - M * 2 - counterW - 2), M, 5.1)
 
     // Line 2 (main): window / room name
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8)
-    doc.text(fitText(doc, win.label || `Window ${i + 1}`, PW - M * 2), M, 8.5)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5)
+    doc.text(fitText(doc, win.label || `Window ${i + 1}`, PW - M * 2), M, 7.5)
 
-    // Line 3 (fine print): contact email (left) + MFG year (bottom-right)
+    // Line 3 (fine print): email (left) + MFG year (right)
     const mfgYear = (job.date_manufacture || '').slice(0, 4) || '—'
-    doc.setFontSize(5.5)
-    doc.text(BUSINESS_EMAIL, M, 11.3)
-    doc.text(`MFG ${mfgYear}`, PW - M, 11.3, { align: 'right' })
+    doc.setFontSize(5)
+    doc.text(BUSINESS_EMAIL, M, 9.6)
+    doc.text(`MFG ${mfgYear}`, PW - M, 9.6, { align: 'right' })
+
+    // Line 4 (fine print): website
+    doc.text(BUSINESS_WEB, M, 11.5)
   }
 
   doc.save(saveName('TrackLabels', job))
