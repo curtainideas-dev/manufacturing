@@ -2,7 +2,7 @@ import { useState, useMemo, useRef } from 'react'
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon } from '../components/Icons'
 import { calcWindowBOM, calcJobSummary, fmt, fmtQty } from '../lib/bomEngine'
 import { exportJobPDF } from '../lib/exportPDF'
-import { exportJobLabels } from '../lib/exportLabels'
+import { exportPackagingLabels, exportTrackLabels } from '../lib/exportLabels'
 
 // Download icon inline since it's only used here
 const DownloadIcon = () => (
@@ -16,7 +16,7 @@ const DownloadIcon = () => (
 export default function JobDetail({ job, products, productComponentsMap, onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onConfirm, onComplete, onReopen, onAttachPO, poUploading, onDeductStock }) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(false)
-  const [labeling, setLabeling]   = useState(false)
+  const [labeling, setLabeling]   = useState(null) // 'pack' | 'track' | null
   const poFileRef = useRef(null)
 
   const handlePOFile = (e) => {
@@ -49,12 +49,21 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
     }
   }
 
-  const handleLabels = async () => {
-    setLabeling(true)
+  const handlePackagingLabels = async () => {
+    setLabeling('pack')
     try {
-      await exportJobLabels(job, windowsWithBOM, products)
+      await exportPackagingLabels(job, windowsWithBOM, products)
     } finally {
-      setLabeling(false)
+      setLabeling(null)
+    }
+  }
+
+  const handleTrackLabels = async () => {
+    setLabeling('track')
+    try {
+      await exportTrackLabels(job, windowsWithBOM)
+    } finally {
+      setLabeling(null)
     }
   }
 
@@ -108,25 +117,29 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
             </button>
           )}
           {isInProgress && hasWindows && (
-            <button onClick={handleLabels} disabled={labeling} style={{
-              padding: '6px 12px', fontSize: 13, fontWeight: 600,
+            <button onClick={handlePackagingLabels} disabled={!!labeling} title="Packing label (62×40mm)" style={{
+              padding: '6px 10px', fontSize: 13, fontWeight: 600,
               background: 'rgba(255,255,255,0.15)', color: '#fff',
               border: '1px solid rgba(255,255,255,0.3)',
               borderRadius: 8, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: 6,
+              display: 'flex', alignItems: 'center', gap: 5,
               opacity: labeling ? 0.6 : 1,
             }}>
-              🏷️ {labeling ? 'Generating…' : 'Labels'}
+              🏷️ {labeling === 'pack' ? '…' : 'Packing Label'}
             </button>
           )}
-          {isInProgress && (
-            <button onClick={onComplete} style={{
-              padding: '6px 14px', fontSize: 13, fontWeight: 700,
-              background: 'var(--success)', color: '#fff', border: 'none',
-              borderRadius: 8, cursor: 'pointer'
-            }}>Complete</button>
+          {isInProgress && hasWindows && (
+            <button onClick={handleTrackLabels} disabled={!!labeling} title="Product label — track/tube (62×15mm)" style={{
+              padding: '6px 10px', fontSize: 13, fontWeight: 600,
+              background: 'rgba(255,255,255,0.15)', color: '#fff',
+              border: '1px solid rgba(255,255,255,0.3)',
+              borderRadius: 8, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 5,
+              opacity: labeling ? 0.6 : 1,
+            }}>
+              🏷️ {labeling === 'track' ? '…' : 'Product Label'}
+            </button>
           )}
-
           {/* Completed → locked, allow reopen */}
           {isCompleted && <span className="pill pill-green"><CheckIcon size={10} /> Completed</span>}
           {isCompleted && (
@@ -290,6 +303,16 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
               {isReceived && (
                 <button className="btn btn-secondary btn-block" onClick={onAddWindow}>
                   <PlusIcon size={16} /> Add Window
+                </button>
+              )}
+
+              {isInProgress && (
+                <button
+                  className="btn btn-block"
+                  style={{ background: 'var(--success)', color: '#fff', border: 'none', marginTop: 12 }}
+                  onClick={onComplete}
+                >
+                  <CheckIcon size={15} /> Mark Complete
                 </button>
               )}
 
