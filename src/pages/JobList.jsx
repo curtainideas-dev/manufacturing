@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, useState, useMemo } from 'react'
 import { PlusIcon, ChevronRightIcon } from '../components/Icons'
 
 const formatDate = d => d ? new Date(d).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }) : ''
@@ -10,11 +10,36 @@ const STATUS_META = {
   completed:   { label: 'Completed',   emoji: '✅', avatarBg: 'var(--success-bg)', pill: 'pill-green'  },
 }
 
+const PERIODS = [
+  { id: 'month', label: 'This month' },
+  { id: 'year',  label: 'This year' },
+  { id: 'all',   label: 'All time' },
+]
+
+const fmtMoney = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+// Completed jobs are dated by manufacture date where set, else when created
+const jobDate = (j) => new Date(j.date_manufacture || j.created_at)
+
 export default function JobList({ jobs, onOpen, onNew, onUploadPO, poUploading }) {
   const fileRef    = useRef(null)
+  const [period, setPeriod] = useState('month')
   const received   = jobs.filter(j => j.status === 'received')
   const inProgress = jobs.filter(j => j.status === 'in_progress')
   const completed  = jobs.filter(j => j.status === 'completed')
+
+  const completedValue = useMemo(() => {
+    const now = new Date()
+    const inPeriod = (j) => {
+      if (period === 'all') return true
+      const d = jobDate(j)
+      if (isNaN(d)) return false
+      if (d.getFullYear() !== now.getFullYear()) return false
+      return period === 'year' || d.getMonth() === now.getMonth()
+    }
+    const rows = completed.filter(inPeriod)
+    return { count: rows.length, total: rows.reduce((s, j) => s + (Number(j.locked_total) || 0), 0) }
+  }, [completed, period])
 
   const handleFile = (e) => {
     const file = e.target.files?.[0]
@@ -95,6 +120,39 @@ export default function JobList({ jobs, onOpen, onNew, onUploadPO, poUploading }
           <div className="summary-card">
             <div className="summary-val">{completed.length}</div>
             <div className="summary-lbl">Completed</div>
+          </div>
+        </div>
+
+        {/* Value of completed jobs */}
+        <div style={{ padding: '0 16px 16px' }}>
+          <div style={{
+            background: 'var(--accent-dark)', color: '#fff',
+            borderRadius: 'var(--radius)', padding: '14px 18px',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7, marginBottom: 4 }}>
+                  Completed Jobs Value
+                </div>
+                <div style={{ fontSize: 26, fontWeight: 700 }}>${fmtMoney(completedValue.total)}</div>
+              </div>
+              <div style={{ textAlign: 'right', opacity: 0.75, fontSize: 12 }}>
+                {completedValue.count} job{completedValue.count !== 1 ? 's' : ''}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
+              {PERIODS.map(p => (
+                <button key={p.id} onClick={() => setPeriod(p.id)} style={{
+                  flex: 1, padding: '6px 0', fontSize: 12, fontWeight: 600,
+                  borderRadius: 6, cursor: 'pointer',
+                  border: '1px solid rgba(255,255,255,0.25)',
+                  background: period === p.id ? 'rgba(255,255,255,0.22)' : 'transparent',
+                  color: '#fff', opacity: period === p.id ? 1 : 0.7,
+                }}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 

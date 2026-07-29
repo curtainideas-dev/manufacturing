@@ -2,7 +2,8 @@ import { useState, useMemo, useRef } from 'react'
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon } from '../components/Icons'
 import { calcWindowBOM, calcJobSummary, fmt, fmtQty } from '../lib/bomEngine'
 import { exportJobPDF } from '../lib/exportPDF'
-import { exportPackagingLabels, exportTrackLabels } from '../lib/exportLabels'
+import { exportPackagingLabels, exportTrackLabels, exportPartsLabels } from '../lib/exportLabels'
+import PartsListModal from '../components/PartsListModal'
 
 // Download icon inline since it's only used here
 const DownloadIcon = () => (
@@ -16,7 +17,8 @@ const DownloadIcon = () => (
 export default function JobDetail({ job, products, productComponentsMap, onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onConfirm, onComplete, onReopen, onAttachPO, poUploading, onDeductStock }) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(false)
-  const [labeling, setLabeling]   = useState(null) // 'pack' | 'track' | null
+  const [labeling, setLabeling]   = useState(null) // 'pack' | 'track' | 'parts' | null
+  const [partsOpen, setPartsOpen] = useState(false)
   const poFileRef = useRef(null)
 
   const handlePOFile = (e) => {
@@ -25,12 +27,17 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
     if (file) onAttachPO(file)
   }
 
+  // Confirmed jobs price from the snapshot taken at confirm, so their cost
+  // doesn't move when component pricing changes.
   const windowsWithBOM = useMemo(() => {
     return (job.windows || []).map(win => {
       const recipe = productComponentsMap[win.product_id] || []
-      return { ...win, bom: calcWindowBOM(recipe, Number(win.width_mm), Number(win.drop_mm)) }
+      return {
+        ...win,
+        bom: calcWindowBOM(recipe, Number(win.width_mm), Number(win.drop_mm), job.price_snapshot || null),
+      }
     })
-  }, [job.windows, productComponentsMap])
+  }, [job.windows, productComponentsMap, job.price_snapshot])
 
   const jobSummary = useMemo(() => calcJobSummary(windowsWithBOM), [windowsWithBOM])
   const jobTotal   = jobSummary.reduce((s, r) => s + r.total_cost, 0)
@@ -64,6 +71,24 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
       await exportTrackLabels(job, windowsWithBOM)
     } finally {
       setLabeling(null)
+    }
+  }
+
+  // Parts for the parts-bag label — seed from the job BOM; accessories (pack) ticked by default
+  const partsInitial = useMemo(() => jobSummary.map(r => ({
+    key:      `${r.component.id}_${r.colour_variant?.suffix || ''}`,
+    name:     r.component.name + (r.colour_variant?.name ? ` (${r.colour_variant.name})` : ''),
+    qty:      fmtQty(r.total_qty),
+    included: r.component?.order_type === 'pack',
+  })), [jobSummary])
+
+  const handlePrintParts = async (selected) => {
+    setLabeling('parts')
+    try {
+      await exportPartsLabels(job, selected)
+    } finally {
+      setLabeling(null)
+      setPartsOpen(false)
     }
   }
 
@@ -114,30 +139,6 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
               display: 'flex', alignItems: 'center', gap: 6,
             }}>
               📦 Deduct Stock
-            </button>
-          )}
-          {isInProgress && hasWindows && (
-            <button onClick={handlePackagingLabels} disabled={!!labeling} title="Packing label (62×40mm)" style={{
-              padding: '6px 10px', fontSize: 13, fontWeight: 600,
-              background: 'rgba(255,255,255,0.15)', color: '#fff',
-              border: '1px solid rgba(255,255,255,0.3)',
-              borderRadius: 8, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: 5,
-              opacity: labeling ? 0.6 : 1,
-            }}>
-              🏷️ {labeling === 'pack' ? '…' : 'Packing Label'}
-            </button>
-          )}
-          {isInProgress && hasWindows && (
-            <button onClick={handleTrackLabels} disabled={!!labeling} title="Product label — track/tube (62×15mm)" style={{
-              padding: '6px 10px', fontSize: 13, fontWeight: 600,
-              background: 'rgba(255,255,255,0.15)', color: '#fff',
-              border: '1px solid rgba(255,255,255,0.3)',
-              borderRadius: 8, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: 5,
-              opacity: labeling ? 0.6 : 1,
-            }}>
-              🏷️ {labeling === 'track' ? '…' : 'Product Label'}
             </button>
           )}
           {/* Completed → locked, allow reopen */}
@@ -306,6 +307,26 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
                 </button>
               )}
 
+              {isInProgress && hasWindows && (
+                <div style={{ marginTop: 12 }}>
+                  <div className="section-title" style={{ padding: '0 2px 8px' }}>Print labels</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button className="btn btn-secondary" style={{ flex: '1 1 30%' }}
+                      onClick={handlePackagingLabels} disabled={!!labeling} title="Packing label (62×40mm), one per track">
+                      🏷️ {labeling === 'pack' ? '…' : 'Packing'}
+                    </button>
+                    <button className="btn btn-secondary" style={{ flex: '1 1 30%' }}
+                      onClick={handleTrackLabels} disabled={!!labeling} title="Product label (62×15mm), one per track">
+                      🏷️ {labeling === 'track' ? '…' : 'Product'}
+                    </button>
+                    <button className="btn btn-secondary" style={{ flex: '1 1 30%' }}
+                      onClick={() => setPartsOpen(true)} disabled={!!labeling} title="Parts-list label (62×40mm) — pick parts + quantities">
+                      🏷️ {labeling === 'parts' ? '…' : 'Parts'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {isInProgress && (
                 <button
                   className="btn btn-block"
@@ -352,6 +373,7 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
                     <div style={{ textAlign: 'right', opacity: 0.7, fontSize: 13 }}>
                       <div>{(job.windows || []).length} window{(job.windows||[]).length !== 1 ? 's' : ''}</div>
                       <div>{jobSummary.length} components</div>
+                      {job.price_snapshot && <div style={{ marginTop: 2 }}>🔒 Pricing locked</div>}
                     </div>
                   </div>
 
@@ -411,6 +433,14 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
           )}
         </div>
       </div>
+
+      <PartsListModal
+        open={partsOpen}
+        parts={partsInitial}
+        onClose={() => setPartsOpen(false)}
+        onPrint={handlePrintParts}
+        printing={labeling === 'parts'}
+      />
     </>
   )
 }

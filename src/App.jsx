@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { supabase } from './lib/supabase'
 
 import ComponentLibrary from './pages/ComponentLibrary'
@@ -20,8 +20,8 @@ import SupplierModal         from './components/SupplierModal'
 import AddWindowModal        from './components/AddWindowModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
-import { buildStockMap, stockKey, checkLowStock } from './lib/stockEngine'
-import { calcWindowBOM, calcJobSummary } from './lib/bomEngine'
+import { buildStockMap, stockKey, checkLowStock, getStock } from './lib/stockEngine'
+import { calcWindowBOM, calcJobSummary, buildPriceSnapshot } from './lib/bomEngine'
 import './index.css'
 
 const NAV_TABS = [
@@ -93,10 +93,28 @@ export default function App() {
     if (!currentJob) return []
     const windowsWithBOM = (currentJob.windows || []).map(win => ({
       ...win,
-      bom: calcWindowBOM(productComponentsMap[win.product_id] || [], Number(win.width_mm), Number(win.drop_mm))
+      bom: calcWindowBOM(
+        productComponentsMap[win.product_id] || [],
+        Number(win.width_mm), Number(win.drop_mm),
+        currentJob.price_snapshot || null,
+      )
     }))
     return calcJobSummary(windowsWithBOM)
   }, [currentJob, productComponentsMap])
+
+  // How many products use each component — so deleting one shows what it affects
+  const componentUsage = useMemo(() => {
+    const map = {}
+    Object.entries(productComponentsMap).forEach(([productId, lines]) => {
+      const product = products.find(p => p.id === productId)
+      lines.forEach(pc => {
+        if (!map[pc.component_id]) map[pc.component_id] = []
+        const name = product?.name || 'Unknown product'
+        if (!map[pc.component_id].includes(name)) map[pc.component_id].push(name)
+      })
+    })
+    return map
+  }, [productComponentsMap, products])
 
   // ==== LOAD ALL DATA ====
 
@@ -153,6 +171,8 @@ export default function App() {
   }, [])
 
   useEffect(() => { loadAll() }, [loadAll])
+
+  const backfilledRef = useRef(false)
 
   // ==== SUPPLIERS ====
 
@@ -237,8 +257,12 @@ export default function App() {
   }
 
   const handleCompDelete = async (id) => {
-    const comp = components.find(c => c.id === id)
-    if (!window.confirm(`Delete "${comp?.name}"?\n\nThis cannot be undone.`)) return
+    const comp  = components.find(c => c.id === id)
+    const usedIn = componentUsage[id] || []
+    const warning = usedIn.length > 0
+      ? `Delete "${comp?.name}"?\n\nIt will be removed from ${usedIn.length} product recipe${usedIn.length !== 1 ? 's' : ''}:\n· ${usedIn.join('\n· ')}\n\nThis cannot be undone.`
+      : `Delete "${comp?.name}"?\n\nIt isn't used by any product.\n\nThis cannot be undone.`
+    if (!window.confirm(warning)) return
     const { error } = await supabase.from('components').delete().eq('id', id)
     if (error) showToast('Delete failed — component may be used in a product', 'error')
     else { showToast('Deleted', 'success'); setCompModalOpen(false); setEditingComp(null); await loadAll() }
@@ -295,6 +319,7 @@ export default function App() {
         formula_buffer:    pc.formula_buffer,
         formula_divisor:   pc.formula_divisor,
         formula_interval:  pc.formula_interval || 500,
+        width_qty:         pc.width_qty || null,
         colour_variant:    pc.colour_variant || null,
         sort_order:        pc.sort_order,
       }))
@@ -317,6 +342,7 @@ export default function App() {
       formula_buffer:    Number(formData.formula_buffer) || 0,
       formula_divisor:   Number(formData.formula_divisor) || 1,
       formula_interval:  Number(formData.formula_interval) || 500,
+      width_qty:         formData.width_qty || null,
       colour_variant:    formData.colour_variant || null,
       sort_order:        sortOrder,
     })
@@ -333,6 +359,7 @@ export default function App() {
       formula_buffer:    Number(formData.formula_buffer) || 0,
       formula_divisor:   Number(formData.formula_divisor) || 1,
       formula_interval:  Number(formData.formula_interval) || 500,
+      width_qty:         formData.width_qty || null,
       colour_variant:    formData.colour_variant || null,
     }).eq('id', id)
     showToast('Updated ✓', 'success')
@@ -438,15 +465,57 @@ export default function App() {
     showToast('Job deleted')
   }
 
+  // Compute the price snapshot + locked total for a job from current recipes
+  const computeJobLock = useCallback((job) => {
+    const windowsWithBOM = (job.windows || []).map(win => ({
+      ...win,
+      bom: calcWindowBOM(productComponentsMap[win.product_id] || [], Number(win.width_mm), Number(win.drop_mm))
+    }))
+    const snapshot = buildPriceSnapshot(windowsWithBOM)
+    const total    = calcJobSummary(windowsWithBOM).reduce((s, r) => s + r.total_cost, 0)
+    return { price_snapshot: snapshot, locked_total: Math.round(total * 100) / 100 }
+  }, [productComponentsMap])
+
+  // One-off: jobs confirmed before pricing was locked have no snapshot, so their
+  // value would keep moving with component costs. Lock them at current prices.
+  useEffect(() => {
+    if (loading || backfilledRef.current) return
+    if (jobs.length === 0 || Object.keys(productComponentsMap).length === 0) return
+    const stale = jobs.filter(j =>
+      (j.status === 'in_progress' || j.status === 'completed') && !j.price_snapshot
+    )
+    backfilledRef.current = true
+    if (stale.length === 0) return
+    ;(async () => {
+      let saved = 0
+      let firstError = null
+      for (const j of stale) {
+        const { error } = await supabase.from('mfg_jobs').update(computeJobLock(j)).eq('id', j.id)
+        if (error) { firstError = firstError || error; break }
+        saved++
+      }
+      if (firstError) {
+        // Don't fake a locked state in the UI when nothing was persisted
+        showToast(`Couldn't lock pricing: ${firstError.message}`, 'error')
+        return
+      }
+      setJobs(prev => prev.map(j => {
+        const hit = stale.find(s => s.id === j.id)
+        return hit ? { ...j, ...computeJobLock(hit) } : j
+      }))
+      showToast(`Locked pricing on ${saved} existing job${saved !== 1 ? 's' : ''}`, 'success')
+    })()
+  }, [loading, jobs, productComponentsMap, computeJobLock, showToast])
+
   const handleJobConfirm = async () => {
-    if (!window.confirm('Confirm this job? The BOM will be locked.')) return
-    const updates = { status: 'in_progress' }
+    if (!window.confirm('Confirm this job? The BOM and its pricing will be locked.')) return
+    const updates = { status: 'in_progress', ...computeJobLock(currentJob) }
     // Default the manufacture date to today if not already set
     if (!currentJob.date_manufacture) {
       updates.date_manufacture = new Date().toISOString().slice(0, 10)
     }
     await handleJobUpdate(updates)
-    showToast('Job confirmed ✓', 'success')
+    showToast('Job confirmed — pricing locked ✓', 'success')
   }
 
   const handleJobComplete = async () => {
@@ -886,6 +955,8 @@ export default function App() {
       <ComponentLibrary
         components={components}
         suppliers={suppliers}
+        componentUsage={componentUsage}
+        stockMap={stockMap}
         onEdit={(c) => { setEditingComp(c); setCompModalOpen(true) }}
         onAdd={() => { setEditingComp(null); setCompModalOpen(true) }}
       />

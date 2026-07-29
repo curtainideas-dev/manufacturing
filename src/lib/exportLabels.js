@@ -1,16 +1,19 @@
 /**
  * exportLabels
  *
- * Two thermal-label PDFs per job, one page per window (track / blind):
- *   - exportPackagingLabels: 62 x 40 mm, goes on the packaging. Logo, item i/n,
- *     customer, job #, window, product, W×H, DOM/DOI.
- *   - exportTrackLabels: 62 x 15 mm strip, goes on the track/tube itself.
+ * Thermal-label PDFs for a job:
+ *   - exportPackagingLabels: 62 x 40 mm, one per window, goes on the packaging.
+ *     Logo, item i/n, customer, job #, window, product, W×H, DOM/DOI.
+ *   - exportTrackLabels: 62 x 15 mm strip, one per window, on the track/tube.
  *     Job # and window as the main lines; item i/n + year of manufacture
  *     in fine print.
+ *   - exportPartsLabels: 62 x 40 mm, for a separately-packaged parts bag. Logo,
+ *     customer + job #, then a selected list of parts and quantities. Splits
+ *     across multiple stickers when the list is long.
  *
- * So each window yields 2 labels. Both print on a 62 mm continuous roll
- * (Brother QL-700 / QL-800 — black-only direct thermal). jsPDF is loaded from
- * CDN at runtime (matches src/lib/exportPDF.js — no build-time dependency).
+ * All print on a 62 mm continuous roll (Brother QL-700 / QL-800 — black-only
+ * direct thermal). jsPDF is loaded from CDN at runtime (matches
+ * src/lib/exportPDF.js — no build-time dependency).
  */
 
 // ---- Sizes (mm) ----
@@ -206,4 +209,75 @@ export async function exportTrackLabels(job, windowsWithBOM) {
   }
 
   doc.save(saveName('TrackLabels', job))
+}
+
+// Draw the logo header (+ optional page counter) and return the header bottom Y.
+function drawLogoHeader(doc, logo, PW, pageLabel) {
+  const M = 3
+  let headerBottom
+  if (logo && logo.aspect) {
+    const fmt   = logo.url.includes('image/jpeg') ? 'JPEG' : 'PNG'
+    const logoH = Math.min(LOGO_MAX_H, LOGO_MAX_W / logo.aspect)
+    const logoW = logoH * logo.aspect
+    doc.addImage(logo.url, fmt, M, SAFE, logoW, logoH)
+    headerBottom = SAFE + Math.max(logoH, 5.5)
+  } else if (logo) {
+    doc.addImage(logo.url, logo.url.includes('image/jpeg') ? 'JPEG' : 'PNG', M, SAFE, 0, LOGO_MAX_H)
+    headerBottom = SAFE + LOGO_MAX_H
+  } else {
+    doc.setTextColor(0, 0, 0)
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11)
+    doc.text('Curtain Ideas', M, SAFE + 4)
+    headerBottom = SAFE + 6
+  }
+  if (pageLabel) {
+    doc.setTextColor(0, 0, 0)
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11)
+    doc.text(pageLabel, PW - M, SAFE + 3.5, { align: 'right' })
+  }
+  doc.setDrawColor(0, 0, 0); doc.setLineWidth(0.2)
+  doc.line(M, headerBottom, PW - M, headerBottom)
+  return headerBottom
+}
+
+// ===== Parts-list label — 62 x 40 mm, split across stickers when long =====
+// parts: [{ name, qty }]
+export async function exportPartsLabels(job, parts) {
+  const jsPDF = await loadJsPDF()
+  const logo  = LOGO_DATA_URL ? { url: LOGO_DATA_URL, aspect: null } : await loadMonoLogo()
+
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [PKG_W, PKG_H] })
+  const PW = doc.internal.pageSize.getWidth()
+  const M  = 3
+  const textW = PW - M * 2
+
+  const list  = (parts || []).filter(p => p && p.name && Number(p.qty) > 0)
+  const ROWS_PER_PAGE = 6
+  const pages = Math.max(1, Math.ceil(list.length / ROWS_PER_PAGE))
+
+  for (let pg = 0; pg < pages; pg++) {
+    if (pg > 0) doc.addPage([PKG_W, PKG_H], 'landscape')
+    const headerBottom = drawLogoHeader(doc, logo, PW, pages > 1 ? `${pg + 1}/${pages}` : null)
+
+    // Identity line — customer + job #
+    let y = headerBottom + 4
+    doc.setTextColor(0, 0, 0)
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9)
+    const ident = `${job.job_number ? `Job #${job.job_number}` : 'No job #'}  ·  ${job.customer_name || 'Untitled'}`
+    doc.text(fitText(doc, ident, textW), M, y)
+    y += 4.8
+
+    // Parts rows — name (left) + qty (right)
+    const qtyX  = PW - M
+    const nameW = textW - 12
+    for (const p of list.slice(pg * ROWS_PER_PAGE, (pg + 1) * ROWS_PER_PAGE)) {
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8)
+      doc.text(fitText(doc, String(p.name), nameW), M, y)
+      doc.setFont('helvetica', 'bold')
+      doc.text(String(p.qty), qtyX, y, { align: 'right' })
+      y += 3.2
+    }
+  }
+
+  doc.save(saveName('PartsLabels', job))
 }

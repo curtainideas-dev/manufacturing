@@ -97,3 +97,42 @@ export function buildStockMap(stockRows) {
   })
   return map
 }
+
+/**
+ * Look up a component's stock row, tolerating colour-key drift.
+ *
+ * Stock rows are keyed by component + colour suffix, so adding a colour variant
+ * to a component that already had stock would otherwise orphan the existing row
+ * (it was saved with no colour) and the holding would appear to vanish. When a
+ * component has exactly one variant there is no ambiguity, so fall back to the
+ * colourless row. Stock always follows the component id — never its name.
+ */
+export function getStock(stockMap, component, colourVariant) {
+  if (!component) return undefined
+  const exact = stockMap[stockKey(component.id, colourVariant)]
+  if (exact) return exact
+  const variants = component.colour_variants || []
+  if (colourVariant && variants.length <= 1) {
+    return stockMap[stockKey(component.id, null)]
+  }
+  return undefined
+}
+
+/**
+ * Value of one stock holding at the discounted (what-you-pay) unit cost.
+ * Bars are valued on total available length — full bars plus offcuts.
+ */
+export function stockValue(component, stock, offcutLengthMm = 0) {
+  const base     = Number(component?.unit_cost) || 0
+  const discount = Number(component?.discount) || 0
+  const unitCost = base * (1 - discount / 100)
+  const qty      = Number(stock?.qty_on_hand) || 0
+
+  if (component?.order_type === 'bar') {
+    // unit_cost is per metre for bar components
+    const barLenMm  = Number(component.bar_length_mm) || 6000
+    const totalMm   = qty * barLenMm + (Number(offcutLengthMm) || 0)
+    return (totalMm / 1000) * unitCost
+  }
+  return qty * unitCost
+}

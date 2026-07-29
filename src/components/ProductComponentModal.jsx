@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { XIcon, TrashIcon } from './Icons'
-import { formulaDescription } from '../lib/bomEngine'
+import { formulaDescription, GRID_WIDTHS } from '../lib/bomEngine'
 
 const COST_TYPES = [
   { val: 'fixed',            label: 'Fixed',     note: 'Same qty always' },
@@ -10,6 +10,7 @@ const COST_TYPES = [
   { val: 'per_interval',     label: 'Interval',  note: 'Base + per Xmm' },
   { val: 'perimeter',        label: 'Perimeter', note: '2×(W+D)' },
   { val: 'labour',           label: 'Labour',    note: 'Hours per unit' },
+  { val: 'fixed_per_width',  label: 'Per width', note: 'Qty per width band' },
 ]
 
 const DEFAULT = {
@@ -20,6 +21,7 @@ const DEFAULT = {
   formula_divisor: 75,
   formula_interval: 500,
   colour_variant: null,
+  width_qty: {},
 }
 
 export default function ProductComponentModal({
@@ -33,7 +35,9 @@ export default function ProductComponentModal({
 
   useEffect(() => {
     if (open) {
-      const initial = productComponent ? { ...DEFAULT, ...productComponent } : DEFAULT
+      const initial = productComponent
+        ? { ...DEFAULT, ...productComponent, width_qty: productComponent.width_qty || {} }
+        : DEFAULT
       setForm(initial)
       initialForm.current = initial
       setDirty(false)
@@ -120,8 +124,20 @@ export default function ProductComponentModal({
       case 'labour':
         return <NumField id="formula_buffer" label="Hours per unit" step="0.25"
           hint="Labour hours per unit produced" />
+      // fixed_per_width renders its own grid below (kept outside this inline
+      // component so the inputs don't lose focus on every keystroke)
       default: return null
     }
+  }
+
+  const setWidthQty = (w, v) => {
+    setForm(p => {
+      const next = { ...(p.width_qty || {}) }
+      if (v === '' || Number(v) === 0) delete next[w]
+      else next[w] = Number(v)
+      return { ...p, width_qty: next }
+    })
+    setDirty(true)
   }
 
   return (
@@ -283,6 +299,38 @@ export default function ProductComponentModal({
               <div className="formula-box">
                 <div className="formula-box-title">Formula Settings</div>
                 <FormulaFields />
+
+                {/* Qty per width band — inline (not inside FormulaFields) so
+                    the inputs keep focus while typing */}
+                {form.cost_type === 'fixed_per_width' && (
+                  <>
+                    <div style={{ fontSize: 11, color: 'var(--warm-300)', marginBottom: 10 }}>
+                      Enter the quantity for each width band. A window uses the first band it
+                      fits into — e.g. a 1,300mm track takes the 1,500mm figure. Blank = 0.
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                      {GRID_WIDTHS.map(w => (
+                        <div key={w} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{
+                            fontSize: 11, color: 'var(--warm-300)', width: 46,
+                            textAlign: 'right', flexShrink: 0, fontVariantNumeric: 'tabular-nums',
+                          }}>
+                            ≤{w.toLocaleString()}
+                          </span>
+                          <input
+                            className="field-input"
+                            type="number" step="1" min="0"
+                            value={form.width_qty?.[w] ?? ''}
+                            onChange={e => setWidthQty(w, e.target.value)}
+                            placeholder="0"
+                            style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right' }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
                 {preview && <div className="formula-preview">{preview}</div>}
               </div>
             </>

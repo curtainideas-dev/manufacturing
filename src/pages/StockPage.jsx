@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { PlusIcon, ChevronRightIcon } from '../components/Icons'
-import { stockKey } from '../lib/stockEngine'
+import { getStock, stockValue } from '../lib/stockEngine'
+import { exportStockTakeCSV } from '../lib/exportCSV'
 
 const fmtQty = n => {
   const num = Number(n)
@@ -8,6 +9,8 @@ const fmtQty = n => {
 }
 
 const fmt = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+
+const fmtMoney = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 export default function StockPage({
   components, stockMap, stockBars,
@@ -32,6 +35,34 @@ export default function StockPage({
     return [{ component: c, colour_variant: null }]
   }
 
+  // Total value of stock on hand, at the discounted (what-you-pay) unit cost.
+  // Bars count full bars plus any offcut lengths still available.
+  const value = useMemo(() => {
+    const sumFor = (list) => list.reduce((total, c) => {
+      const variants = (c.colour_variants || [])
+      const rows = variants.length > 0
+        ? variants.map(v => ({ colour_variant: v }))
+        : [{ colour_variant: null }]
+      // Guard against a legacy colourless row being counted once per variant
+      const seen = new Set()
+      return total + rows.reduce((sub, row) => {
+        const stock = getStock(stockMap, c, row.colour_variant)
+        if (!stock || seen.has(stock.id)) return sub
+        seen.add(stock.id)
+        const offcutMm = c.order_type === 'bar'
+          ? stockBars
+              .filter(b => b.component_id === c.id && b.status === 'available' &&
+                (b.colour_variant?.suffix || null) === (row.colour_variant?.suffix || null))
+              .reduce((s, b) => s + (Number(b.length_mm) || 0), 0)
+          : 0
+        return sub + stockValue(c, stock, offcutMm)
+      }, 0)
+    }, 0)
+    const packs = sumFor(packComponents)
+    const bars  = sumFor(barComponents)
+    return { packs, bars, total: packs + bars }
+  }, [packComponents, barComponents, stockMap, stockBars])
+
   // Status dot based on qty vs minimum
   const StatusDot = ({ qty, minimum }) => {
     const min = Number(minimum) || 0
@@ -47,6 +78,20 @@ export default function StockPage({
     <>
       <div className="header">
         <div className="header-title">Stock</div>
+        <div className="header-actions">
+          <button
+            onClick={() => exportStockTakeCSV(components, stockMap, stockBars)}
+            title="Export stock-take sheet — expected vs actual, for counting"
+            style={{
+              padding: '6px 12px', fontSize: 13, fontWeight: 600,
+              background: 'rgba(255,255,255,0.15)', color: '#fff',
+              border: '1px solid rgba(255,255,255,0.3)',
+              borderRadius: 8, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+            ⬇ Stock Take CSV
+          </button>
+        </div>
       </div>
 
       <div className="tab-bar">
@@ -59,6 +104,26 @@ export default function StockPage({
       </div>
 
       <div className="scroll-area">
+        {/* Total value of stock on hand */}
+        <div style={{ padding: '12px 16px 0' }}>
+          <div style={{
+            background: 'var(--accent-dark)', color: '#fff',
+            borderRadius: 'var(--radius)', padding: '14px 18px',
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7, marginBottom: 4 }}>
+                Total Stock Value
+              </div>
+              <div style={{ fontSize: 26, fontWeight: 700 }}>${fmtMoney(value.total)}</div>
+            </div>
+            <div style={{ textAlign: 'right', opacity: 0.75, fontSize: 12, lineHeight: 1.6 }}>
+              <div>Components ${fmtMoney(value.packs)}</div>
+              <div>Tracks &amp; tubes ${fmtMoney(value.bars)}</div>
+            </div>
+          </div>
+        </div>
+
         <div style={{ padding: '12px 16px' }}>
           <input className="field-input" placeholder="Search..."
             value={search} onChange={e => setSearch(e.target.value)} style={{ fontSize: 14 }} />
@@ -79,8 +144,7 @@ export default function StockPage({
               <div key={c.id} style={{ marginBottom: 10 }}>
                 <div className="card">
                   {getRows(c).map((row, i) => {
-                    const key     = stockKey(c.id, row.colour_variant)
-                    const stock   = stockMap[key]
+                    const stock   = getStock(stockMap, c, row.colour_variant)
                     const qty     = Number(stock?.qty_on_hand) || 0
                     const minimum = Number(stock?.qty_minimum) || 0
                     return (
@@ -136,8 +200,7 @@ export default function StockPage({
             ) : filterComps(barComponents).map(c => (
               <div key={c.id} style={{ marginBottom: 20 }}>
                 {getRows(c).map((row, gi) => {
-                  const key      = stockKey(c.id, row.colour_variant)
-                  const stock    = stockMap[key]
+                  const stock    = getStock(stockMap, c, row.colour_variant)
                   const fullBars = Number(stock?.qty_on_hand) || 0
                   const barLenMm = Number(c.bar_length_mm) || 6000
                   const minimum  = Number(stock?.qty_minimum) || 0

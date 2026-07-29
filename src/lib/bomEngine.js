@@ -14,6 +14,8 @@
  *                      e.g. 2 brackets + 1 per 500mm
  *   perimeter        — 2×(width + drop) ± deduction
  *                      e.g. cord that loops through track and drops
+ *   fixed_per_width  — manual qty per width bucket (see GRID_WIDTHS)
+ *                      e.g. 2 brackets up to 1200mm, 3 up to 1500mm
  */
 
 export function calcQty(productComponent, widthMm, dropMm) {
@@ -64,6 +66,10 @@ export function calcQty(productComponent, widthMm, dropMm) {
       if (unit === 'metres') qty = qty / 1000
       break
 
+    case 'fixed_per_width':
+      qty = qtyForWidth(productComponent.width_qty, widthMm)
+      break
+
     default:
       qty = 0
   }
@@ -71,12 +77,58 @@ export function calcQty(productComponent, widthMm, dropMm) {
   return Math.max(0, Math.round(qty * 1000) / 1000)
 }
 
-export function calcWindowBOM(productComponents, widthMm, dropMm) {
+/**
+ * Look up the manual qty for a width from a { [gridWidth]: qty } map.
+ * Uses the first bucket the width fits into (<= that width); anything wider
+ * than the largest bucket falls back to the largest bucket's qty.
+ */
+export function qtyForWidth(widthQty, widthMm) {
+  if (!widthQty) return 0
+  const w = Number(widthMm) || 0
+  for (const gw of GRID_WIDTHS) {
+    if (w <= gw) return Number(widthQty[gw]) || 0
+  }
+  return Number(widthQty[GRID_WIDTHS[GRID_WIDTHS.length - 1]]) || 0
+}
+
+// Key used for snapshotted unit costs — component + colour variant.
+export function priceKey(componentId, colourVariant) {
+  return `${componentId}__${colourVariant?.suffix || ''}`
+}
+
+/**
+ * Snapshot the current discounted unit cost of every component in a job's
+ * recipes, so a confirmed job keeps the pricing it was confirmed at.
+ */
+export function buildPriceSnapshot(windowsWithBOM) {
+  const snap = {}
+  windowsWithBOM.forEach(win => {
+    (win.bom || []).forEach(line => {
+      const base     = Number(line.component?.unit_cost) || 0
+      const discount = Number(line.component?.discount) || 0
+      snap[priceKey(line.component_id, line.colour_variant)] = base * (1 - discount / 100)
+    })
+  })
+  return snap
+}
+
+/**
+ * Build the BOM lines for one window.
+ *
+ * `priceMap` is an optional snapshot of unit costs taken when the job was
+ * confirmed ({ "<componentId>__<suffix>": unitCost }). When a line is present
+ * in it that price wins, so a confirmed job's cost never moves as component
+ * pricing changes.
+ */
+export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = null) {
   return productComponents.map(pc => {
     const calculated_qty = calcQty(pc, widthMm, dropMm)
     const base_cost      = Number(pc.component?.unit_cost) || 0
     const discount       = Number(pc.component?.discount) || 0
-    const unit_cost      = base_cost * (1 - discount / 100)
+    const live_cost      = base_cost * (1 - discount / 100)
+    const snapKey        = priceKey(pc.component_id, pc.colour_variant)
+    const snapped        = priceMap && priceMap[snapKey] !== undefined ? Number(priceMap[snapKey]) : null
+    const unit_cost      = snapped !== null ? snapped : live_cost
     // Build the display P/N — base P/N + colour suffix if a colour is selected
     const basePn         = pc.component?.supplier_pn || ''
     const colourSuffix   = pc.colour_variant?.suffix || ''
@@ -158,6 +210,12 @@ export function formulaDescription(pc) {
     case 'labour':           return `${b}h per unit`
     case 'per_interval':     return `${b} base + 1 per ${iv}mm width`
     case 'perimeter':        return `2×(W+D)${d ? ` − ${d}mm` : ''}${b ? ` + ${b}mm` : ''}`
+    case 'fixed_per_width': {
+      const set = GRID_WIDTHS.filter(w => Number(pc.width_qty?.[w]) > 0)
+      if (set.length === 0) return 'qty per width — not set'
+      const first = set[0], last = set[set.length - 1]
+      return `${pc.width_qty[first]} up to ${first}mm … ${pc.width_qty[last]} up to ${last}mm`
+    }
     default: return ''
   }
 }

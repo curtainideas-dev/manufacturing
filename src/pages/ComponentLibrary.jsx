@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { PlusIcon, ChevronRightIcon } from '../components/Icons'
+import { exportComponentsCSV } from '../lib/exportCSV'
 
-export default function ComponentLibrary({ components, suppliers, onEdit, onAdd }) {
+export default function ComponentLibrary({ components, suppliers, componentUsage = {}, stockMap = {}, onEdit, onAdd }) {
   const [search, setSearch] = useState('')
 
   const getSupplierName = (c) => {
@@ -61,6 +62,11 @@ export default function ComponentLibrary({ components, suppliers, onEdit, onAdd 
             ? ` · ${Number(c.bar_length_mm).toLocaleString()}mm bars`
             : ''}
         </div>
+        <div style={{ fontSize: 11, marginTop: 3, color: (componentUsage[c.id]?.length || 0) > 0 ? 'var(--accent)' : 'var(--warm-300)' }}>
+          {(componentUsage[c.id]?.length || 0) > 0
+            ? `Used in ${componentUsage[c.id].length} product${componentUsage[c.id].length !== 1 ? 's' : ''}`
+            : 'Not used in any product'}
+        </div>
       </div>
       <div className="component-right">
         <div className="component-cost">${Number(c.unit_cost).toFixed(2)}</div>
@@ -81,6 +87,20 @@ export default function ComponentLibrary({ components, suppliers, onEdit, onAdd 
     <>
       <div className="header">
         <div className="header-title">Components</div>
+        <div className="header-actions">
+          <button
+            onClick={() => exportComponentsCSV(components, suppliers, stockMap)}
+            title="Export CSV — one row per colour, for a P-touch Editor database"
+            style={{
+              padding: '6px 12px', fontSize: 13, fontWeight: 600,
+              background: 'rgba(255,255,255,0.15)', color: '#fff',
+              border: '1px solid rgba(255,255,255,0.3)',
+              borderRadius: 8, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+            ⬇ Export CSV
+          </button>
+        </div>
       </div>
 
       <div className="scroll-area">
