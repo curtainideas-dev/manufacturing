@@ -10,15 +10,22 @@
  *   - exportPartsLabels: 62 x 40 mm, for a separately-packaged parts bag. Logo,
  *     customer + job #, then a selected list of parts and quantities. Splits
  *     across multiple stickers when the list is long.
+ *   - exportComponentLabels: 93 x 29 mm DK die-cut label, one per selected
+ *     stock component (or component + colour). Name is the largest element
+ *     (used to identify the part when picking), part number + colour below it
+ *     for reordering, supplier + min qty on the bottom row, and a QR code
+ *     (encoding the part number) on the right for future scanning.
  *
- * All print on a 62 mm continuous roll (Brother QL-700 / QL-800 — black-only
- * direct thermal). jsPDF is loaded from CDN at runtime (matches
+ * All print on a Brother QL-700 / QL-800 (black-only direct thermal). Most
+ * labels use the 62 mm continuous roll; component labels use a 93 x 29 mm DK
+ * die-cut roll. jsPDF is loaded from CDN at runtime (matches
  * src/lib/exportPDF.js — no build-time dependency).
  */
 
 // ---- Sizes (mm) ----
 const PKG_W = 62, PKG_H = 40   // packaging label
 const TRK_W = 62, TRK_H = 15   // track/tube label
+const CMP_W = 93, CMP_H = 29   // component stock label (DK die-cut)
 const BUSINESS_EMAIL = 'sales@curtainideas.com.au'
 const BUSINESS_WEB   = 'curtainideas.com.au'
 
@@ -43,6 +50,31 @@ const loadJsPDF = () => new Promise((resolve, reject) => {
   s.onerror = reject
   document.head.appendChild(s)
 })
+
+const loadQRCode = () => new Promise((resolve, reject) => {
+  if (window.qrcode) return resolve(window.qrcode)
+  const s = document.createElement('script')
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js'
+  s.onload = () => resolve(window.qrcode)
+  s.onerror = reject
+  document.head.appendChild(s)
+})
+
+// Draw a QR code as vector rects (crisp on a direct-thermal printer, no
+// canvas/PNG round-trip) at (x, y), sized size x size mm.
+function drawQR(doc, qrFactory, text, x, y, size) {
+  const qr = qrFactory(0, 'M')
+  qr.addData(String(text ?? ''))
+  qr.make()
+  const count = qr.getModuleCount()
+  const cell  = size / count
+  doc.setFillColor(0, 0, 0)
+  for (let r = 0; r < count; r++) {
+    for (let c = 0; c < count; c++) {
+      if (qr.isDark(r, c)) doc.rect(x + c * cell, y + r * cell, cell, cell, 'F')
+    }
+  }
+}
 
 // Load LOGO_URL and convert it to a black silhouette on a transparent
 // background (any non-white/opaque pixel → black). Returns { url, aspect } or null.
@@ -280,4 +312,60 @@ export async function exportPartsLabels(job, parts) {
   }
 
   doc.save(saveName('PartsLabels', job))
+}
+
+// ===== Component stock label — 93 x 29 mm DK die-cut =====
+// items: [{ name, partNumber, colour, supplier, minQty, unit }]
+// Name is the largest element (used to identify the part when picking).
+// Part number + colour sit below it for reordering, supplier + min qty on
+// the bottom row, and a QR code (encoding the part number) on the right.
+export async function exportComponentLabels(items) {
+  const jsPDF  = await loadJsPDF()
+  const qrcode = await loadQRCode()
+
+  const list = (items || []).filter(it => it && it.name)
+  if (list.length === 0) return
+
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [CMP_W, CMP_H] })
+  const PW = doc.internal.pageSize.getWidth()
+  const M  = 3
+  const QR = 13
+  const qrX = PW - M - QR
+  const qrY = (CMP_H - QR) / 2
+  const textW = qrX - M - 3   // left column width — 3mm gap before the QR
+
+  for (let i = 0; i < list.length; i++) {
+    if (i > 0) doc.addPage([CMP_W, CMP_H], 'landscape')
+    const it = list[i]
+    doc.setTextColor(0, 0, 0)
+
+    // Part name — biggest element on the label, this is what a picker scans for
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(16)
+    doc.text(fitText(doc, it.name, textW), M, 8)
+
+    doc.setDrawColor(0, 0, 0); doc.setLineWidth(0.2)
+    doc.line(M, 10, M + textW, 10)
+
+    // Part number — for reordering, secondary in size, monospace
+    doc.setFont('courier', 'bold'); doc.setFontSize(12)
+    doc.text(fitText(doc, it.partNumber || '—', textW), M, 15.5)
+
+    if (it.colour) {
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9)
+      doc.text(fitText(doc, it.colour, textW), M, 20)
+    }
+
+    // Supplier (left) + min qty (right)
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8)
+    const minLabel = `Min ${it.minQty ?? 0} ${it.unit || ''}`.trim()
+    const minW = doc.getTextWidth(minLabel)
+    doc.text(fitText(doc, it.supplier || '—', textW - minW - 4), M, 24)
+    doc.setFont('helvetica', 'bold')
+    doc.text(minLabel, M + textW, 24, { align: 'right' })
+
+    drawQR(doc, qrcode, it.partNumber || it.name, qrX, qrY, QR)
+  }
+
+  const date = new Date().toISOString().slice(0, 10)
+  doc.save(`ComponentLabels_${date}.pdf`)
 }

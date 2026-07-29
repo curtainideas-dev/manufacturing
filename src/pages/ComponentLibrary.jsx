@@ -1,9 +1,23 @@
 import { useState } from 'react'
 import { PlusIcon, ChevronRightIcon } from '../components/Icons'
 import { exportComponentsCSV } from '../lib/exportCSV'
+import { exportComponentLabels } from '../lib/exportLabels'
+import ComponentLabelsModal from '../components/ComponentLabelsModal'
 
 export default function ComponentLibrary({ components, suppliers, componentUsage = {}, stockMap = {}, onEdit, onAdd }) {
   const [search, setSearch] = useState('')
+  const [showLabels, setShowLabels] = useState(false)
+  const [printing, setPrinting]     = useState(false)
+
+  const handlePrintLabels = async (items) => {
+    setPrinting(true)
+    try {
+      await exportComponentLabels(items)
+      setShowLabels(false)
+    } finally {
+      setPrinting(false)
+    }
+  }
 
   const getSupplierName = (c) => {
     if (c.supplier_id) {
@@ -89,6 +103,18 @@ export default function ComponentLibrary({ components, suppliers, componentUsage
         <div className="header-title">Components</div>
         <div className="header-actions">
           <button
+            onClick={() => setShowLabels(true)}
+            title="Print stock labels — 93 x 29mm DK, name + part no. + QR"
+            style={{
+              padding: '6px 12px', fontSize: 13, fontWeight: 600,
+              background: 'rgba(255,255,255,0.15)', color: '#fff',
+              border: '1px solid rgba(255,255,255,0.3)',
+              borderRadius: 8, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+            🏷 Print Labels
+          </button>
+          <button
             onClick={() => exportComponentsCSV(components, suppliers, stockMap)}
             title="Export CSV — one row per colour, for a P-touch Editor database"
             style={{
@@ -102,6 +128,16 @@ export default function ComponentLibrary({ components, suppliers, componentUsage
           </button>
         </div>
       </div>
+
+      <ComponentLabelsModal
+        open={showLabels}
+        components={components}
+        suppliers={suppliers}
+        stockMap={stockMap}
+        onClose={() => setShowLabels(false)}
+        onPrint={handlePrintLabels}
+        printing={printing}
+      />
 
       <div className="scroll-area">
         <div className="summary-grid">
