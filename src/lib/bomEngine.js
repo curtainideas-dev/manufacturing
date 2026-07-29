@@ -113,6 +113,23 @@ export function buildPriceSnapshot(windowsWithBOM) {
 }
 
 /**
+ * Snapshot the calculated quantities per window, so later edits to a recipe or
+ * a shared width schedule can't change what a confirmed job was costed at.
+ * Shape: { [windowId]: { [priceKey]: qty } }
+ */
+export function buildQtySnapshot(windowsWithBOM) {
+  const snap = {}
+  windowsWithBOM.forEach(win => {
+    const perWindow = {}
+    ;(win.bom || []).forEach(line => {
+      perWindow[priceKey(line.component_id, line.colour_variant)] = line.calculated_qty
+    })
+    snap[win.id] = perWindow
+  })
+  return snap
+}
+
+/**
  * Build the BOM lines for one window.
  *
  * `priceMap` is an optional snapshot of unit costs taken when the job was
@@ -120,9 +137,11 @@ export function buildPriceSnapshot(windowsWithBOM) {
  * in it that price wins, so a confirmed job's cost never moves as component
  * pricing changes.
  */
-export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = null) {
+export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = null, qtyMap = null) {
   return productComponents.map(pc => {
-    const calculated_qty = calcQty(pc, widthMm, dropMm)
+    const snapKeyQty     = priceKey(pc.component_id, pc.colour_variant)
+    const frozenQty      = qtyMap && qtyMap[snapKeyQty] !== undefined ? Number(qtyMap[snapKeyQty]) : null
+    const calculated_qty = frozenQty !== null ? frozenQty : calcQty(pc, widthMm, dropMm)
     const base_cost      = Number(pc.component?.unit_cost) || 0
     const discount       = Number(pc.component?.discount) || 0
     const live_cost      = base_cost * (1 - discount / 100)

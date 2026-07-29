@@ -34,10 +34,14 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
       const recipe = productComponentsMap[win.product_id] || []
       return {
         ...win,
-        bom: calcWindowBOM(recipe, Number(win.width_mm), Number(win.drop_mm), job.price_snapshot || null),
+        bom: calcWindowBOM(
+          recipe, Number(win.width_mm), Number(win.drop_mm),
+          job.price_snapshot || null,
+          job.qty_snapshot?.[win.id] || null,
+        ),
       }
     })
-  }, [job.windows, productComponentsMap, job.price_snapshot])
+  }, [job.windows, productComponentsMap, job.price_snapshot, job.qty_snapshot])
 
   const jobSummary = useMemo(() => calcJobSummary(windowsWithBOM), [windowsWithBOM])
   const jobTotal   = jobSummary.reduce((s, r) => s + r.total_cost, 0)

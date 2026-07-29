@@ -12,6 +12,7 @@ const COST_TYPE_LABELS = {
 
 export default function ProductDetail({
   product, productComponents, allComponents, suppliers = [],
+  widthSchedules = [], onSaveSchedule, onDeleteSchedule,
   onBack, onUpdateProduct, onAddComponent, onUpdateComponent,
   onRemoveComponent, onDuplicate, onDeleteProduct, saving,
 }) {
@@ -225,6 +226,9 @@ export default function ProductDetail({
         productComponent={null}
         allComponents={allComponents}
         suppliers={suppliers}
+        widthSchedules={widthSchedules}
+        onSaveSchedule={onSaveSchedule}
+        onDeleteSchedule={onDeleteSchedule}
         onClose={() => setAddOpen(false)}
         onSave={(data) => { onAddComponent(data); setAddOpen(false) }}
         saving={saving}
@@ -236,6 +240,9 @@ export default function ProductDetail({
           productComponent={editingPc}
           allComponents={allComponents}
           suppliers={suppliers}
+          widthSchedules={widthSchedules}
+          onSaveSchedule={onSaveSchedule}
+          onDeleteSchedule={onDeleteSchedule}
           onClose={() => setEditingPc(null)}
           onSave={(data) => { onUpdateComponent(editingPc.id, data); setEditingPc(null) }}
           onRemove={() => { onRemoveComponent(editingPc.id); setEditingPc(null) }}

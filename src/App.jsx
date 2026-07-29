@@ -21,7 +21,7 @@ import AddWindowModal        from './components/AddWindowModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
 import { buildStockMap, stockKey, checkLowStock, getStock } from './lib/stockEngine'
-import { calcWindowBOM, calcJobSummary, buildPriceSnapshot } from './lib/bomEngine'
+import { calcWindowBOM, calcJobSummary, buildPriceSnapshot, buildQtySnapshot } from './lib/bomEngine'
 import './index.css'
 
 const NAV_TABS = [
@@ -41,6 +41,7 @@ export default function App() {
   const [products, setProducts]                         = useState([])
   const [productComponentsMap, setProductComponentsMap] = useState({})
   const [jobs, setJobs]                                 = useState([])
+  const [widthSchedules, setWidthSchedules]             = useState([])
   const [loading, setLoading]                           = useState(true)
   const [poUploading, setPoUploading]                   = useState(false)
 
@@ -97,6 +98,7 @@ export default function App() {
         productComponentsMap[win.product_id] || [],
         Number(win.width_mm), Number(win.drop_mm),
         currentJob.price_snapshot || null,
+        currentJob.qty_snapshot?.[win.id] || null,
       )
     }))
     return calcJobSummary(windowsWithBOM)
@@ -118,9 +120,15 @@ export default function App() {
 
   // ==== LOAD ALL DATA ====
 
+  // Only the very first load shows the full-page spinner. Every mutation
+  // handler calls loadAll() again afterwards to refetch — that must not
+  // unmount the tree, or it silently closes whatever modal triggered it
+  // (state like an open ProductDetail edit modal lives below App).
+  const hasLoadedRef = useRef(false)
+
   const loadAll = useCallback(async () => {
-    setLoading(true)
-    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes] = await Promise.all([
+    if (!hasLoadedRef.current) setLoading(true)
+    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes] = await Promise.all([
       supabase.from('components').select('*').order('name'),
       supabase.from('suppliers').select('*').order('name'),
       supabase.from('products').select('*').order('name'),
@@ -128,7 +136,11 @@ export default function App() {
       supabase.from('mfg_jobs').select('*, mfg_windows(*)').order('created_at', { ascending: false }),
       supabase.from('stock').select('*'),
       supabase.from('stock_bars').select('*').eq('status', 'available').order('created_at'),
+      supabase.from('width_schedules').select('*').order('name'),
     ])
+
+    const schedules = wsRes.error ? [] : (wsRes.data || [])
+    if (!wsRes.error) setWidthSchedules(schedules)
 
     if (compRes.error) showToast('Failed to load components', 'error')
     else setComponents(compRes.data)
@@ -137,7 +149,13 @@ export default function App() {
     else setSuppliers(suppRes.data)
 
     if (!prodRes.error && !pcRes.error) {
-      const pcData = pcRes.data || []
+      // Resolve each line's linked width schedule into width_qty so the BOM
+      // engine reads one shape, and editing a schedule updates every product
+      // that points at it.
+      const scheduleById = Object.fromEntries(schedules.map(s => [s.id, s]))
+      const pcData = (pcRes.data || []).map(pc => pc.width_schedule_id
+        ? { ...pc, width_qty: scheduleById[pc.width_schedule_id]?.qty_map || {} }
+        : pc)
       const map = {}
       pcData.forEach(pc => {
         if (!map[pc.product_id]) map[pc.product_id] = []
@@ -168,6 +186,7 @@ export default function App() {
     }
 
     setLoading(false)
+    hasLoadedRef.current = true
   }, [])
 
   useEffect(() => { loadAll() }, [loadAll])
@@ -319,7 +338,7 @@ export default function App() {
         formula_buffer:    pc.formula_buffer,
         formula_divisor:   pc.formula_divisor,
         formula_interval:  pc.formula_interval || 500,
-        width_qty:         pc.width_qty || null,
+        width_schedule_id: pc.width_schedule_id || null,
         colour_variant:    pc.colour_variant || null,
         sort_order:        pc.sort_order,
       }))
@@ -329,6 +348,37 @@ export default function App() {
     showToast(`"${newName}" created ✓`, 'success')
     await loadAll()
     setProdSaving(false)
+  }
+
+  // ==== WIDTH SCHEDULES ====
+  // Named qty-per-width profiles (Standard / Heavy curtain / …) shared by
+  // recipe lines. Linked, not copied — editing one updates every product.
+
+  const handleSaveWidthSchedule = async ({ id, name, qty_map }) => {
+    const payload = { name: name.trim(), qty_map: qty_map || {} }
+    const result = id
+      ? await supabase.from('width_schedules').update(payload).eq('id', id).select().single()
+      : await supabase.from('width_schedules').insert(payload).select().single()
+    if (result.error) {
+      showToast(result.error.message || 'Failed to save schedule', 'error')
+      return null
+    }
+    showToast(id ? 'Schedule updated ✓' : 'Schedule created ✓', 'success')
+    await loadAll()
+    return result.data
+  }
+
+  const handleDeleteWidthSchedule = async (id) => {
+    const s = widthSchedules.find(x => x.id === id)
+    const inUse = Object.values(productComponentsMap)
+      .flat().filter(pc => pc.width_schedule_id === id).length
+    const msg = inUse > 0
+      ? `Delete "${s?.name}"?\n\nIt's used by ${inUse} product recipe line${inUse !== 1 ? 's' : ''}, which will fall back to zero quantities until you pick another schedule.`
+      : `Delete "${s?.name}"?`
+    if (!window.confirm(msg)) return
+    const { error } = await supabase.from('width_schedules').delete().eq('id', id)
+    if (error) showToast('Delete failed', 'error')
+    else { showToast('Schedule deleted'); await loadAll() }
   }
 
   const handleAddProductComponent = async (formData) => {
@@ -342,7 +392,7 @@ export default function App() {
       formula_buffer:    Number(formData.formula_buffer) || 0,
       formula_divisor:   Number(formData.formula_divisor) || 1,
       formula_interval:  Number(formData.formula_interval) || 500,
-      width_qty:         formData.width_qty || null,
+      width_schedule_id: formData.width_schedule_id || null,
       colour_variant:    formData.colour_variant || null,
       sort_order:        sortOrder,
     })
@@ -359,7 +409,7 @@ export default function App() {
       formula_buffer:    Number(formData.formula_buffer) || 0,
       formula_divisor:   Number(formData.formula_divisor) || 1,
       formula_interval:  Number(formData.formula_interval) || 500,
-      width_qty:         formData.width_qty || null,
+      width_schedule_id: formData.width_schedule_id || null,
       colour_variant:    formData.colour_variant || null,
     }).eq('id', id)
     showToast('Updated ✓', 'success')
@@ -471,9 +521,12 @@ export default function App() {
       ...win,
       bom: calcWindowBOM(productComponentsMap[win.product_id] || [], Number(win.width_mm), Number(win.drop_mm))
     }))
-    const snapshot = buildPriceSnapshot(windowsWithBOM)
-    const total    = calcJobSummary(windowsWithBOM).reduce((s, r) => s + r.total_cost, 0)
-    return { price_snapshot: snapshot, locked_total: Math.round(total * 100) / 100 }
+    const total = calcJobSummary(windowsWithBOM).reduce((s, r) => s + r.total_cost, 0)
+    return {
+      price_snapshot: buildPriceSnapshot(windowsWithBOM),
+      qty_snapshot:   buildQtySnapshot(windowsWithBOM),
+      locked_total:   Math.round(total * 100) / 100,
+    }
   }, [productComponentsMap])
 
   // One-off: jobs confirmed before pricing was locked have no snapshot, so their
@@ -482,7 +535,8 @@ export default function App() {
     if (loading || backfilledRef.current) return
     if (jobs.length === 0 || Object.keys(productComponentsMap).length === 0) return
     const stale = jobs.filter(j =>
-      (j.status === 'in_progress' || j.status === 'completed') && !j.price_snapshot
+      (j.status === 'in_progress' || j.status === 'completed') &&
+      (!j.price_snapshot || !j.qty_snapshot)
     )
     backfilledRef.current = true
     if (stale.length === 0) return
@@ -890,6 +944,9 @@ export default function App() {
           productComponents={productComponentsMap[currentProduct.id] || []}
           allComponents={components}
           suppliers={suppliers}
+          widthSchedules={widthSchedules}
+          onSaveSchedule={handleSaveWidthSchedule}
+          onDeleteSchedule={handleDeleteWidthSchedule}
           onBack={() => setCurrentProduct(null)}
           onUpdateProduct={handleProductUpdate}
           onAddComponent={handleAddProductComponent}

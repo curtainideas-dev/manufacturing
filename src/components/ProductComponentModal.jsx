@@ -21,11 +21,13 @@ const DEFAULT = {
   formula_divisor: 75,
   formula_interval: 500,
   colour_variant: null,
-  width_qty: {},
+  width_schedule_id: '',
 }
 
 export default function ProductComponentModal({
-  open, productComponent, allComponents, suppliers = [], onClose, onSave, onRemove, saving
+  open, productComponent, allComponents, suppliers = [],
+  widthSchedules = [], onSaveSchedule, onDeleteSchedule,
+  onClose, onSave, onRemove, saving
 }) {
   const [form, setForm]               = useState(DEFAULT)
   const [dirty, setDirty]             = useState(false)
@@ -33,18 +35,49 @@ export default function ProductComponentModal({
   const [selectedSupplierId, setSelectedSupplierId] = useState('')
   const initialForm                   = useRef(DEFAULT)
 
+  // Inline schedule editor
+  const [editingSchedule, setEditingSchedule] = useState(null) // { id, name, qty_map } | null
+  const [scheduleSaving, setScheduleSaving]   = useState(false)
+
   useEffect(() => {
     if (open) {
       const initial = productComponent
-        ? { ...DEFAULT, ...productComponent, width_qty: productComponent.width_qty || {} }
+        ? { ...DEFAULT, ...productComponent, width_schedule_id: productComponent.width_schedule_id || '' }
         : DEFAULT
       setForm(initial)
       initialForm.current = initial
       setDirty(false)
       setShowUnsaved(false)
       setSelectedSupplierId('')
+      setEditingSchedule(null)
     }
   }, [open, productComponent])
+
+  const selectedSchedule = widthSchedules.find(s => s.id === form.width_schedule_id)
+
+  const startNewSchedule  = () => setEditingSchedule({ id: null, name: '', qty_map: {} })
+  const startEditSchedule = () => selectedSchedule && setEditingSchedule({
+    id: selectedSchedule.id, name: selectedSchedule.name, qty_map: { ...(selectedSchedule.qty_map || {}) },
+  })
+
+  const setScheduleQty = (w, v) => setEditingSchedule(s => {
+    const next = { ...(s.qty_map || {}) }
+    if (v === '' || Number(v) === 0) delete next[w]
+    else next[w] = Number(v)
+    return { ...s, qty_map: next }
+  })
+
+  const saveSchedule = async () => {
+    if (!editingSchedule?.name.trim()) return
+    setScheduleSaving(true)
+    const saved = await onSaveSchedule(editingSchedule)
+    setScheduleSaving(false)
+    if (saved) {
+      setForm(p => ({ ...p, width_schedule_id: saved.id }))
+      setDirty(true)
+      setEditingSchedule(null)
+    }
+  }
 
   const set = (k, v) => { setForm(p => ({ ...p, [k]: v })); setDirty(true) }
 
@@ -130,15 +163,6 @@ export default function ProductComponentModal({
     }
   }
 
-  const setWidthQty = (w, v) => {
-    setForm(p => {
-      const next = { ...(p.width_qty || {}) }
-      if (v === '' || Number(v) === 0) delete next[w]
-      else next[w] = Number(v)
-      return { ...p, width_qty: next }
-    })
-    setDirty(true)
-  }
 
   return (
     <div className={`modal-overlay ${open ? 'open' : ''}`} onClick={handleOverlayClick}>
@@ -300,13 +324,66 @@ export default function ProductComponentModal({
                 <div className="formula-box-title">Formula Settings</div>
                 <FormulaFields />
 
-                {/* Qty per width band — inline (not inside FormulaFields) so
-                    the inputs keep focus while typing */}
-                {form.cost_type === 'fixed_per_width' && (
+                {/* Width schedule — a shared, named qty-per-width profile.
+                    Inline (not inside FormulaFields) so inputs keep focus. */}
+                {form.cost_type === 'fixed_per_width' && !editingSchedule && (
                   <>
-                    <div style={{ fontSize: 11, color: 'var(--warm-300)', marginBottom: 10 }}>
-                      Enter the quantity for each width band. A window uses the first band it
-                      fits into — e.g. a 1,300mm track takes the 1,500mm figure. Blank = 0.
+                    <div style={{ fontSize: 11, color: 'var(--warm-300)', marginBottom: 8 }}>
+                      Pick a saved schedule — e.g. Standard, Heavy curtain. A window uses the
+                      first width band it fits into. Editing a schedule updates every product
+                      that uses it.
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+                      <div style={{ flex: 1 }}>
+                        <select className="field-input" value={form.width_schedule_id}
+                          onChange={e => set('width_schedule_id', e.target.value)}
+                          style={{ fontSize: 13 }}>
+                          <option value="">— Select a schedule —</option>
+                          {widthSchedules.map(s => (
+                            <option key={s.id} value={s.id}>{s.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      {selectedSchedule && (
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={startEditSchedule}>
+                          Edit
+                        </button>
+                      )}
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={startNewSchedule}>
+                        + New
+                      </button>
+                    </div>
+
+                    {selectedSchedule && (
+                      <div style={{
+                        marginTop: 8, padding: '8px 10px', background: '#fff',
+                        border: '1px solid var(--warm-200)', borderRadius: 'var(--radius-sm)',
+                        fontSize: 11, color: 'var(--warm-300)', lineHeight: 1.7,
+                      }}>
+                        {GRID_WIDTHS.filter(w => Number(selectedSchedule.qty_map?.[w]) > 0).length === 0
+                          ? 'This schedule has no quantities set yet.'
+                          : GRID_WIDTHS.filter(w => Number(selectedSchedule.qty_map?.[w]) > 0)
+                              .map(w => `≤${w.toLocaleString()}: ${selectedSchedule.qty_map[w]}`).join('   ·   ')}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* Create / edit a schedule */}
+                {form.cost_type === 'fixed_per_width' && editingSchedule && (
+                  <div style={{
+                    padding: 12, background: '#fff', borderRadius: 'var(--radius-sm)',
+                    border: '1.5px solid var(--accent)',
+                  }}>
+                    <div className="field" style={{ marginBottom: 10 }}>
+                      <label className="field-label">Schedule name</label>
+                      <input className="field-input" autoFocus value={editingSchedule.name}
+                        onChange={e => setEditingSchedule(s => ({ ...s, name: e.target.value }))}
+                        placeholder="e.g. Heavy curtain" style={{ fontSize: 13 }} />
+                    </div>
+
+                    <div style={{ fontSize: 11, color: 'var(--warm-300)', marginBottom: 8 }}>
+                      Quantity for each width band. Blank = 0.
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
                       {GRID_WIDTHS.map(w => (
@@ -317,18 +394,38 @@ export default function ProductComponentModal({
                           }}>
                             ≤{w.toLocaleString()}
                           </span>
-                          <input
-                            className="field-input"
-                            type="number" step="1" min="0"
-                            value={form.width_qty?.[w] ?? ''}
-                            onChange={e => setWidthQty(w, e.target.value)}
+                          <input className="field-input" type="number" step="1" min="0"
+                            value={editingSchedule.qty_map?.[w] ?? ''}
+                            onChange={e => setScheduleQty(w, e.target.value)}
                             placeholder="0"
-                            style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right' }}
-                          />
+                            style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right' }} />
                         </div>
                       ))}
                     </div>
-                  </>
+
+                    <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                      <button type="button" className="btn btn-secondary btn-sm" style={{ flex: 1 }}
+                        onClick={() => setEditingSchedule(null)}>Cancel</button>
+                      {editingSchedule.id && (
+                        <button type="button" className="btn btn-danger btn-sm"
+                          onClick={async () => {
+                            await onDeleteSchedule(editingSchedule.id)
+                            setForm(p => ({ ...p, width_schedule_id: '' }))
+                            setEditingSchedule(null)
+                          }}>Delete</button>
+                      )}
+                      <button type="button" className="btn btn-primary btn-sm" style={{ flex: 2 }}
+                        onClick={saveSchedule}
+                        disabled={scheduleSaving || !editingSchedule.name.trim()}>
+                        {scheduleSaving ? 'Saving…' : editingSchedule.id ? 'Save schedule' : 'Create schedule'}
+                      </button>
+                    </div>
+                    {editingSchedule.id && (
+                      <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 8 }}>
+                        Saving updates every product using this schedule.
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 {preview && <div className="formula-preview">{preview}</div>}
