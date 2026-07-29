@@ -7,6 +7,7 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
   const [lineStatus,    setLineStatus]    = useState({})
   const [barSelections, setBarSelections] = useState({}) // key -> [barId, barId, ...] one per bin
   const [offcutData,    setOffcutData]    = useState({}) // key -> [{ add, label }, ...] one per bin
+  const [qtyOverride,   setQtyOverride]   = useState({}) // key -> qty typed by the picker
 
   useEffect(() => {
     if (!job?.id) return
@@ -18,6 +19,7 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
     setLineStatus(initial)
     setBarSelections({})
     setOffcutData({})
+    setQtyOverride({})
   }, [job?.id, jobMovements])
 
   if (!open || !jobSummary) return null
@@ -77,6 +79,16 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
     })
   }
 
+  // Quantity actually deducted for a line — the BOM figure unless overridden
+  const effectiveQty = (key, requiredQty) => {
+    const v = qtyOverride[key]
+    if (v === undefined || v === '') return requiredQty
+    const n = Number(v)
+    return isNaN(n) ? requiredQty : n
+  }
+
+  const setQty = (key, value) => setQtyOverride(prev => ({ ...prev, [key]: value }))
+
   const pickedCount   = Object.values(lineStatus).filter(s => s === 'picked').length
   const skippedCount  = Object.values(lineStatus).filter(s => s === 'skipped').length
   const doneCount     = Object.values(lineStatus).filter(s => s === 'done').length
@@ -110,12 +122,11 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
           })
           return { component: row.component, colour_variant: row.colour_variant, qty: row.total_qty, bars }
         }
-        // Pack component
-        const od  = offcutData[key]?.[0]
+        // Pack component — may be adjusted up or down by the picker
         return {
           component:      row.component,
           colour_variant: row.colour_variant,
-          qty:            row.total_qty,
+          qty:            effectiveQty(key, row.total_qty),
           bar_id:         null,
           offcut:         null,
         }
@@ -132,7 +143,9 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
     const isDone = status === 'done'
     const stock  = stockMap[key]
     const qtyOnHand  = Number(stock?.qty_on_hand) || 0
-    const sufficient = qtyOnHand >= row.total_qty
+    const deductQty  = effectiveQty(key, row.total_qty)
+    const sufficient = qtyOnHand >= deductQty
+    const adjusted   = deductQty !== row.total_qty
 
     const rowBg = isDone ? '#f0fdf4' : status === 'picked' ? 'var(--success-bg)' : status === 'skipped' ? 'var(--warm-100)' : '#fff'
 
@@ -167,6 +180,28 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
               )}
             </div>
           </div>
+
+          {/* Deduct qty — editable so extra parts can be taken */}
+          {!isDone && (
+            <div style={{ flexShrink: 0, textAlign: 'right' }}>
+              <label style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--warm-300)', display: 'block', marginBottom: 2 }}>
+                Deduct
+              </label>
+              <input
+                type="number" step="any" min="0"
+                value={qtyOverride[key] ?? fmtQty(row.total_qty)}
+                onChange={e => setQty(key, e.target.value)}
+                onFocus={e => e.target.select()}
+                className="field-input"
+                style={{
+                  width: 74, padding: '6px 8px', fontSize: 14, textAlign: 'right',
+                  fontWeight: 700,
+                  borderColor: adjusted ? 'var(--accent)' : undefined,
+                  background: adjusted ? 'var(--accent-bg)' : undefined,
+                }}
+              />
+            </div>
+          )}
 
           {!isDone && (
             <button onClick={() => skipLine(key)} style={{

@@ -7,8 +7,7 @@ const MAX_MB = 15
 
 const EMPTY = {
   customer_name: '',
-  customer_address: '',
-  po_reference: '',
+  job_number: '',
   date_invoice: '',
   delivery_requirement: '',
   submitted_by: '',
@@ -43,12 +42,11 @@ export default function SubmitPO() {
         // Only fill fields the user hasn't already typed into
         setForm(prev => ({
           ...prev,
-          customer_name:    prev.customer_name    || guess.customer_name    || '',
-          customer_address: prev.customer_address || guess.customer_address || '',
-          po_reference:     prev.po_reference      || guess.po_reference     || '',
-          contact_email:    prev.contact_email     || guess.email            || '',
+          customer_name: prev.customer_name || guess.customer_name || '',
+          job_number:    prev.job_number    || guess.po_reference  || '',
+          contact_email: prev.contact_email || guess.email         || '',
         }))
-        if (guess.customer_name || guess.customer_address || guess.po_reference) setAutoFilled(true)
+        if (guess.customer_name || guess.po_reference) setAutoFilled(true)
       }
     } catch {
       // Silent — extraction is a convenience, not required
@@ -87,10 +85,9 @@ export default function SubmitPO() {
         status:               'received',
         source:               'portal',
         customer_name:        form.customer_name.trim(),
-        customer_address:     form.customer_address.trim() || null,
-        po_reference:         form.po_reference.trim() || null,
+        job_number:           form.job_number.trim() || null,
         date_invoice:         form.date_invoice || null,
-        delivery_requirement: form.delivery_requirement.trim() || null,
+        delivery_requirement: form.delivery_requirement || null,
         submitted_by:         form.submitted_by.trim() || null,
         notes:                form.contact_email.trim() ? `Contact: ${form.contact_email.trim()}` : null,
         po_pdf_url:           uploaded.url,
@@ -183,16 +180,10 @@ export default function SubmitPO() {
               onChange={e => setField('customer_name', e.target.value)} placeholder="e.g. Johnson Residence" />
           </Field>
 
-          <Field label="Customer address">
-            <textarea className="field-input" rows={2} value={form.customer_address}
-              onChange={e => setField('customer_address', e.target.value)}
-              placeholder="Delivery / site address" style={{ resize: 'vertical' }} />
-          </Field>
-
           <div className="grid-2">
-            <Field label="PO reference">
-              <input className="field-input" value={form.po_reference}
-                onChange={e => setField('po_reference', e.target.value)} placeholder="Your PO number" />
+            <Field label="Job number">
+              <input className="field-input" value={form.job_number}
+                onChange={e => setField('job_number', e.target.value)} placeholder="Your PO / job number" />
             </Field>
             <Field label="Invoice date">
               <input className="field-input" type="date" value={form.date_invoice}
@@ -200,10 +191,9 @@ export default function SubmitPO() {
             </Field>
           </div>
 
-          <Field label="Delivery requirement">
-            <textarea className="field-input" rows={2} value={form.delivery_requirement}
-              onChange={e => setField('delivery_requirement', e.target.value)}
-              placeholder="e.g. Deliver to site by 15 Aug, or pickup" style={{ resize: 'vertical' }} />
+          <Field label="Delivery date">
+            <input className="field-input" type="date" value={form.delivery_requirement}
+              onChange={e => setField('delivery_requirement', e.target.value)} />
           </Field>
 
           <div className="grid-2" style={{ marginBottom: 0 }}>

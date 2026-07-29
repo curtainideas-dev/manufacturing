@@ -192,31 +192,7 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
               </div>
             </div>
 
-            {/* Customer address — captured at intake */}
-            <div className="field" style={{ marginBottom: 0, marginTop: 12 }}>
-              <label className="field-label">Customer Address</label>
-              <textarea className="field-input" rows={2} value={job.customer_address || ''} disabled={locked}
-                onChange={e => onUpdate({ customer_address: e.target.value })}
-                placeholder="Delivery / site address" style={{ resize: 'vertical' }} />
-            </div>
-
-            {/* PO reference + delivery requirement */}
-            <div className="grid-2" style={{ marginTop: 12 }}>
-              <div className="field" style={{ marginBottom: 0 }}>
-                <label className="field-label">PO Reference</label>
-                <input className="field-input" value={job.po_reference || ''} disabled={locked}
-                  onChange={e => onUpdate({ po_reference: e.target.value })}
-                  placeholder="Customer PO number" />
-              </div>
-              <div className="field" style={{ marginBottom: 0 }}>
-                <label className="field-label">Delivery Requirement</label>
-                <input className="field-input" value={job.delivery_requirement || ''} disabled={isCompleted}
-                  onChange={e => onUpdate({ delivery_requirement: e.target.value })}
-                  placeholder="e.g. deliver by 15 Aug" />
-              </div>
-            </div>
-
-            {/* Manufacture / invoice dates — printed on labels; editable until completed */}
+            {/* Dates — manufacture/invoice print on labels; all editable until completed */}
             <div className="grid-2" style={{ marginTop: 12 }}>
               <div className="field" style={{ marginBottom: 0 }}>
                 <label className="field-label">Date of Manufacture</label>
@@ -228,6 +204,12 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
                 <input className="field-input" type="date" value={job.date_invoice || ''} disabled={isCompleted}
                   onChange={e => onUpdate({ date_invoice: e.target.value || null })} />
               </div>
+            </div>
+
+            <div className="field" style={{ marginBottom: 0, marginTop: 12, maxWidth: '50%' }}>
+              <label className="field-label">Delivery Date</label>
+              <input className="field-input" type="date" value={job.delivery_requirement || ''} disabled={isCompleted}
+                onChange={e => onUpdate({ delivery_requirement: e.target.value || null })} />
             </div>
 
             {/* Customer PO document */}

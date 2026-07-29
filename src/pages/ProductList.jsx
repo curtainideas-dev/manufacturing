@@ -1,26 +1,6 @@
 import { useState, useMemo } from 'react'
 import { PlusIcon, ChevronRightIcon } from '../components/Icons'
-
-/**
- * Product names follow a pipe-delimited convention:
- *   TRACKTYPE | FIXING METHOD | OPENING DIRECTION | OPENING METHOD | RETURN LOCATION
- * The return location is omitted on products where it doesn't apply (centre
- * open, free hanging), so a missing segment is a valid value in its own right.
- */
-const SEGMENTS = [
-  { idx: 0, label: 'Track type' },
-  { idx: 1, label: 'Fixing' },
-  { idx: 2, label: 'Opening' },
-  { idx: 3, label: 'Method' },
-  { idx: 4, label: 'Return' },
-]
-
-const NONE = '__none__'   // product has no value for this segment
-
-export const parseProductName = (name) =>
-  String(name || '').split('|').map(s => s.trim())
-
-const segValue = (product, idx) => parseProductName(product.name)[idx] || ''
+import { SEGMENTS, NONE, parseProductName, matchesSegments, optionsForSegment } from '../lib/productName'
 
 export default function ProductList({ products, onOpen, onNew }) {
   // One selected value per segment; '' means "any"
@@ -32,35 +12,15 @@ export default function ProductList({ products, onOpen, onNew }) {
 
   const clearAll = () => { setFilters(['', '', '', '', '']); setSearch('') }
 
-  const matchesFilter = (p, f) =>
-    f.every((val, idx) => {
-      if (!val) return true
-      const v = segValue(p, idx)
-      return val === NONE ? v === '' : v === val
-    })
-
   const matchesSearch = (p) =>
     !search || String(p.name).toLowerCase().includes(search.toLowerCase())
 
   const filtered = useMemo(
-    () => products.filter(p => matchesFilter(p, filters) && matchesSearch(p)),
+    () => products.filter(p => matchesSegments(p, filters) && matchesSearch(p)),
     [products, filters, search]
   )
 
-  // Options for each dropdown, narrowed by the *other* active filters so you
-  // can't pick a combination that yields nothing.
-  const optionsFor = (idx) => {
-    const others = filters.map((v, i) => (i === idx ? '' : v))
-    const pool   = products.filter(p => matchesFilter(p, others) && matchesSearch(p))
-    const vals   = new Set()
-    let hasBlank = false
-    pool.forEach(p => {
-      const v = segValue(p, idx)
-      if (v) vals.add(v)
-      else hasBlank = true
-    })
-    return { values: [...vals].sort(), hasBlank }
-  }
+  const optionsFor = (idx) => optionsForSegment(products, filters, idx, matchesSearch)
 
   const activeCount = filters.filter(Boolean).length
 
