@@ -1,12 +1,17 @@
 import { useState, useEffect } from 'react'
 import { XIcon, CheckIcon } from './Icons'
-import { stockKey, findSuitableBars, packCuts } from '../lib/stockEngine'
+import { stockKey, findSuitableBars, packCuts, buildBarDeductions, countCutSlots } from '../lib/stockEngine'
 import { fmtQty } from '../lib/bomEngine'
 
 export default function DeductStockModal({ open, job, jobSummary, jobMovements, stockMap, stockBars, onClose, onDeduct, saving }) {
   const [lineStatus,    setLineStatus]    = useState({})
-  const [barSelections, setBarSelections] = useState({}) // key -> [barId, barId, ...] one per bin
-  const [offcutData,    setOffcutData]    = useState({}) // key -> [{ add, label }, ...] one per bin
+  // Each cut gets its own source — key -> { "<binIdx>.<cutInBinIdx>": sourceId }
+  // sourceId is '__full_bar__' or a specific offcut's id. Cuts in the same bin
+  // that both pick '__full_bar__' share one bar; anything else (a specific
+  // offcut) is sourced independently, so offcuts and a full bar can mix.
+  const [barSelections, setBarSelections] = useState({})
+  // Leftover "save as offcut" choices — key -> { "cut:<selKey>"|"bar:<binIdx>": { add, label, length_mm } }
+  const [offcutData,    setOffcutData]    = useState({})
   const [qtyOverride,   setQtyOverride]   = useState({}) // key -> qty typed by the picker
 
   useEffect(() => {
@@ -38,45 +43,48 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
     })
   }
 
-  const selectBar = (key, binIdx, barId, totalBins) => {
+  // selKey identifies one individual cut: "<binIdx>.<cutInBinIdx>"
+  const selectSource = (key, selKey, sourceId, totalCuts) => {
     setBarSelections(prev => {
-      const arr = [...(prev[key] || [])]
-      arr[binIdx] = barId
-      // Auto-pick the line when every bin has a selection
-      if (arr.filter(Boolean).length === totalBins) {
+      const next = { ...(prev[key] || {}) }
+      // A specific offcut can only supply one cut — drop it from any other
+      // cut in this line that had it selected.
+      if (sourceId !== '__full_bar__') {
+        Object.keys(next).forEach(k => { if (k !== selKey && next[k] === sourceId) delete next[k] })
+      }
+      next[selKey] = sourceId
+      if (Object.values(next).filter(Boolean).length === totalCuts) {
         setLineStatus(ls => ls[key] !== 'done' ? { ...ls, [key]: 'picked' } : ls)
       }
-      return { ...prev, [key]: arr }
+      return { ...prev, [key]: next }
     })
   }
 
-  const toggleOffcut = (key, binIdx, defaultLengthMm) => {
+  const toggleOffcut = (key, leftoverKey, defaultLengthMm) => {
     setOffcutData(prev => {
-      const arr     = [...(prev[key] || [])]
-      const current = arr[binIdx]
-      arr[binIdx] = {
+      const lineData = { ...(prev[key] || {}) }
+      const current  = lineData[leftoverKey]
+      lineData[leftoverKey] = {
         ...current,
         add:       !current?.add,
         length_mm: current?.length_mm ?? Math.round(defaultLengthMm),
       }
-      return { ...prev, [key]: arr }
+      return { ...prev, [key]: lineData }
     })
   }
 
-  const setOffcutLabel = (key, binIdx, label) => {
-    setOffcutData(prev => {
-      const arr = [...(prev[key] || [])]
-      arr[binIdx] = { ...arr[binIdx], label }
-      return { ...prev, [key]: arr }
-    })
+  const setOffcutLabel = (key, leftoverKey, label) => {
+    setOffcutData(prev => ({
+      ...prev,
+      [key]: { ...(prev[key] || {}), [leftoverKey]: { ...(prev[key]?.[leftoverKey]), label } },
+    }))
   }
 
-  const setOffcutLength = (key, binIdx, length_mm) => {
-    setOffcutData(prev => {
-      const arr = [...(prev[key] || [])]
-      arr[binIdx] = { ...arr[binIdx], length_mm }
-      return { ...prev, [key]: arr }
-    })
+  const setOffcutLength = (key, leftoverKey, length_mm) => {
+    setOffcutData(prev => ({
+      ...prev,
+      [key]: { ...(prev[key] || {}), [leftoverKey]: { ...(prev[key]?.[leftoverKey]), length_mm } },
+    }))
   }
 
   // Quantity actually deducted for a line — the BOM figure unless overridden
@@ -104,22 +112,7 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
         if (isBar) {
           const barLengthMm = Number(row.component.bar_length_mm) || 6000
           const cuts  = row.cuts?.length ? row.cuts : [Math.round(row.total_qty * 1000)]
-          const packed = packCuts(cuts, barLengthMm)
-          const bars = packed.map((bin, binIdx) => {
-            const od  = offcutData[key]?.[binIdx]
-            const selectedId = barSelections[key]?.[binIdx]
-            // Remaining from selected source
-            let remainingMm = bin.remaining
-            if (selectedId && selectedId !== '__full_bar__') {
-              const bar = stockBars.find(b => b.id === selectedId)
-              if (bar) remainingMm = bar.length_mm - bin.cuts.reduce((s, c) => s + c, 0)
-            }
-            const offcutLengthMm = od?.length_mm ?? remainingMm
-            const offcut = od?.add && offcutLengthMm > 0
-              ? { label: od.label?.trim() || `${Math.round(offcutLengthMm)}mm`, length_mm: offcutLengthMm }
-              : null
-            return { bar_id: selectedId || null, offcut }
-          })
+          const bars  = buildBarDeductions(cuts, barLengthMm, barSelections[key] || {}, offcutData[key] || {})
           return { component: row.component, colour_variant: row.colour_variant, qty: row.total_qty, bars }
         }
         // Pack component — may be adjusted up or down by the picker
@@ -174,6 +167,9 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
               ) : (
                 <>
                   Required: <strong>{fmtQty(row.total_qty)} {row.component.unit}</strong>
+                  {row.widthFormulaLabel && (
+                    <span style={{ marginLeft: 8, fontWeight: 700, color: 'var(--ink)' }}>({row.widthFormulaLabel})</span>
+                  )}
                   {stock && <span style={{ marginLeft: 8, color: sufficient ? 'var(--success)' : 'var(--danger)' }}>· In stock: {fmtQty(qtyOnHand)}</span>}
                   {!stock && <span style={{ marginLeft: 8, color: 'var(--warm-300)' }}>· Stock not tracked</span>}
                 </>
@@ -229,8 +225,13 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
     const cuts   = row.cuts?.length ? row.cuts : [Math.round(row.total_qty * 1000)]
     const packed = packCuts(cuts, barLengthMm)
 
-    const totalMm    = cuts.reduce((s, c) => s + c, 0)
-    const allSelected = (barSelections[key] || []).filter(Boolean).length === packed.length
+    const totalMm     = cuts.reduce((s, c) => s + c, 0)
+    const totalCuts   = countCutSlots(cuts, barLengthMm)
+    const selections  = barSelections[key] || {}
+    const allSelected = Object.values(selections).filter(Boolean).length === totalCuts
+    // A specific offcut already claimed by another cut in this line can't be
+    // picked again — each physical offcut supplies at most one cut.
+    const claimedOffcutIds = new Set(Object.values(selections).filter(v => v && v !== '__full_bar__'))
 
     const rowBg = isDone ? '#f0fdf4' : status === 'picked' ? 'var(--success-bg)' : status === 'skipped' ? 'var(--warm-100)' : '#fff'
 
@@ -259,7 +260,7 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
             ) : (
               <div style={{ fontSize: 12, color: 'var(--warm-300)', marginTop: 2 }}>
                 {cuts.length} cut{cuts.length !== 1 ? 's' : ''}: {cuts.map(c => `${c.toLocaleString()}mm`).join(' + ')} = {totalMm.toLocaleString()}mm
-                <span style={{ marginLeft: 8, fontWeight: 700, color: 'var(--ink)' }}>→ {packed.length} bar{packed.length !== 1 ? 's' : ''} needed</span>
+                <span style={{ marginLeft: 8, fontWeight: 700, color: 'var(--ink)' }}>→ up to {packed.length} bar{packed.length !== 1 ? 's' : ''} needed</span>
                 {stock && <span style={{ marginLeft: 8, color: qtyOnHand >= packed.length ? 'var(--success)' : 'var(--danger)' }}>· {qtyOnHand} in stock</span>}
               </div>
             )}
@@ -277,123 +278,173 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
           )}
         </div>
 
-        {/* Per-bin slots */}
+        {/* Per-bin groups, each showing one selector per individual cut —
+            cuts within a group can be mixed across offcuts and a shared full
+            bar, not forced onto one single source. */}
         {!isDone && status !== 'skipped' && packed.map((bin, binIdx) => {
-          const selectedId     = barSelections[key]?.[binIdx]
-          const od             = offcutData[key]?.[binIdx]
-          const binCutTotal    = bin.cuts.reduce((s, c) => s + c, 0)
-
-          // Remaining length from the chosen source
-          let remainingMm = bin.remaining
-          if (selectedId && selectedId !== '__full_bar__') {
-            const bar = stockBars.find(b => b.id === selectedId)
-            if (bar) remainingMm = bar.length_mm - binCutTotal
-          }
-
-          // Offcuts long enough for this bin's largest cut
-          const minNeeded  = Math.max(...bin.cuts)
-          const suitableOffcuts = findSuitableBars(stockBars, row.component.id, row.colour_variant, minNeeded)
-          const fullBarOk       = qtyOnHand > 0 && barLengthMm >= minNeeded
-          const hasOptions      = suitableOffcuts.length > 0 || fullBarOk
+          const binCutTotal = bin.cuts.reduce((s, c) => s + c, 0)
+          // Cuts in this bin currently set to share a full bar, for the
+          // bin-level leftover prompt.
+          const fullBarCutIdxs = bin.cuts
+            .map((_, i) => i)
+            .filter(i => selections[`${binIdx}.${i}`] === '__full_bar__')
+          const fullBarUsedMm   = fullBarCutIdxs.reduce((s, i) => s + bin.cuts[i], 0)
+          const fullBarRemainMm = barLengthMm - fullBarUsedMm
+          const barLeftoverKey  = `bar:${binIdx}`
+          const barOd           = offcutData[key]?.[barLeftoverKey]
 
           return (
             <div key={binIdx} style={{
               margin: '0 20px 10px 60px',
-              border: `1px solid ${selectedId ? 'var(--accent)' : 'var(--warm-200)'}`,
+              border: '1px solid var(--warm-200)',
               borderRadius: 8,
               background: '#fff',
               overflow: 'hidden',
             }}>
               {/* Bin header */}
-              <div style={{ padding: '8px 12px', background: 'var(--warm-100)', borderBottom: '1px solid var(--warm-200)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ padding: '8px 12px', background: 'var(--warm-100)', borderBottom: '1px solid var(--warm-200)' }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink)' }}>
-                  Bar {binIdx + 1}
+                  {bin.cuts.length > 1 ? `Bar group ${binIdx + 1}` : `Cut ${binIdx + 1}`}
                   <span style={{ fontWeight: 400, color: 'var(--warm-300)', marginLeft: 8 }}>
-                    {bin.cuts.map(c => `${c.toLocaleString()}mm`).join(' + ')}
-                    {bin.cuts.length > 1 && ` = ${binCutTotal.toLocaleString()}mm`}
+                    {bin.cuts.length > 1 && `${bin.cuts.map(c => `${c.toLocaleString()}mm`).join(' + ')} = ${binCutTotal.toLocaleString()}mm total`}
                   </span>
                 </div>
-                {selectedId && (
-                  <span style={{ fontSize: 11, color: 'var(--success)', fontWeight: 600 }}>✓ Selected</span>
+                {bin.oversized && (
+                  <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 500, marginTop: 4 }}>
+                    ⚠️ Cut exceeds bar length ({barLengthMm.toLocaleString()}mm) — check product recipe
+                  </div>
                 )}
               </div>
 
-              <div style={{ padding: '10px 12px' }}>
-                {bin.oversized ? (
-                  <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 500 }}>
-                    ⚠️ Cut ({binCutTotal.toLocaleString()}mm) exceeds bar length ({barLengthMm.toLocaleString()}mm) — check product recipe
-                  </div>
-                ) : !hasOptions ? (
-                  <div style={{ fontSize: 12, color: 'var(--warning)', fontWeight: 500 }}>
-                    ⚠️ No stock long enough for this cut ({minNeeded.toLocaleString()}mm needed)
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {fullBarOk && (
-                      <button type="button" onClick={() => selectBar(key, binIdx, '__full_bar__', packed.length)} style={{
-                        padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                        border: `1.5px solid ${selectedId === '__full_bar__' ? 'var(--accent)' : 'var(--warm-200)'}`,
-                        background: selectedId === '__full_bar__' ? 'var(--accent-bg)' : 'var(--warm-100)',
-                        color: selectedId === '__full_bar__' ? 'var(--accent-dark)' : 'var(--ink)',
-                      }}>
-                        Full bar ({barLengthMm.toLocaleString()}mm) ×{qtyOnHand}
-                      </button>
-                    )}
-                    {suitableOffcuts.slice(0, 4).map(bar => (
-                      <button key={bar.id} type="button" onClick={() => selectBar(key, binIdx, bar.id, packed.length)} style={{
-                        padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                        border: `1.5px solid ${selectedId === bar.id ? 'var(--accent)' : 'var(--warm-200)'}`,
-                        background: selectedId === bar.id ? 'var(--accent-bg)' : 'var(--warm-100)',
-                        color: selectedId === bar.id ? 'var(--accent-dark)' : 'var(--ink)',
-                      }}>
-                        {bar.label} ({bar.length_mm.toLocaleString()}mm)
-                      </button>
-                    ))}
-                  </div>
-                )}
+              {!bin.oversized && (
+                <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {bin.cuts.map((cutLength, cutInBinIdx) => {
+                    const selKey    = `${binIdx}.${cutInBinIdx}`
+                    const selectedId = selections[selKey]
+                    const od         = offcutData[key]?.[`cut:${selKey}`]
 
-                {/* Offcut prompt */}
-                {selectedId && !bin.oversized && remainingMm > 0 && (
-                  <div style={{ marginTop: 8 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 12, color: 'var(--warm-300)' }}>
-                        Leftover: <strong style={{ color: 'var(--ink)' }}>{Math.round(remainingMm).toLocaleString()}mm</strong>
-                      </span>
-                      <button type="button" onClick={() => toggleOffcut(key, binIdx, remainingMm)} style={{
-                        fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 6, cursor: 'pointer',
-                        border: `1px solid ${od?.add ? 'var(--accent)' : 'var(--warm-200)'}`,
-                        background: od?.add ? 'var(--accent)' : 'none',
-                        color: od?.add ? '#fff' : 'var(--warm-300)',
+                    const suitableOffcuts = findSuitableBars(stockBars, row.component.id, row.colour_variant, cutLength)
+                      .filter(bar => !claimedOffcutIds.has(bar.id) || bar.id === selectedId)
+                    const fullBarOk  = qtyOnHand > 0 && barLengthMm >= cutLength
+                    const hasOptions = suitableOffcuts.length > 0 || fullBarOk
+
+                    // Leftover from a specific offcut selected for this cut
+                    let offcutRemainMm = 0
+                    if (selectedId && selectedId !== '__full_bar__') {
+                      const bar = stockBars.find(b => b.id === selectedId)
+                      if (bar) offcutRemainMm = bar.length_mm - cutLength
+                    }
+
+                    return (
+                      <div key={selKey} style={{
+                        padding: '8px 10px', borderRadius: 6,
+                        border: `1px solid ${selectedId ? 'var(--accent)' : 'var(--warm-100)'}`,
+                        background: selectedId ? 'var(--accent-bg)' : 'var(--warm-100)',
                       }}>
-                        {od?.add ? '✓ Adding offcut' : '+ Save as offcut'}
-                      </button>
-                    </div>
-                    {od?.add && (
-                      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                        <input
-                          className="field-input"
-                          style={{ flex: 2, fontSize: 13 }}
-                          placeholder="Label"
-                          value={od?.label || ''}
-                          onChange={e => setOffcutLabel(key, binIdx, e.target.value)}
-                        />
-                        <div style={{ position: 'relative', flex: 1 }}>
-                          <input
-                            className="field-input"
-                            type="number"
-                            min="1"
-                            step="1"
-                            style={{ fontSize: 13, paddingRight: 36 }}
-                            value={od?.length_mm ?? Math.round(remainingMm)}
-                            onChange={e => setOffcutLength(key, binIdx, Number(e.target.value))}
-                          />
-                          <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'var(--warm-300)', pointerEvents: 'none' }}>mm</span>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
+                            {cutLength.toLocaleString()}mm cut
+                          </span>
+                          {selectedId && <span style={{ fontSize: 11, color: 'var(--success)', fontWeight: 600 }}>✓ Selected</span>}
                         </div>
+
+                        {!hasOptions ? (
+                          <div style={{ fontSize: 12, color: 'var(--warning)', fontWeight: 500 }}>
+                            ⚠️ No stock long enough for this cut ({cutLength.toLocaleString()}mm needed)
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                            {fullBarOk && (
+                              <button type="button" onClick={() => selectSource(key, selKey, '__full_bar__', totalCuts)} style={{
+                                padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                                border: `1.5px solid ${selectedId === '__full_bar__' ? 'var(--accent)' : 'var(--warm-200)'}`,
+                                background: selectedId === '__full_bar__' ? '#fff' : 'var(--warm-100)',
+                                color: selectedId === '__full_bar__' ? 'var(--accent-dark)' : 'var(--ink)',
+                              }}>
+                                Full bar ({barLengthMm.toLocaleString()}mm)
+                              </button>
+                            )}
+                            {suitableOffcuts.slice(0, 4).map(bar => (
+                              <button key={bar.id} type="button" onClick={() => selectSource(key, selKey, bar.id, totalCuts)} style={{
+                                padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                                border: `1.5px solid ${selectedId === bar.id ? 'var(--accent)' : 'var(--warm-200)'}`,
+                                background: selectedId === bar.id ? '#fff' : 'var(--warm-100)',
+                                color: selectedId === bar.id ? 'var(--accent-dark)' : 'var(--ink)',
+                              }}>
+                                {bar.label} ({bar.length_mm.toLocaleString()}mm)
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Leftover from this specific offcut */}
+                        {selectedId && selectedId !== '__full_bar__' && offcutRemainMm > 0 && (
+                          <div style={{ marginTop: 8 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ fontSize: 12, color: 'var(--warm-300)' }}>
+                                Leftover: <strong style={{ color: 'var(--ink)' }}>{Math.round(offcutRemainMm).toLocaleString()}mm</strong>
+                              </span>
+                              <button type="button" onClick={() => toggleOffcut(key, `cut:${selKey}`, offcutRemainMm)} style={{
+                                fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 6, cursor: 'pointer',
+                                border: `1px solid ${od?.add ? 'var(--accent)' : 'var(--warm-200)'}`,
+                                background: od?.add ? 'var(--accent)' : 'none',
+                                color: od?.add ? '#fff' : 'var(--warm-300)',
+                              }}>
+                                {od?.add ? '✓ Adding offcut' : '+ Save as offcut'}
+                              </button>
+                            </div>
+                            {od?.add && (
+                              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                                <input className="field-input" style={{ flex: 2, fontSize: 13 }} placeholder="Label"
+                                  value={od?.label || ''} onChange={e => setOffcutLabel(key, `cut:${selKey}`, e.target.value)} />
+                                <div style={{ position: 'relative', flex: 1 }}>
+                                  <input className="field-input" type="number" min="1" step="1"
+                                    style={{ fontSize: 13, paddingRight: 36 }}
+                                    value={od?.length_mm ?? Math.round(offcutRemainMm)}
+                                    onChange={e => setOffcutLength(key, `cut:${selKey}`, Number(e.target.value))} />
+                                  <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'var(--warm-300)', pointerEvents: 'none' }}>mm</span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                )}
-              </div>
+                    )
+                  })}
+
+                  {/* Leftover shared across cuts that both chose "full bar" */}
+                  {fullBarCutIdxs.length > 0 && fullBarRemainMm > 0 && (
+                    <div style={{ padding: '8px 10px', borderRadius: 6, background: 'var(--warm-100)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 12, color: 'var(--warm-300)' }}>
+                          Shared bar leftover: <strong style={{ color: 'var(--ink)' }}>{Math.round(fullBarRemainMm).toLocaleString()}mm</strong>
+                        </span>
+                        <button type="button" onClick={() => toggleOffcut(key, barLeftoverKey, fullBarRemainMm)} style={{
+                          fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 6, cursor: 'pointer',
+                          border: `1px solid ${barOd?.add ? 'var(--accent)' : 'var(--warm-200)'}`,
+                          background: barOd?.add ? 'var(--accent)' : 'none',
+                          color: barOd?.add ? '#fff' : 'var(--warm-300)',
+                        }}>
+                          {barOd?.add ? '✓ Adding offcut' : '+ Save as offcut'}
+                        </button>
+                      </div>
+                      {barOd?.add && (
+                        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                          <input className="field-input" style={{ flex: 2, fontSize: 13 }} placeholder="Label"
+                            value={barOd?.label || ''} onChange={e => setOffcutLabel(key, barLeftoverKey, e.target.value)} />
+                          <div style={{ position: 'relative', flex: 1 }}>
+                            <input className="field-input" type="number" min="1" step="1"
+                              style={{ fontSize: 13, paddingRight: 36 }}
+                              value={barOd?.length_mm ?? Math.round(fullBarRemainMm)}
+                              onChange={e => setOffcutLength(key, barLeftoverKey, Number(e.target.value))} />
+                            <span style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'var(--warm-300)', pointerEvents: 'none' }}>mm</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )
         })}

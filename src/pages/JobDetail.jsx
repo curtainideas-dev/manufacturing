@@ -190,7 +190,7 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
                 <label className="field-label">Job No.</label>
-                <input className="field-input" value={job.job_number || ''} disabled={locked}
+                <input className="field-input" value={job.job_number || ''} disabled={isCompleted}
                   onChange={e => onUpdate({ job_number: e.target.value })}
                   placeholder="e.g. 2024-081" />
               </div>
@@ -390,7 +390,12 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
                             {row.component.supplier_pn ? ` · ${row.component.supplier_pn}` : ''}
                           </div>
                         </div>
-                        <div style={{ textAlign: 'right', fontWeight: 500 }}>{fmtQty(row.total_qty)}</div>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontWeight: 500 }}>{fmtQty(row.total_qty)}</div>
+                          {row.widthFormulaLabel && (
+                            <div style={{ fontSize: 10, color: 'var(--warm-300)', marginTop: 1 }}>{row.widthFormulaLabel}</div>
+                          )}
+                        </div>
                         <div style={{ textAlign: 'right', color: 'var(--warm-300)', fontSize: 13 }}>${fmt(row.unit_cost)}</div>
                         <div style={{ textAlign: 'right', fontWeight: 600 }}>${fmt(row.total_cost)}</div>
                       </div>

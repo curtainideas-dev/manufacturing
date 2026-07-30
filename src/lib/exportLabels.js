@@ -20,7 +20,12 @@
  * labels use the 62 mm continuous roll; component labels use a 93 x 29 mm DK
  * die-cut roll. jsPDF is loaded from CDN at runtime (matches
  * src/lib/exportPDF.js — no build-time dependency).
+ *
+ * Each export goes straight to the browser's print dialog (see
+ * src/lib/printPDF.js) rather than downloading a file.
  */
+
+import { printPDF } from './printPDF'
 
 // ---- Sizes (mm) ----
 const PKG_W = 62, PKG_H = 40   // packaging label
@@ -200,7 +205,7 @@ export async function exportPackagingLabels(job, windowsWithBOM, products) {
     doc.text(fitText(doc, `DOM ${fmtDate(job.date_manufacture)}    DOI ${fmtDate(job.date_invoice)}`, textW), M, y)
   }
 
-  doc.save(saveName('PackagingLabels', job))
+  printPDF(doc, saveName('PackagingLabels', job))
 }
 
 // ===== Track/tube label — 62 x 15 mm (products unused; kept for a consistent signature) =====
@@ -240,7 +245,7 @@ export async function exportTrackLabels(job, windowsWithBOM) {
     doc.text(BUSINESS_WEB, M, 11.5)
   }
 
-  doc.save(saveName('TrackLabels', job))
+  printPDF(doc, saveName('TrackLabels', job))
 }
 
 // Draw the logo header (+ optional page counter) and return the header bottom Y.
@@ -311,7 +316,7 @@ export async function exportPartsLabels(job, parts) {
     }
   }
 
-  doc.save(saveName('PartsLabels', job))
+  printPDF(doc, saveName('PartsLabels', job))
 }
 
 // ===== Component stock label — 93 x 29 mm DK die-cut =====
@@ -367,5 +372,5 @@ export async function exportComponentLabels(items) {
   }
 
   const date = new Date().toISOString().slice(0, 10)
-  doc.save(`ComponentLabels_${date}.pdf`)
+  printPDF(doc, `ComponentLabels_${date}.pdf`)
 }

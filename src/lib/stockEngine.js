@@ -86,6 +86,60 @@ export function packCuts(cutsMm, barLengthMm) {
 }
 
 /**
+ * Build the { bar_id, offcut } consumption list for a bar component's cuts,
+ * given a per-cut source selection.
+ *
+ * `packCuts` groups cuts into bins that *could* share one bar, but the picker
+ * isn't limited to that — each individual cut can be sourced independently
+ * (a specific offcut, or a fresh full bar), so several offcuts and a full bar
+ * can be mixed within what was one bin. Cuts that both choose "full bar"
+ * within the same bin still share a single bar, preserving the packing
+ * optimisation for the common case.
+ *
+ * @param cutsMm required cut lengths (mm)
+ * @param barLengthMm length of a full bar (mm)
+ * @param selections   { "<binIdx>.<cutInBinIdx>": sourceId }
+ *                      sourceId is '__full_bar__' or a specific offcut's id
+ * @param leftoverChoices { "cut:<selKey>": {add,label,length_mm},
+ *                          "bar:<binIdx>": {add,label,length_mm} }
+ *                      opt-in "save the leftover as a new offcut" choices
+ * @returns [{ bar_id, offcut }] — one entry per physical bar/offcut consumed,
+ *          in the shape the deduct-stock handler already expects.
+ */
+export function buildBarDeductions(cutsMm, barLengthMm, selections, leftoverChoices = {}) {
+  const packed = packCuts(cutsMm, barLengthMm)
+  const bars = []
+
+  const offcutFrom = (lo) => (lo?.add && lo.length_mm > 0)
+    ? { label: lo.label?.trim() || `${Math.round(lo.length_mm)}mm`, length_mm: lo.length_mm }
+    : null
+
+  packed.forEach((bin, binIdx) => {
+    const fullBarCutIdxs = []
+    bin.cuts.forEach((cutLength, cutInBinIdx) => {
+      const selKey = `${binIdx}.${cutInBinIdx}`
+      const sel    = selections[selKey]
+      if (sel === '__full_bar__') {
+        fullBarCutIdxs.push(cutInBinIdx)
+      } else if (sel) {
+        bars.push({ bar_id: sel, offcut: offcutFrom(leftoverChoices[`cut:${selKey}`]) })
+      }
+    })
+    if (fullBarCutIdxs.length > 0) {
+      bars.push({ bar_id: '__full_bar__', offcut: offcutFrom(leftoverChoices[`bar:${binIdx}`]) })
+    }
+  })
+
+  return bars
+}
+
+// Total individual cut slots across all bins — used to check every cut has a
+// source selected before a bar-component line can be marked picked.
+export function countCutSlots(cutsMm, barLengthMm) {
+  return packCuts(cutsMm, barLengthMm).reduce((s, bin) => s + bin.cuts.length, 0)
+}
+
+/**
  * Build a stock map from an array of stock rows for quick lookup.
  * { [componentId__colourSuffix]: stockRow }
  */

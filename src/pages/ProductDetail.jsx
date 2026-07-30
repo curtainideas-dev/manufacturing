@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ChevronLeftIcon, PlusIcon, TrashIcon, XIcon } from '../components/Icons'
 import ProductComponentModal from '../components/ProductComponentModal'
-import { calcCostAtWidth, calcQty, GRID_WIDTHS, fmt, fmtQty, formulaDescription } from '../lib/bomEngine'
+import { calcCostAtWidth, calcQty, GRID_WIDTHS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel } from '../lib/bomEngine'
 
 const COST_TYPE_LABELS = {
   fixed: 'Fixed qty', width_based: 'Width-based',
@@ -312,12 +312,18 @@ export default function ProductDetail({
                         {GRID_WIDTHS.map(w => {
                           const qty      = calcQty(pc, w, 0)
                           const lineCost = qty * unitCost
+                          const label    = fixedPerWidthLabel(pc, w)
                           return (
                             <td key={w} style={{
                               padding: '9px 8px', textAlign: 'right',
                               borderLeft: '1px solid var(--warm-100)',
                             }}>
                               <div style={{ fontWeight: 600, color: 'var(--ink)' }}>{fmtQty(qty)}</div>
+                              {label && (
+                                <div style={{ fontSize: 10, color: 'var(--accent-dark)', fontWeight: 600, marginTop: 1 }}>
+                                  {label}
+                                </div>
+                              )}
                               <div style={{ fontSize: 10, color: 'var(--warm-300)', marginTop: 1 }}>
                                 ${fmt(lineCost)}
                               </div>

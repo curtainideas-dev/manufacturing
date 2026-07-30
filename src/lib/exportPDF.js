@@ -7,7 +7,11 @@
  * - Following pages: one section per window with its individual BOM
  *
  * Uses jsPDF loaded from CDN at runtime — no build-time dependency needed.
+ * Goes straight to the browser's print dialog (see src/lib/printPDF.js)
+ * rather than downloading a file.
  */
+
+import { printPDF } from './printPDF'
 
 const ACCENT_DARK  = [28, 46, 15]   // --accent-dark #1C2E0F
 const ACCENT       = [141, 199, 63] // --accent #8DC73F
@@ -241,8 +245,8 @@ export async function exportJobPDF(job, windowsWithBOM, jobSummary, products) {
     y += 6
   })
 
-  // ---- Save ----
+  // ---- Print ----
   const customer = (job.customer_name || 'job').replace(/\s+/g, '_')
   const jobNo    = job.job_number ? `_${job.job_number}` : ''
-  doc.save(`WorkOrder_${customer}${jobNo}.pdf`)
+  printPDF(doc, `WorkOrder_${customer}${jobNo}.pdf`)
 }

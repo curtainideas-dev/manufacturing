@@ -14,8 +14,13 @@
  *                      e.g. 2 brackets + 1 per 500mm
  *   perimeter        — 2×(width + drop) ± deduction
  *                      e.g. cord that loops through track and drops
- *   fixed_per_width  — manual qty per width bucket (see GRID_WIDTHS)
- *                      e.g. 2 brackets up to 1200mm, 3 up to 1500mm
+ *   fixed_per_width  — manual qty per width bucket, from a named width
+ *                      schedule (each schedule defines its own bands — not
+ *                      tied to GRID_WIDTHS, which is just the default grid
+ *                      offered when creating a new one). formula_buffer is
+ *                      used as a multiplier on top of the looked-up qty
+ *                      (default 1) — e.g. a centre-open track needs 2× the
+ *                      per-leaf carrier count from the schedule.
  */
 
 export function calcQty(productComponent, widthMm, dropMm) {
@@ -66,9 +71,13 @@ export function calcQty(productComponent, widthMm, dropMm) {
       if (unit === 'metres') qty = qty / 1000
       break
 
-    case 'fixed_per_width':
-      qty = qtyForWidth(productComponent.width_qty, widthMm)
+    case 'fixed_per_width': {
+      // formula_buffer doubles as a multiplier here (default 1) — e.g. 2 for
+      // a centre-open track needing twice the per-leaf schedule figure.
+      const multiplier = Number(productComponent.formula_buffer) || 1
+      qty = qtyForWidth(productComponent.width_qty, widthMm) * multiplier
       break
+    }
 
     default:
       qty = 0
@@ -78,17 +87,36 @@ export function calcQty(productComponent, widthMm, dropMm) {
 }
 
 /**
- * Look up the manual qty for a width from a { [gridWidth]: qty } map.
- * Uses the first bucket the width fits into (<= that width); anything wider
- * than the largest bucket falls back to the largest bucket's qty.
+ * Look up the manual qty for a width from a { [bandUpperBoundMm]: qty } map.
+ * Uses the first band the width fits into (<= that band's upper bound);
+ * anything wider than the largest band falls back to the largest band's qty.
+ *
+ * The bands come from the map's own keys — NOT the fixed GRID_WIDTHS — so a
+ * schedule can use any breakpoints (e.g. a supplier's own chart with ~120mm
+ * steps), not just the coarse 300mm default grid.
  */
 export function qtyForWidth(widthQty, widthMm) {
   if (!widthQty) return 0
+  const bands = Object.keys(widthQty).map(Number).filter(n => !isNaN(n)).sort((a, b) => a - b)
+  if (bands.length === 0) return 0
   const w = Number(widthMm) || 0
-  for (const gw of GRID_WIDTHS) {
-    if (w <= gw) return Number(widthQty[gw]) || 0
+  for (const band of bands) {
+    if (w <= band) return Number(widthQty[band]) || 0
   }
-  return Number(widthQty[GRID_WIDTHS[GRID_WIDTHS.length - 1]]) || 0
+  return Number(widthQty[bands[bands.length - 1]]) || 0
+}
+
+/**
+ * The "1×12" / "2×18" style label for a fixed_per_width line at a given
+ * width — multiplier × the schedule's raw per-band figure — so whoever's
+ * picking stock can read it straight off the same reference chart the
+ * numbers came from. Returns null for any other cost type.
+ */
+export function fixedPerWidthLabel(pc, widthMm) {
+  if (pc.cost_type !== 'fixed_per_width') return null
+  const multiplier = Number(pc.formula_buffer) || 1
+  const perBand     = qtyForWidth(pc.width_qty, widthMm)
+  return `${multiplier}×${perBand}`
 }
 
 // Key used for snapshotted unit costs — component + colour variant.
@@ -152,6 +180,10 @@ export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = nul
     const basePn         = pc.component?.supplier_pn || ''
     const colourSuffix   = pc.colour_variant?.suffix || ''
     const display_pn     = basePn && colourSuffix ? `${basePn}-${colourSuffix}` : (basePn || colourSuffix || '')
+    // "1×12" style reference label for fixed_per_width lines — always computed
+    // live from the window's own width, so it stays readable even when the
+    // total qty itself is frozen from a confirmed job's snapshot.
+    const width_formula  = fixedPerWidthLabel(pc, widthMm)
     return {
       product_component_id: pc.id,
       component_id:         pc.component_id,
@@ -159,6 +191,7 @@ export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = nul
       colour_variant:       pc.colour_variant || null,
       display_pn,
       calculated_qty,
+      width_formula,
       override_qty:         null,
       unit_cost_snapshot:   unit_cost,
       base_cost,
@@ -184,6 +217,7 @@ export function calcJobSummary(windowsWithBOM) {
           total_qty:      0,
           unit_cost:      line.unit_cost_snapshot,
           cuts:           [], // individual cut lengths in mm, for bar components
+          widthFormulas:  [], // "1×12" style labels, one per contributing window
         }
       }
       map[key].total_qty += line.qty
@@ -193,10 +227,17 @@ export function calcJobSummary(windowsWithBOM) {
         const cutMm = unit === 'metres' ? Math.round(line.qty * 1000) : Math.round(line.qty)
         map[key].cuts.push(cutMm)
       }
+      if (line.width_formula) map[key].widthFormulas.push(line.width_formula)
     })
   })
   return Object.values(map)
-    .map(r => ({ ...r, total_cost: r.total_qty * r.unit_cost }))
+    .map(r => ({
+      ...r,
+      total_cost: r.total_qty * r.unit_cost,
+      // De-duplicated for display — e.g. "1×32" when every window needs the
+      // same pick, or "1×32, 1×34" when windows land in different bands.
+      widthFormulaLabel: [...new Set(r.widthFormulas)].join(', '),
+    }))
     .sort((a, b) => a.component.name.localeCompare(b.component.name))
 }
 
@@ -230,10 +271,12 @@ export function formulaDescription(pc) {
     case 'per_interval':     return `${b} base + 1 per ${iv}mm width`
     case 'perimeter':        return `2×(W+D)${d ? ` − ${d}mm` : ''}${b ? ` + ${b}mm` : ''}`
     case 'fixed_per_width': {
-      const set = GRID_WIDTHS.filter(w => Number(pc.width_qty?.[w]) > 0)
-      if (set.length === 0) return 'qty per width — not set'
-      const first = set[0], last = set[set.length - 1]
-      return `${pc.width_qty[first]} up to ${first}mm … ${pc.width_qty[last]} up to ${last}mm`
+      const bands = Object.keys(pc.width_qty || {}).map(Number).filter(n => !isNaN(n) && Number(pc.width_qty[n]) > 0).sort((a, b) => a - b)
+      const mult  = Number(pc.formula_buffer) || 1
+      const prefix = mult !== 1 ? `×${mult} · ` : ''
+      if (bands.length === 0) return `${prefix}qty per width — not set`
+      const first = bands[0], last = bands[bands.length - 1]
+      return `${prefix}${pc.width_qty[first]} up to ${first}mm … ${pc.width_qty[last]} up to ${last}mm`
     }
     default: return ''
   }

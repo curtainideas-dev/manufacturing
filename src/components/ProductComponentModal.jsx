@@ -56,7 +56,15 @@ export default function ProductComponentModal({
   const selectedSchedule = widthSchedules.find(s => s.id === form.width_schedule_id)
 
   const startNewSchedule  = () => setEditingSchedule({ id: null, name: '', qty_map: {} })
-  const startEditSchedule = () => selectedSchedule && setEditingSchedule({
+  // The inline editor below only offers the standard 18-band grid — safe for
+  // schedules built from it, but opening it on a schedule with its own finer
+  // custom bands (e.g. a supplier chart) would show them all as blank and risk
+  // adding unrelated standard-grid entries alongside the real data. Block that.
+  const isCustomSchedule = (s) => {
+    const keys = Object.keys(s?.qty_map || {}).map(Number)
+    return keys.some(k => !GRID_WIDTHS.includes(k))
+  }
+  const startEditSchedule = () => selectedSchedule && !isCustomSchedule(selectedSchedule) && setEditingSchedule({
     id: selectedSchedule.id, name: selectedSchedule.name, qty_map: { ...(selectedSchedule.qty_map || {}) },
   })
 
@@ -140,6 +148,9 @@ export default function ProductComponentModal({
             </div>
           </>
         )
+      case 'fixed_per_width':
+        return <NumField id="formula_buffer" label="Multiplier" step="1" min="0"
+          hint="Applied on top of the schedule's looked-up quantity — e.g. 2 for a centre-open track needing twice the per-leaf figure. Leave at 1 for a single leaf." />
       case 'perimeter':
         return (
           <>
@@ -344,7 +355,7 @@ export default function ProductComponentModal({
                           ))}
                         </select>
                       </div>
-                      {selectedSchedule && (
+                      {selectedSchedule && !isCustomSchedule(selectedSchedule) && (
                         <button type="button" className="btn btn-secondary btn-sm" onClick={startEditSchedule}>
                           Edit
                         </button>
@@ -354,18 +365,29 @@ export default function ProductComponentModal({
                       </button>
                     </div>
 
-                    {selectedSchedule && (
-                      <div style={{
-                        marginTop: 8, padding: '8px 10px', background: '#fff',
-                        border: '1px solid var(--warm-200)', borderRadius: 'var(--radius-sm)',
-                        fontSize: 11, color: 'var(--warm-300)', lineHeight: 1.7,
-                      }}>
-                        {GRID_WIDTHS.filter(w => Number(selectedSchedule.qty_map?.[w]) > 0).length === 0
-                          ? 'This schedule has no quantities set yet.'
-                          : GRID_WIDTHS.filter(w => Number(selectedSchedule.qty_map?.[w]) > 0)
-                              .map(w => `≤${w.toLocaleString()}: ${selectedSchedule.qty_map[w]}`).join('   ·   ')}
-                      </div>
-                    )}
+                    {selectedSchedule && (() => {
+                      const bands = Object.keys(selectedSchedule.qty_map || {})
+                        .map(Number).filter(n => Number(selectedSchedule.qty_map[n]) > 0).sort((a, b) => a - b)
+                      const custom = isCustomSchedule(selectedSchedule)
+                      return (
+                        <div style={{
+                          marginTop: 8, padding: '8px 10px', background: '#fff',
+                          border: '1px solid var(--warm-200)', borderRadius: 'var(--radius-sm)',
+                          fontSize: 11, color: 'var(--warm-300)', lineHeight: 1.7,
+                        }}>
+                          {bands.length === 0
+                            ? 'This schedule has no quantities set yet.'
+                            : custom
+                            ? `${bands.length} width bands, ${bands[0].toLocaleString()}–${bands[bands.length - 1].toLocaleString()}mm · qty ${selectedSchedule.qty_map[bands[0]]}–${selectedSchedule.qty_map[bands[bands.length - 1]]}`
+                            : bands.map(w => `≤${w.toLocaleString()}: ${selectedSchedule.qty_map[w]}`).join('   ·   ')}
+                          {custom && (
+                            <div style={{ marginTop: 4, color: 'var(--warning)' }}>
+                              Custom bands — not editable here. Ask for the numbers to be updated directly.
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </>
                 )}
 
