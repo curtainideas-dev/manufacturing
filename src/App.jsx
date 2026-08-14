@@ -10,6 +10,8 @@ import JobDetail         from './pages/JobDetail'
 import WindowDetail      from './pages/WindowDetail'
 import SupplierList      from './pages/SupplierList'
 import SupplierDetail    from './pages/SupplierDetail'
+import PurchaseOrderList   from './pages/PurchaseOrderList'
+import PurchaseOrderDetail from './pages/PurchaseOrderDetail'
 
 import ComponentModal        from './components/ComponentModal'
 import StockEditModal        from './components/StockEditModal'
@@ -18,10 +20,14 @@ import ReceiveBarsModal      from './components/ReceiveBarsModal'
 import DeductStockModal      from './components/DeductStockModal'
 import SupplierModal         from './components/SupplierModal'
 import AddWindowModal        from './components/AddWindowModal'
+import PurchaseOrderModal    from './components/PurchaseOrderModal'
+import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
 import { buildStockMap, stockKey, checkLowStock, getStock } from './lib/stockEngine'
 import { calcWindowBOM, calcJobSummary, buildPriceSnapshot, buildQtySnapshot } from './lib/bomEngine'
+import { orderUnitInfo } from './lib/poEngine'
+import { exportPurchaseOrderXLSX } from './lib/exportPO'
 import './index.css'
 
 const NAV_TABS = [
@@ -30,6 +36,7 @@ const NAV_TABS = [
   { id: 'products',   label: 'Products',   emoji: '🔩' },
   { id: 'bom',        label: 'Jobs',       emoji: '📋' },
   { id: 'stock',      label: 'Stock',      emoji: '🏪' },
+  { id: 'orders',     label: 'Orders',     emoji: '🧾' },
 ]
 
 export default function App() {
@@ -50,6 +57,7 @@ export default function App() {
   const [currentJob, setCurrentJob]           = useState(null)
   const [currentWindow, setCurrentWindow]     = useState(null)
   const [currentSupplier, setCurrentSupplier] = useState(null)
+  const [currentPO, setCurrentPO]             = useState(null)
 
   const [compModalOpen, setCompModalOpen]         = useState(false)
   const [editingComp, setEditingComp]             = useState(null)
@@ -86,6 +94,15 @@ export default function App() {
   const [deductOpen, setDeductOpen]               = useState(false)
   const [deductSaving, setDeductSaving]           = useState(false)
   const [jobMovements, setJobMovements]           = useState([])
+
+  // ---- Purchase order state ----
+  const [purchaseOrders, setPurchaseOrders]       = useState([])
+  const [poLinesMap, setPoLinesMap]               = useState({})
+  const [poModalOpen, setPoModalOpen]             = useState(false)
+  const [poCreating, setPoCreating]               = useState(false)
+  const [addLinesOpen, setAddLinesOpen]           = useState(false)
+  const [addingLines, setAddingLines]             = useState(false)
+  const [poExporting, setPoExporting]             = useState(false)
 
   const { toasts, showToast } = useToast()
 
@@ -128,7 +145,7 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     if (!hasLoadedRef.current) setLoading(true)
-    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes] = await Promise.all([
+    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes] = await Promise.all([
       supabase.from('components').select('*').order('name'),
       supabase.from('suppliers').select('*').order('name'),
       supabase.from('products').select('*').order('name'),
@@ -137,6 +154,8 @@ export default function App() {
       supabase.from('stock').select('*'),
       supabase.from('stock_bars').select('*').eq('status', 'available').order('created_at'),
       supabase.from('width_schedules').select('*').order('name'),
+      supabase.from('purchase_orders').select('*, supplier:suppliers(*)').order('created_at', { ascending: false }),
+      supabase.from('purchase_order_lines').select('*, component:components(*)').order('created_at'),
     ])
 
     const schedules = wsRes.error ? [] : (wsRes.data || [])
@@ -183,6 +202,18 @@ export default function App() {
           .sort((a, b) => a.sort_order - b.sort_order)
           .map(w => ({ ...w, bom_overrides: w.bom_overrides || {} }))
       })))
+    }
+
+    if (poRes.error) showToast('Failed to load purchase orders', 'error')
+    else setPurchaseOrders(poRes.data || [])
+
+    if (!poLinesRes.error) {
+      const map = {}
+      ;(poLinesRes.data || []).forEach(l => {
+        if (!map[l.po_id]) map[l.po_id] = []
+        map[l.po_id].push(l)
+      })
+      setPoLinesMap(map)
     }
 
     setLoading(false)
@@ -839,7 +870,7 @@ export default function App() {
       if (!stock) continue
       const qtyAfter = (stock.qty_on_hand || 0) - d.qty
       if (qtyAfter < (stock.qty_minimum || 0)) {
-        alerts.push({ component: d.component, colour_variant: d.colour_variant, stock })
+        alerts.push({ component: d.component, colour_variant: d.colour_variant, stock, qtyAfter })
       }
     }
     if (alerts.length === 0) return
@@ -862,18 +893,106 @@ export default function App() {
 
       if (po) {
         await supabase.from('purchase_order_lines').insert(
-          items.map(item => ({
-            po_id:          po.id,
-            component_id:   item.component.id,
-            colour_variant: item.colour_variant || null,
-            qty_ordered:    0, // flagged — qty to be set manually
-            unit_cost:      item.component.unit_cost || 0,
-          }))
+          items.map(item => {
+            const info      = orderUnitInfo(item.component)
+            const shortfall = (item.stock.qty_minimum || 0) - item.qtyAfter
+            const packQty   = item.component.order_type === 'bar' ? 1 : (Number(item.component.pack_qty) || 1)
+            return {
+              po_id:          po.id,
+              component_id:   item.component.id,
+              colour_variant: item.colour_variant || null,
+              qty_ordered:    shortfall > 0 ? Math.ceil(shortfall / packQty) : 1,
+              unit_cost:      info.price,
+            }
+          })
         )
       }
     }
 
     showToast(`⚠️ ${alerts.length} component${alerts.length !== 1 ? 's' : ''} below minimum — draft PO created`, 'success')
+  }
+
+  // ==== PURCHASE ORDERS ====
+
+  const handleNewPO = async ({ supplier_id, notes }) => {
+    setPoCreating(true)
+    const { data, error } = await supabase
+      .from('purchase_orders')
+      .insert({ supplier_id, status: 'draft', notes })
+      .select('*, supplier:suppliers(*)').single()
+    if (error) {
+      showToast(error.message || 'Failed to create order', 'error')
+    } else {
+      setPurchaseOrders(prev => [data, ...prev])
+      setCurrentPO(data)
+      setPoModalOpen(false)
+      showToast('Purchase order created ✓', 'success')
+    }
+    setPoCreating(false)
+  }
+
+  const handlePOStatusChange = async (status) => {
+    const updated = { ...currentPO, status }
+    setCurrentPO(updated)
+    setPurchaseOrders(prev => prev.map(p => p.id === updated.id ? updated : p))
+    const { error } = await supabase.from('purchase_orders').update({ status }).eq('id', currentPO.id)
+    if (error) showToast('Failed to update status', 'error')
+    else showToast(`Marked as ${status} ✓`, 'success')
+  }
+
+  const handlePODelete = async () => {
+    if (!window.confirm('Delete this purchase order?')) return
+    const id = currentPO.id
+    await supabase.from('purchase_order_lines').delete().eq('po_id', id)
+    const { error } = await supabase.from('purchase_orders').delete().eq('id', id)
+    if (error) { showToast('Delete failed', 'error'); return }
+    setPurchaseOrders(prev => prev.filter(p => p.id !== id))
+    setPoLinesMap(prev => { const next = { ...prev }; delete next[id]; return next })
+    setCurrentPO(null)
+    showToast('Purchase order deleted')
+  }
+
+  const handleAddPOLines = async (lines) => {
+    setAddingLines(true)
+    const payload = lines.map(l => ({ ...l, po_id: currentPO.id }))
+    const { error } = await supabase.from('purchase_order_lines').insert(payload)
+    if (error) {
+      showToast(error.message || 'Failed to add items', 'error')
+    } else {
+      showToast(`${lines.length} item${lines.length !== 1 ? 's' : ''} added ✓`, 'success')
+      setAddLinesOpen(false)
+      await loadAll()
+    }
+    setAddingLines(false)
+  }
+
+  const handleUpdatePOLine = async (lineId, updates) => {
+    const payload = {}
+    if (updates.qty_ordered !== undefined) payload.qty_ordered = Number(updates.qty_ordered) || 0
+    if (updates.unit_cost !== undefined) payload.unit_cost = Number(updates.unit_cost) || 0
+    setPoLinesMap(prev => ({
+      ...prev,
+      [currentPO.id]: (prev[currentPO.id] || []).map(l => l.id === lineId ? { ...l, ...payload } : l),
+    }))
+    await supabase.from('purchase_order_lines').update(payload).eq('id', lineId)
+  }
+
+  const handleRemovePOLine = async (lineId) => {
+    setPoLinesMap(prev => ({
+      ...prev,
+      [currentPO.id]: (prev[currentPO.id] || []).filter(l => l.id !== lineId),
+    }))
+    await supabase.from('purchase_order_lines').delete().eq('id', lineId)
+  }
+
+  const handleExportPO = async () => {
+    setPoExporting(true)
+    try {
+      const supplier = suppliers.find(s => s.id === currentPO.supplier_id) || currentPO.supplier
+      await exportPurchaseOrderXLSX(currentPO, supplier, poLinesMap[currentPO.id] || [])
+    } finally {
+      setPoExporting(false)
+    }
   }
 
   // ==== LOADING ====
@@ -1007,6 +1126,34 @@ export default function App() {
       )
     }
 
+    // Purchase order detail
+    if (navTab === 'orders' && currentPO) {
+      return (
+        <PurchaseOrderDetail
+          po={currentPO}
+          lines={poLinesMap[currentPO.id] || []}
+          onBack={() => setCurrentPO(null)}
+          onDelete={handlePODelete}
+          onAddLines={() => setAddLinesOpen(true)}
+          onUpdateLine={handleUpdatePOLine}
+          onRemoveLine={handleRemovePOLine}
+          onStatusChange={handlePOStatusChange}
+          onExport={handleExportPO}
+          exporting={poExporting}
+        />
+      )
+    }
+
+    if (navTab === 'orders') {
+      return (
+        <PurchaseOrderList
+          purchaseOrders={purchaseOrders.map(po => ({ ...po, lines: poLinesMap[po.id] || [] }))}
+          onOpen={setCurrentPO}
+          onNew={() => setPoModalOpen(true)}
+        />
+      )
+    }
+
     // Component library
     return (
       <ComponentLibrary
@@ -1021,7 +1168,7 @@ export default function App() {
   }
 
   // Hide bottom nav when drilling into details
-  const showBottomNav = !currentProduct && !currentJob && !currentWindow && !currentSupplier
+  const showBottomNav = !currentProduct && !currentJob && !currentWindow && !currentSupplier && !currentPO
 
   return (
     <div className="app">
@@ -1077,6 +1224,25 @@ export default function App() {
         products={products}
         onClose={() => setAddWindowOpen(false)}
         onAdd={handleAddWindow}
+      />
+
+      <PurchaseOrderModal
+        open={poModalOpen}
+        suppliers={suppliers}
+        onClose={() => setPoModalOpen(false)}
+        onCreate={handleNewPO}
+        creating={poCreating}
+      />
+
+      <AddPOLinesModal
+        open={addLinesOpen}
+        supplier={suppliers.find(s => s.id === currentPO?.supplier_id)}
+        components={components}
+        stockMap={stockMap}
+        existingKeys={new Set((poLinesMap[currentPO?.id] || []).map(l => `${l.component_id}__${l.colour_variant?.suffix || ''}`))}
+        onClose={() => setAddLinesOpen(false)}
+        onAdd={handleAddPOLines}
+        adding={addingLines}
       />
 
       <StockEditModal
