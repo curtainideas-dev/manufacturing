@@ -5,6 +5,7 @@ import ComponentLibrary from './pages/ComponentLibrary'
 import StockPage        from './pages/StockPage'
 import ProductList       from './pages/ProductList'
 import ProductDetail     from './pages/ProductDetail'
+import OptionsAdmin      from './pages/OptionsAdmin'
 import JobList           from './pages/JobList'
 import JobDetail         from './pages/JobDetail'
 import WindowDetail      from './pages/WindowDetail'
@@ -25,7 +26,7 @@ import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
 import { buildStockMap, stockKey, checkLowStock, getStock } from './lib/stockEngine'
-import { calcWindowBOM, calcJobSummary, buildPriceSnapshot, buildQtySnapshot } from './lib/bomEngine'
+import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot } from './lib/bomEngine'
 import { orderUnitInfo } from './lib/poEngine'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
 import './index.css'
@@ -47,6 +48,7 @@ export default function App() {
   const [suppliers, setSuppliers]                       = useState([])
   const [products, setProducts]                         = useState([])
   const [productComponentsMap, setProductComponentsMap] = useState({})
+  const [productOptions, setProductOptions]             = useState({ track: [], blind: [] })
   const [jobs, setJobs]                                 = useState([])
   const [widthSchedules, setWidthSchedules]             = useState([])
   const [loading, setLoading]                           = useState(true)
@@ -106,20 +108,31 @@ export default function App() {
 
   const { toasts, showToast } = useToast()
 
+  // The option definitions that apply to a product, via its type. Recipe
+  // resolution needs these to know which option lines a window has answered.
+  const optionDefsFor = useCallback((productId) => {
+    const product = products.find(p => p.id === productId)
+    return productOptions[product?.product_type] || []
+  }, [products, productOptions])
+
   // Pre-compute current job's BOM summary for the deduct stock modal
   const currentJobSummary = useMemo(() => {
     if (!currentJob) return []
     const windowsWithBOM = (currentJob.windows || []).map(win => ({
       ...win,
-      bom: calcWindowBOM(
-        productComponentsMap[win.product_id] || [],
-        Number(win.width_mm), Number(win.drop_mm),
+      bom: buildWindowBOM(
+        productComponentsMap[win.product_id] || [], win,
+        optionDefsFor(win.product_id),
         currentJob.price_snapshot || null,
         currentJob.qty_snapshot?.[win.id] || null,
       )
     }))
     return calcJobSummary(windowsWithBOM)
-  }, [currentJob, productComponentsMap])
+  }, [currentJob, productComponentsMap, optionDefsFor])
+
+  // Superseded products stay in `products` so historical jobs can still name
+  // the product they were built against — but they must never be pickable.
+  const activeProducts = useMemo(() => products.filter(p => !p.archived), [products])
 
   // How many products use each component — so deleting one shows what it affects
   const componentUsage = useMemo(() => {
@@ -145,7 +158,7 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     if (!hasLoadedRef.current) setLoading(true)
-    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes] = await Promise.all([
+    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes] = await Promise.all([
       supabase.from('components').select('*').order('name'),
       supabase.from('suppliers').select('*').order('name'),
       supabase.from('products').select('*').order('name'),
@@ -156,10 +169,24 @@ export default function App() {
       supabase.from('width_schedules').select('*').order('name'),
       supabase.from('purchase_orders').select('*, supplier:suppliers(*)').order('created_at', { ascending: false }),
       supabase.from('purchase_order_lines').select('*, component:components(*)').order('created_at'),
+      supabase.from('product_options').select('*, choices:product_option_choices(*)').order('sort_order'),
     ])
 
     const schedules = wsRes.error ? [] : (wsRes.data || [])
     if (!wsRes.error) setWidthSchedules(schedules)
+
+    // Option definitions, keyed by product type, each with its choices sorted.
+    // Recipe resolution needs these — without them a product's option lines
+    // can't be matched to a window's answers.
+    if (optRes.error) showToast('Failed to load product options', 'error')
+    else {
+      const byType = { track: [], blind: [] }
+      ;(optRes.data || []).forEach(o => {
+        const opt = { ...o, choices: (o.choices || []).slice().sort((a, b) => a.sort_order - b.sort_order) }
+        if (byType[o.product_type]) byType[o.product_type].push(opt)
+      })
+      setProductOptions(byType)
+    }
 
     if (compRes.error) showToast('Failed to load components', 'error')
     else setComponents(compRes.data)
@@ -320,10 +347,14 @@ export default function App() {
 
   // ==== PRODUCTS ====
 
-  const handleNewProduct = async () => {
+  const handleNewProduct = async (productType = 'track') => {
     const { data, error } = await supabase
       .from('products')
-      .insert({ name: 'New Product', category: 'track' })
+      .insert({
+        name:         productType === 'blind' ? 'New fabric category' : 'New track',
+        category:     productType,
+        product_type: productType,
+      })
       .select().single()
     if (error) { showToast('Failed to create product', 'error'); return }
     await loadAll()
@@ -425,6 +456,12 @@ export default function App() {
       formula_interval:  Number(formData.formula_interval) || 500,
       width_schedule_id: formData.width_schedule_id || null,
       colour_variant:    formData.colour_variant || null,
+      option_choice_id:  formData.option_choice_id || null,
+      group_key:         formData.group_key || null,
+      active_min_width:  formData.active_min_width ?? null,
+      active_max_width:  formData.active_max_width ?? null,
+      active_min_drop:   formData.active_min_drop ?? null,
+      active_max_drop:   formData.active_max_drop ?? null,
       sort_order:        sortOrder,
     })
     if (error) showToast(error.message || 'Failed to add', 'error')
@@ -442,6 +479,12 @@ export default function App() {
       formula_interval:  Number(formData.formula_interval) || 500,
       width_schedule_id: formData.width_schedule_id || null,
       colour_variant:    formData.colour_variant || null,
+      option_choice_id:  formData.option_choice_id || null,
+      group_key:         formData.group_key || null,
+      active_min_width:  formData.active_min_width ?? null,
+      active_max_width:  formData.active_max_width ?? null,
+      active_min_drop:   formData.active_min_drop ?? null,
+      active_max_drop:   formData.active_max_drop ?? null,
     }).eq('id', id)
     showToast('Updated ✓', 'success')
     await loadAll()
@@ -456,6 +499,54 @@ export default function App() {
   }
 
   // ==== JOBS ====
+
+  // ==== PRODUCT OPTIONS ====
+
+  const handleSaveOption = async (data) => {
+    setProdSaving(true)
+    const fields = { ...data }
+    const id = fields.id
+    delete fields.id
+    delete fields.choices          // joined in on read, not a column
+    const { error } = id
+      ? await supabase.from('product_options').update(fields).eq('id', id)
+      : await supabase.from('product_options').insert(fields)
+    setProdSaving(false)
+    if (error) {
+      showToast(error.code === '23505' ? 'That code is already used for this type' : 'Failed to save option', 'error')
+      return
+    }
+    await loadAll()
+    showToast(id ? 'Option saved' : 'Option created')
+  }
+
+  const handleDeleteOption = async (id) => {
+    const { error } = await supabase.from('product_options').delete().eq('id', id)
+    if (error) { showToast('Failed to delete option', 'error'); return }
+    await loadAll()
+    showToast('Option deleted')
+  }
+
+  const handleSaveChoice = async (data) => {
+    setProdSaving(true)
+    const { id, ...fields } = data
+    const { error } = id
+      ? await supabase.from('product_option_choices').update(fields).eq('id', id)
+      : await supabase.from('product_option_choices').insert(fields)
+    setProdSaving(false)
+    if (error) {
+      showToast(error.code === '23505' ? 'That answer already exists' : 'Failed to save answer', 'error')
+      return
+    }
+    await loadAll()
+  }
+
+  const handleDeleteChoice = async (id) => {
+    const { error } = await supabase.from('product_option_choices').delete().eq('id', id)
+    if (error) { showToast('Failed to delete answer', 'error'); return }
+    await loadAll()
+    showToast('Answer deleted')
+  }
 
   const handleNewJob = async () => {
     const { data, error } = await supabase
@@ -550,7 +641,7 @@ export default function App() {
   const computeJobLock = useCallback((job) => {
     const windowsWithBOM = (job.windows || []).map(win => ({
       ...win,
-      bom: calcWindowBOM(productComponentsMap[win.product_id] || [], Number(win.width_mm), Number(win.drop_mm))
+      bom: buildWindowBOM(productComponentsMap[win.product_id] || [], win, optionDefsFor(win.product_id))
     }))
     const total = calcJobSummary(windowsWithBOM).reduce((s, r) => s + r.total_cost, 0)
     return {
@@ -558,7 +649,7 @@ export default function App() {
       qty_snapshot:   buildQtySnapshot(windowsWithBOM),
       locked_total:   Math.round(total * 100) / 100,
     }
-  }, [productComponentsMap])
+  }, [productComponentsMap, optionDefsFor])
 
   // One-off: jobs confirmed before pricing was locked have no snapshot, so their
   // value would keep moving with component costs. Lock them at current prices.
@@ -627,10 +718,11 @@ export default function App() {
         drop_mm:      Number(winData.drop_mm),
         sort_order:   sortOrder,
         bom_overrides: {},
+        config:        winData.config || {},
       })
       .select().single()
     if (error) { showToast('Failed to add window', 'error'); return }
-    const newWin = { ...data, bom_overrides: {} }
+    const newWin = { ...data, bom_overrides: {}, config: data.config || {} }
     const updated = { ...currentJob, windows: [...(currentJob.windows || []), newWin] }
     setCurrentJob(updated)
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
@@ -1021,6 +1113,7 @@ export default function App() {
           totalWindows={currentJob.windows.length}
           product={product}
           productComponents={recipe}
+          optionDefs={optionDefsFor(win.product_id)}
           onBack={() => setCurrentWindow(null)}
           onUpdate={(updates) => handleWindowUpdate(currentWindow.idx, updates)}
           onDelete={() => handleWindowDelete(currentWindow.idx)}
@@ -1036,6 +1129,7 @@ export default function App() {
           job={currentJob}
           products={products}
           productComponentsMap={productComponentsMap}
+          optionDefsFor={optionDefsFor}
           onBack={() => setCurrentJob(null)}
           onUpdate={handleJobUpdate}
           onDelete={handleJobDelete}
@@ -1063,6 +1157,7 @@ export default function App() {
           productComponents={productComponentsMap[currentProduct.id] || []}
           allComponents={components}
           suppliers={suppliers}
+          optionDefs={productOptions[currentProduct.product_type] || []}
           widthSchedules={widthSchedules}
           onSaveSchedule={handleSaveWidthSchedule}
           onDeleteSchedule={handleDeleteWidthSchedule}
@@ -1079,7 +1174,22 @@ export default function App() {
     }
 
     if (navTab === 'products') {
-      return <ProductList products={products} onOpen={setCurrentProduct} onNew={handleNewProduct} />
+      return <ProductList products={activeProducts} onOpen={setCurrentProduct} onNew={handleNewProduct}
+               onOpenOptions={() => setNavTab('options')} />
+    }
+
+    if (navTab === 'options') {
+      return (
+        <OptionsAdmin
+          productOptions={productOptions}
+          onBack={() => setNavTab('products')}
+          onSaveOption={handleSaveOption}
+          onDeleteOption={handleDeleteOption}
+          onSaveChoice={handleSaveChoice}
+          onDeleteChoice={handleDeleteChoice}
+          saving={prodSaving}
+        />
+      )
     }
 
     // Supplier detail
@@ -1221,7 +1331,9 @@ export default function App() {
       <AddWindowModal
         open={addWindowOpen}
         windowNumber={(currentJob?.windows || []).length + 1}
-        products={products}
+        products={activeProducts}
+        productComponentsMap={productComponentsMap}
+        productOptions={productOptions}
         onClose={() => setAddWindowOpen(false)}
         onAdd={handleAddWindow}
       />

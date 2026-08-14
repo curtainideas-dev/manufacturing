@@ -22,10 +22,16 @@ const DEFAULT = {
   formula_interval: 500,
   colour_variant: null,
   width_schedule_id: '',
+  option_choice_id: null,
+  group_key: null,
+  active_min_width: null,
+  active_max_width: null,
+  active_min_drop: null,
+  active_max_drop: null,
 }
 
 export default function ProductComponentModal({
-  open, productComponent, allComponents, suppliers = [],
+  open, productComponent, allComponents, suppliers = [], optionDefs = [],
   widthSchedules = [], onSaveSchedule, onDeleteSchedule,
   onClose, onSave, onRemove, saving
 }) {
@@ -451,6 +457,65 @@ export default function ProductComponentModal({
                 )}
 
                 {preview && <div className="formula-preview">{preview}</div>}
+              </div>
+            </>
+          )}
+
+          {/* When does this line apply? — the link between an option's answer
+              and the parts it actually supplies. */}
+          {form.component_id && (
+            <>
+              <div className="divider" />
+              <label className="field-label">When is this used?</label>
+
+              <select className="field-input" style={{ marginBottom: 10 }}
+                value={form.option_choice_id || ''}
+                onChange={e => set('option_choice_id', e.target.value || null)}>
+                <option value="">Always — part of the base recipe</option>
+                {optionDefs.filter(o => !o.spec_only).map(o => (
+                  <optgroup key={o.id} label={o.name}>
+                    {(o.choices || []).map(c => (
+                      <option key={c.id} value={c.id}>{o.name} is {c.label}</option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+
+              {optionDefs.length === 0 && (
+                <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginTop: -4, marginBottom: 10 }}>
+                  No options defined for this product type yet — add them under Products → Options.
+                </div>
+              )}
+
+              <div className="field" style={{ marginBottom: 10 }}>
+                <label className="field-label">Alternatives group (optional)</label>
+                <input className="field-input" value={form.group_key || ''}
+                  onChange={e => set('group_key', e.target.value || null)}
+                  placeholder="e.g. Tube, Bracket" />
+                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4 }}>
+                  Lines sharing a name here are alternatives — only one ends up in the window.
+                </div>
+              </div>
+
+              <label className="field-label">Only for sizes in this range (optional)</label>
+              <div className="grid-2" style={{ marginBottom: 8 }}>
+                <input className="field-input" type="number" placeholder="min width" style={{ textAlign: 'right' }}
+                  value={form.active_min_width ?? ''}
+                  onChange={e => set('active_min_width', e.target.value === '' ? null : Number(e.target.value))} />
+                <input className="field-input" type="number" placeholder="max width" style={{ textAlign: 'right' }}
+                  value={form.active_max_width ?? ''}
+                  onChange={e => set('active_max_width', e.target.value === '' ? null : Number(e.target.value))} />
+              </div>
+              <div className="grid-2">
+                <input className="field-input" type="number" placeholder="min drop" style={{ textAlign: 'right' }}
+                  value={form.active_min_drop ?? ''}
+                  onChange={e => set('active_min_drop', e.target.value === '' ? null : Number(e.target.value))} />
+                <input className="field-input" type="number" placeholder="max drop" style={{ textAlign: 'right' }}
+                  value={form.active_max_drop ?? ''}
+                  onChange={e => set('active_max_drop', e.target.value === '' ? null : Number(e.target.value))} />
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4 }}>
+                Leave blank for no limit. This is how a wider blind swaps to a heavier tube.
               </div>
             </>
           )}

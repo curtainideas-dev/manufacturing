@@ -119,6 +119,128 @@ export function fixedPerWidthLabel(pc, widthMm) {
   return `${multiplier}×${perBand}`
 }
 
+/* ==========================================================================
+ * Recipe resolution
+ *
+ * A product's recipe now holds more lines than any one window uses. A line
+ * with option_choice_id set is only supplied when that choice is answered;
+ * a line with a dimension band only applies inside it; and lines sharing a
+ * group_key are alternatives where exactly one survives.
+ *
+ * Resolution runs before any quantity is calculated, so everything
+ * downstream — costing, stock deduction, POs, bar packing — sees the same
+ * flat list of lines it always did.
+ * ========================================================================== */
+
+/**
+ * The effective answer for every option, given what the window recorded.
+ *
+ * An option gated by depends_on_code is only *asked* while that option
+ * equals depends_on_value. Otherwise its answer may still be decided for it
+ * by forced_values — e.g. a centre-open track takes both return brackets
+ * without anyone being asked, and a free-hanging one takes none.
+ */
+export function resolveAnswers(optionDefs = [], config = null) {
+  const given = (config && config.options) || {}
+  const out = {}
+  optionDefs.forEach(o => { if (!o.depends_on_code) out[o.code] = given[o.code] })
+  optionDefs.forEach(o => {
+    if (!o.depends_on_code) return
+    const dep = out[o.depends_on_code] !== undefined ? out[o.depends_on_code] : given[o.depends_on_code]
+    out[o.code] = String(dep) === String(o.depends_on_value)
+      ? given[o.code]                            // asked
+      : (o.forced_values || {})[dep]             // decided, or genuinely absent
+  })
+  return out
+}
+
+/** Is this option actually put to the user, given the answers so far? */
+export function isOptionVisible(option, answers) {
+  if (!option.depends_on_code) return true
+  return String(answers[option.depends_on_code]) === String(option.depends_on_value)
+}
+
+/**
+ * Required options that are visible and still unanswered. A hidden option
+ * carrying a forced value is never missing — that's the whole point of
+ * forcing it. Returns option names, ready to show.
+ */
+export function missingAnswers(optionDefs = [], config = null) {
+  const answers = resolveAnswers(optionDefs, config)
+  return optionDefs
+    .filter(o => o.required && isOptionVisible(o, answers) && !answers[o.code])
+    .map(o => o.name)
+}
+
+const withinBand = (pc, widthMm, dropMm) =>
+  (pc.active_min_width == null || widthMm >= Number(pc.active_min_width)) &&
+  (pc.active_max_width == null || widthMm <= Number(pc.active_max_width)) &&
+  (pc.active_min_drop  == null || dropMm  >= Number(pc.active_min_drop))  &&
+  (pc.active_max_drop  == null || dropMm  <= Number(pc.active_max_drop))
+
+const isBanded = pc =>
+  pc.active_min_width != null || pc.active_max_width != null ||
+  pc.active_min_drop  != null || pc.active_max_drop  != null
+
+/**
+ * Collapse group_key alternatives down to one line each.
+ * Precedence: an explicit window override, then a line supplied by an
+ * answered option, then a line whose dimension band matched, then the plain
+ * default. Ungrouped lines pass straight through.
+ */
+function applyGroups(lines, overrides = {}) {
+  const grouped = {}, out = []
+  lines.forEach(pc => {
+    if (!pc.group_key) { out.push(pc); return }
+    ;(grouped[pc.group_key] ||= []).push(pc)
+  })
+  Object.entries(grouped).forEach(([key, candidates]) => {
+    const forcedId = overrides && overrides[key]
+    const pick =
+      (forcedId && candidates.find(c => c.id === forcedId)) ||
+      candidates.find(c => c.option_choice_id) ||
+      candidates.find(isBanded) ||
+      candidates[0]
+    if (pick) out.push(pick)
+  })
+  return out
+}
+
+/**
+ * The lines that actually apply to one window.
+ *
+ * `optionDefs` are the option definitions for the product's type, each with
+ * its `choices` array attached.
+ */
+export function resolveRecipe(productComponents = [], config = null, optionDefs = [], widthMm = 0, dropMm = 0) {
+  const answers = resolveAnswers(optionDefs, config)
+  const chosen = new Set()
+  optionDefs.forEach(o => {
+    const value = answers[o.code]
+    if (value === undefined || value === null || value === '') return
+    const choice = (o.choices || []).find(c => String(c.value) === String(value))
+    if (choice) chosen.add(choice.id)
+  })
+
+  const applicable = productComponents.filter(pc =>
+    (!pc.option_choice_id || chosen.has(pc.option_choice_id)) &&
+    withinBand(pc, widthMm, dropMm))
+
+  return applyGroups(applicable, config && config.overrides)
+    .slice()
+    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+}
+
+/**
+ * Resolve then cost, in one call. Every BOM in the app goes through here so
+ * a call site can't accidentally skip resolution and cost the whole recipe.
+ */
+export function buildWindowBOM(productComponents, win, optionDefs = [], priceMap = null, qtyMap = null) {
+  const widthMm = Number(win.width_mm), dropMm = Number(win.drop_mm)
+  const lines = resolveRecipe(productComponents, win.config, optionDefs, widthMm, dropMm)
+  return calcWindowBOM(lines, widthMm, dropMm, priceMap, qtyMap)
+}
+
 // Key used for snapshotted unit costs — component + colour variant.
 export function priceKey(componentId, colourVariant) {
   return `${componentId}__${colourVariant?.suffix || ''}`

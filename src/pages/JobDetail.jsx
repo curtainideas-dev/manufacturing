@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef } from 'react'
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon } from '../components/Icons'
-import { calcWindowBOM, calcJobSummary, fmt, fmtQty } from '../lib/bomEngine'
+import { buildWindowBOM, calcJobSummary, missingAnswers, fmt, fmtQty } from '../lib/bomEngine'
 import { exportJobPDF } from '../lib/exportPDF'
 import { exportPackagingLabels, exportTrackLabels, exportPartsLabels } from '../lib/exportLabels'
 import PartsListModal from '../components/PartsListModal'
@@ -14,7 +14,7 @@ const DownloadIcon = () => (
   </svg>
 )
 
-export default function JobDetail({ job, products, productComponentsMap, onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onConfirm, onComplete, onReopen, onAttachPO, poUploading, onDeductStock }) {
+export default function JobDetail({ job, products, productComponentsMap, optionDefsFor, onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onConfirm, onComplete, onReopen, onAttachPO, poUploading, onDeductStock }) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(false)
   const [labeling, setLabeling]   = useState(null) // 'pack' | 'track' | 'parts' | null
@@ -34,14 +34,14 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
       const recipe = productComponentsMap[win.product_id] || []
       return {
         ...win,
-        bom: calcWindowBOM(
-          recipe, Number(win.width_mm), Number(win.drop_mm),
+        bom: buildWindowBOM(
+          recipe, win, optionDefsFor(win.product_id),
           job.price_snapshot || null,
           job.qty_snapshot?.[win.id] || null,
         ),
       }
     })
-  }, [job.windows, productComponentsMap, job.price_snapshot, job.qty_snapshot])
+  }, [job.windows, productComponentsMap, optionDefsFor, job.price_snapshot, job.qty_snapshot])
 
   const jobSummary = useMemo(() => calcJobSummary(windowsWithBOM), [windowsWithBOM])
   const jobTotal   = jobSummary.reduce((s, r) => s + r.total_cost, 0)
@@ -268,13 +268,23 @@ export default function JobDetail({ job, products, productComponentsMap, onBack,
                 ) : windowsWithBOM.map((win, idx) => {
                   const product  = products.find(p => p.id === win.product_id)
                   const winTotal = win.bom.reduce((s, l) => s + l.line_cost, 0)
+                  const missing  = missingAnswers(optionDefsFor(win.product_id), win.config)
                   return (
                     <div key={win.id} className="component-item" onClick={() => onOpenWindow(win, idx)}>
                       <div className="component-avatar">🔩</div>
                       <div className="component-info">
-                        <div className="component-name">{win.label || `Window ${idx + 1}`}</div>
+                        <div className="component-name">
+                          {win.label || `Window ${idx + 1}`}
+                          {missing.length > 0 && (
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, marginLeft: 6, padding: '1px 6px',
+                              borderRadius: 4, background: 'var(--danger-bg)', color: 'var(--danger)',
+                            }}>incomplete</span>
+                          )}
+                        </div>
                         <div className="component-sub">
                           {product?.name || '—'} · {win.width_mm}W × {win.drop_mm}D mm
+                          {missing.length > 0 && ` · needs ${missing.join(', ')}`}
                         </div>
                       </div>
                       <div className="component-right">

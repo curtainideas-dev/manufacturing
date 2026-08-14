@@ -1,58 +1,81 @@
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
 import { XIcon, CheckIcon } from './Icons'
-import { SEGMENTS, NONE, parseProductName, matchesSegments, optionsForSegment } from '../lib/productName'
+import CustomiseWindowModal from './CustomiseWindowModal'
 
 const DEFAULT = { label: '', product_id: '', width_mm: '', drop_mm: '' }
-const NO_FILTERS = ['', '', '', '', '']
 
-export default function AddWindowModal({ open, windowNumber, products, onClose, onAdd }) {
-  const [form, setForm]       = useState(DEFAULT)
-  const [filters, setFilters] = useState(NO_FILTERS)
-  const [search, setSearch]   = useState('')
+const TYPES = [
+  { val: 'track', label: 'Tracks' },
+  { val: 'blind', label: 'Blinds' },
+]
+
+/**
+ * Two steps: pick the product and size, then answer what decides the build.
+ * A product is one identifier now — a profile code or a fabric category — so
+ * the picker is a plain list rather than a grid of name-segment filters.
+ */
+export default function AddWindowModal({
+  open, windowNumber, products, productComponentsMap = {}, productOptions = {},
+  onClose, onAdd,
+}) {
+  const [form, setForm]     = useState(DEFAULT)
+  const [type, setType]     = useState('track')
+  const [search, setSearch] = useState('')
+  const [step, setStep]     = useState(1)
+
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }))
 
-  const matchesSearch = (p) =>
-    !search || String(p.name).toLowerCase().includes(search.toLowerCase())
+  const filtered = products.filter(p =>
+    (p.product_type || 'track') === type &&
+    (!search || String(p.name).toLowerCase().includes(search.toLowerCase())))
 
-  const filtered = useMemo(
-    () => products.filter(p => matchesSegments(p, filters) && matchesSearch(p)),
-    [products, filters, search]
-  )
+  const selected  = products.find(p => p.id === form.product_id)
+  const optionDefs = productOptions[selected?.product_type] || []
+  const recipe     = productComponentsMap[form.product_id] || []
 
-  const optionsFor = (idx) => optionsForSegment(products, filters, idx, matchesSearch)
-  const activeCount = filters.filter(Boolean).length
+  const reset = () => { setForm(DEFAULT); setSearch(''); setStep(1) }
+  const handleClose = () => { reset(); onClose() }
 
-  const handleAdd = () => {
-    if (!form.product_id || !form.width_mm || !form.drop_mm) return
-    onAdd({ ...form, label: form.label || `Window ${windowNumber}` })
-    setForm(DEFAULT)
-    setFilters(NO_FILTERS)
-    setSearch('')
-    onClose()
-  }
+  const canContinue = form.product_id && form.width_mm && form.drop_mm
 
-  const handleClose = () => {
-    setFilters(NO_FILTERS)
-    setSearch('')
+  const handleSave = (config) => {
+    onAdd({ ...form, label: form.label || `Window ${windowNumber}`, config })
+    reset()
     onClose()
   }
 
   if (!open) return null
 
-  const selected = products.find(p => p.id === form.product_id)
+  // Step 2 hands off to the shared customise modal, so adding a window and
+  // editing one later ask exactly the same questions.
+  if (step === 2 && selected) {
+    return (
+      <CustomiseWindowModal
+        open
+        product={selected}
+        productComponents={recipe}
+        optionDefs={optionDefs}
+        widthMm={form.width_mm}
+        dropMm={form.drop_mm}
+        config={null}
+        onClose={() => setStep(1)}
+        onSave={handleSave}
+        saveLabel="Add window"
+      />
+    )
+  }
 
   return (
     <div className="modal-overlay open" onClick={e => e.target === e.currentTarget && handleClose()}>
       <div className="modal">
-        <div className="modal-handle" />
         <div className="modal-header">
-          <div className="modal-title">Add Window</div>
+          <div className="modal-title">Add window</div>
           <button onClick={handleClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--warm-300)', padding: 4 }}>
             <XIcon size={22} />
           </button>
         </div>
-        <div className="modal-body">
 
+        <div className="modal-body">
           <div className="field">
             <label className="field-label">Label (optional)</label>
             <input className="field-input" value={form.label}
@@ -60,70 +83,41 @@ export default function AddWindowModal({ open, windowNumber, products, onClose, 
               placeholder={`Window ${windowNumber}`} />
           </div>
 
-          {/* Product picker — filter by the naming-convention segments, then
-              tap to select. Scales as the product list grows. */}
+          <div style={{ display: 'flex', background: 'var(--warm-100)', borderRadius: 9, padding: 3, marginBottom: 12 }}>
+            {TYPES.map(t => (
+              <button key={t.val} type="button"
+                onClick={() => { setType(t.val); set('product_id', '') }}
+                style={{
+                  flex: 1, border: 'none', padding: 8, borderRadius: 7, cursor: 'pointer',
+                  fontSize: 13, fontWeight: 600,
+                  background: type === t.val ? '#fff' : 'transparent',
+                  color: type === t.val ? 'var(--accent-dark)' : 'var(--warm-300)',
+                }}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+
           <div className="field">
             <label className="field-label">
               Product
               {selected && <span style={{ color: 'var(--accent)', marginLeft: 8, fontWeight: 400 }}>{selected.name}</span>}
             </label>
 
-            <input className="field-input" placeholder="Search products..."
+            <input className="field-input" placeholder="Search…"
               value={search} onChange={e => setSearch(e.target.value)}
               style={{ fontSize: 13, marginBottom: 8 }} />
 
             <div style={{
-              display: 'grid', gap: 6,
-              gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))',
-              marginBottom: 8,
-            }}>
-              {SEGMENTS.map(seg => {
-                const { values, hasBlank } = optionsFor(seg.idx)
-                const active = !!filters[seg.idx]
-                return (
-                  <select key={seg.idx}
-                    className="field-input"
-                    value={filters[seg.idx]}
-                    onChange={e => setFilters(f => f.map((v, i) => (i === seg.idx ? e.target.value : v)))}
-                    title={seg.label}
-                    style={{
-                      fontSize: 12, padding: '6px 8px',
-                      borderColor: active ? 'var(--accent)' : undefined,
-                      background: active ? 'var(--accent-bg)' : undefined,
-                      fontWeight: active ? 600 : 400,
-                    }}
-                  >
-                    <option value="">{seg.label}</option>
-                    {values.map(v => <option key={v} value={v}>{v}</option>)}
-                    {hasBlank && <option value={NONE}>— none —</option>}
-                  </select>
-                )
-              })}
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <span style={{ fontSize: 11, color: 'var(--warm-300)' }}>
-                {filtered.length} of {products.length} products
-              </span>
-              {(activeCount > 0 || search) && (
-                <button onClick={() => { setFilters(NO_FILTERS); setSearch('') }}
-                  style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-                  Clear filters
-                </button>
-              )}
-            </div>
-
-            <div style={{
               border: '1px solid var(--warm-200)', borderRadius: 'var(--radius-sm)',
-              maxHeight: 220, overflowY: 'auto', background: '#fff',
+              maxHeight: 200, overflowY: 'auto', background: '#fff',
             }}>
               {filtered.length === 0 ? (
                 <div style={{ padding: '20px 14px', textAlign: 'center', fontSize: 13, color: 'var(--warm-300)' }}>
-                  No products match
+                  No {type === 'track' ? 'tracks' : 'blinds'} match
                 </div>
               ) : filtered.map(p => {
                 const isSel = p.id === form.product_id
-                const parts = parseProductName(p.name).filter(Boolean)
                 return (
                   <button key={p.id} type="button" onClick={() => set('product_id', p.id)}
                     style={{
@@ -143,10 +137,10 @@ export default function AddWindowModal({ open, windowNumber, products, onClose, 
                     </div>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: isSel ? 700 : 600, color: isSel ? 'var(--accent-dark)' : 'var(--ink)' }}>
-                        {parts.join(' · ') || p.name}
+                        {p.name}
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 1 }}>
-                        {p.component_count ?? 0} component{p.component_count !== 1 ? 's' : ''}
+                        {p.component_count ?? 0} recipe line{p.component_count !== 1 ? 's' : ''}
                       </div>
                     </div>
                   </button>
@@ -173,9 +167,10 @@ export default function AddWindowModal({ open, windowNumber, products, onClose, 
 
         <div className="modal-footer">
           <button className="btn btn-secondary" style={{ flex: 1 }} onClick={handleClose}>Cancel</button>
-          <button className="btn btn-primary" style={{ flex: 2 }} onClick={handleAdd}
-            disabled={!form.product_id || !form.width_mm || !form.drop_mm}>
-            Add Window
+          <button className="btn btn-primary" style={{ flex: 2 }}
+            onClick={() => optionDefs.length ? setStep(2) : handleSave({ options: {} })}
+            disabled={!canContinue}>
+            {optionDefs.length ? 'Customise →' : 'Add window'}
           </button>
         </div>
       </div>

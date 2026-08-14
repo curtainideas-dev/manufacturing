@@ -1,14 +1,16 @@
 import { useState, useMemo } from 'react'
 import { ChevronLeftIcon, TrashIcon } from '../components/Icons'
-import { calcWindowBOM, fmt, fmtQty } from '../lib/bomEngine'
+import { buildWindowBOM, missingAnswers, resolveAnswers, fmt, fmtQty } from '../lib/bomEngine'
+import CustomiseWindowModal from '../components/CustomiseWindowModal'
 
-export default function WindowDetail({ window: win, windowIndex, totalWindows, product, productComponents, onBack, onUpdate, onDelete, readOnly }) {
+export default function WindowDetail({ window: win, windowIndex, totalWindows, product, productComponents, optionDefs = [], onBack, onUpdate, onDelete, readOnly }) {
   const [overrides, setOverrides] = useState(win.bom_overrides || {})
 
-  // Recalculate BOM whenever dimensions change
+  // Recalculate BOM whenever dimensions or the window's answers change —
+  // both feed recipe resolution, not just the quantity formulas.
   const bom = useMemo(() =>
-    calcWindowBOM(productComponents, Number(win.width_mm), Number(win.drop_mm)),
-    [productComponents, win.width_mm, win.drop_mm]
+    buildWindowBOM(productComponents, win, optionDefs),
+    [productComponents, optionDefs, win]
   )
 
   const bomWithOverrides = bom.map(line => {
@@ -23,6 +25,19 @@ export default function WindowDetail({ window: win, windowIndex, totalWindows, p
   })
 
   const windowTotal = bomWithOverrides.reduce((s, l) => s + l.line_cost, 0)
+
+  const missing = useMemo(() => missingAnswers(optionDefs, win.config), [optionDefs, win.config])
+
+  const [customiseOpen, setCustomiseOpen] = useState(false)
+
+  // "Face fix · Centre open · Both ends" — the answers, in question order.
+  const answerSummary = useMemo(() => {
+    const effective = resolveAnswers(optionDefs, win.config)
+    return optionDefs
+      .map(o => (o.choices || []).find(c => String(c.value) === String(effective[o.code]))?.label)
+      .filter(Boolean)
+      .join(' · ')
+  }, [optionDefs, win.config])
 
   const handleOverride = (componentId, value) => {
     const next = { ...overrides, [componentId]: value }
@@ -103,6 +118,39 @@ export default function WindowDetail({ window: win, windowIndex, totalWindows, p
             </div>
             <div style={{ fontSize: 22, fontWeight: 700 }}>${fmt(windowTotal)}</div>
           </div>
+
+          {/* Answers live behind the same modal used when the window was
+              added, so there is one place these questions are ever asked. */}
+          {optionDefs.length > 0 && (
+            <button className="btn btn-secondary btn-block" style={{ marginBottom: 14 }}
+              onClick={() => setCustomiseOpen(true)} disabled={readOnly}>
+              🎛️ {readOnly ? 'Answers locked' : 'Customise'}
+              {answerSummary && (
+                <span style={{ fontWeight: 400, color: 'var(--warm-300)', marginLeft: 6, fontSize: 12.5 }}>
+                  {answerSummary}
+                </span>
+              )}
+            </button>
+          )}
+
+          {/* Unanswered required options mean the recipe resolved to fewer
+              lines than the window actually needs — say so loudly rather than
+              showing a cost that is quietly too low. */}
+          {missing.length > 0 && (
+            <div style={{
+              background: 'var(--danger-bg)', border: '1px solid #fecaca',
+              borderLeft: '3px solid var(--danger)', borderRadius: 'var(--radius-sm)',
+              padding: '10px 13px', marginBottom: 14,
+            }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--danger)', marginBottom: 2 }}>
+                Incomplete — cost below is not the real cost
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--ink)' }}>
+                {missing.join(', ')} {missing.length === 1 ? 'has' : 'have'} no answer, so the parts they
+                decide are missing from this window.
+              </div>
+            </div>
+          )}
 
           {/* BOM table — this is the assembler's pick list */}
           <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--warm-300)', marginBottom: 8 }}>
@@ -203,6 +251,19 @@ export default function WindowDetail({ window: win, windowIndex, totalWindows, p
           )}
         </div>
       </div>
+
+      <CustomiseWindowModal
+        open={customiseOpen}
+        product={product}
+        productComponents={productComponents}
+        optionDefs={optionDefs}
+        widthMm={win.width_mm}
+        dropMm={win.drop_mm}
+        config={win.config}
+        onClose={() => setCustomiseOpen(false)}
+        onSave={(config) => { onUpdate({ config }); setCustomiseOpen(false) }}
+        saveLabel="Save answers"
+      />
     </>
   )
 }

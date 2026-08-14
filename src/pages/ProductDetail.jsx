@@ -11,7 +11,7 @@ const COST_TYPE_LABELS = {
 
 
 export default function ProductDetail({
-  product, productComponents, allComponents, suppliers = [],
+  product, productComponents, allComponents, suppliers = [], optionDefs = [],
   widthSchedules = [], onSaveSchedule, onDeleteSchedule,
   onBack, onUpdateProduct, onAddComponent, onUpdateComponent,
   onRemoveComponent, onDuplicate, onDeleteProduct, saving,
@@ -123,6 +123,29 @@ export default function ProductDetail({
                     {pc.colour_variant ? ` · ${pc.colour_variant.name}` : ''}
                     {pc.component?.supplier ? ` · ${pc.component.supplier}` : ''}
                   </div>
+                  {(() => {
+                    const badges = []
+                    const choice = pc.option_choice_id && optionDefs
+                      .flatMap(o => (o.choices || []).map(c => ({ o, c })))
+                      .find(x => x.c.id === pc.option_choice_id)
+                    if (choice) badges.push({ t: `${choice.o.name}: ${choice.c.label}`, bg: 'var(--accent-bg)', fg: 'var(--accent-dark)' })
+                    if (pc.group_key) badges.push({ t: `alt: ${pc.group_key}`, bg: 'var(--blue-bg)', fg: 'var(--blue)' })
+                    const w = [pc.active_min_width, pc.active_max_width]
+                    const d = [pc.active_min_drop, pc.active_max_drop]
+                    if (w[0] != null || w[1] != null) badges.push({ t: `W ${w[0] ?? '0'}–${w[1] ?? '∞'}`, bg: 'var(--warning-bg)', fg: 'var(--warning)' })
+                    if (d[0] != null || d[1] != null) badges.push({ t: `D ${d[0] ?? '0'}–${d[1] ?? '∞'}`, bg: 'var(--warning-bg)', fg: 'var(--warning)' })
+                    if (!badges.length) return null
+                    return (
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                        {badges.map((b, i) => (
+                          <span key={i} style={{
+                            fontSize: 10, fontWeight: 700, padding: '1px 6px',
+                            borderRadius: 4, background: b.bg, color: b.fg,
+                          }}>{b.t}</span>
+                        ))}
+                      </div>
+                    )
+                  })()}
                 </div>
                 <div className="component-right">
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
@@ -225,6 +248,7 @@ export default function ProductDetail({
         open={addOpen}
         productComponent={null}
         allComponents={allComponents}
+        optionDefs={optionDefs}
         suppliers={suppliers}
         widthSchedules={widthSchedules}
         onSaveSchedule={onSaveSchedule}
@@ -239,6 +263,7 @@ export default function ProductDetail({
           open={!!editingPc}
           productComponent={editingPc}
           allComponents={allComponents}
+        optionDefs={optionDefs}
           suppliers={suppliers}
           widthSchedules={widthSchedules}
           onSaveSchedule={onSaveSchedule}
