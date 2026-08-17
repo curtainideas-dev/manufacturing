@@ -425,8 +425,11 @@ export default function App() {
         active_max_width:  pc.active_max_width ?? null,
         active_min_drop:   pc.active_min_drop ?? null,
         active_max_drop:   pc.active_max_drop ?? null,
-        drop_limit:        pc.drop_limit || null,
-        drop_limit_mode:   pc.drop_limit_mode || 'above',
+        // drop_limit / drop_limit_mode are NOT included: the migration that
+        // adds them (supabase_drop_limits.sql) hasn't been run against this
+        // database yet, and PostgREST rejects inserts naming unknown
+        // columns — including them here silently dropped every recipe line.
+        // Re-add once that migration has been applied.
         sort_order:        pc.sort_order,
       }))
       const { error: ce } = await supabase.from('product_components').insert(copies)
@@ -503,6 +506,7 @@ export default function App() {
   const handleUpdateProductComponent = async (id, formData) => {
     setProdSaving(true)
     await supabase.from('product_components').update({
+      component_id:      formData.component_id,
       cost_type:         formData.cost_type,
       formula_deduction: Number(formData.formula_deduction) || 0,
       formula_buffer:    Number(formData.formula_buffer) || 0,

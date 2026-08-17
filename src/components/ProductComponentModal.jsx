@@ -56,7 +56,7 @@ export default function ProductComponentModal({
       initialForm.current = initial
       setDirty(false)
       setShowUnsaved(false)
-      setSelectedSupplierId('')
+      setSelectedSupplierId(productComponent?.component?.supplier_id || '')
       setEditingSchedule(null)
     }
   }, [open, productComponent])
@@ -241,64 +241,55 @@ export default function ProductComponentModal({
 
         <div className="modal-body">
 
-          {/* ---- ADDING: supplier filter then component picker ---- */}
-          {!productComponent && (
-            <>
-              {/* Step 1 — Supplier filter */}
-              <div className="field">
-                <label className="field-label">Supplier</label>
-                <select className="field-input" value={selectedSupplierId}
-                  onChange={e => {
-                    setSelectedSupplierId(e.target.value)
-                    // Reset component selection when supplier changes
-                    set('component_id', '')
-                    set('colour_variant', null)
-                  }}>
-                  <option value="">All suppliers</option>
-                  {suppliers.map(s => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
-              </div>
+          {/* Supplier filter + component picker. Editable in both add and
+              edit mode — swapping a line to a different component keeps its
+              cost type, formula and option/group linkage untouched, which is
+              what makes it useful for rebuilding a product skeleton onto a
+              different series. */}
+          {/* Step 1 — Supplier filter */}
+          <div className="field">
+            <label className="field-label">Supplier</label>
+            <select className="field-input" value={selectedSupplierId}
+              onChange={e => {
+                setSelectedSupplierId(e.target.value)
+                // Reset component selection when supplier changes
+                set('component_id', '')
+                set('colour_variant', null)
+              }}>
+              <option value="">All suppliers</option>
+              {suppliers.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
 
-              {/* Step 2 — Component picker (filtered) */}
-              <div className="field">
-                <label className="field-label">
-                  Component
-                  {selectedSupplierId && (
-                    <span style={{ fontSize: 11, color: 'var(--warm-300)', marginLeft: 6, fontWeight: 400, textTransform: 'none' }}>
-                      ({filteredComponents.length} available)
-                    </span>
-                  )}
-                </label>
-                <select className="field-input" value={form.component_id}
-                  onChange={e => { set('component_id', e.target.value); set('colour_variant', null) }}>
-                  <option value="">— Select a component —</option>
-                  {filteredComponents.map(c => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} · ${Number(c.unit_cost).toFixed(2)}/{c.unit}
-                      {(c.colour_variants || []).length > 0 ? ` · ${c.colour_variants.length} colours` : ''}
-                    </option>
-                  ))}
-                </select>
+          {/* Step 2 — Component picker (filtered) */}
+          <div className="field">
+            <label className="field-label">
+              Component
+              {selectedSupplierId && (
+                <span style={{ fontSize: 11, color: 'var(--warm-300)', marginLeft: 6, fontWeight: 400, textTransform: 'none' }}>
+                  ({filteredComponents.length} available)
+                </span>
+              )}
+            </label>
+            <select className="field-input" value={form.component_id}
+              onChange={e => { set('component_id', e.target.value); set('colour_variant', null) }}>
+              <option value="">— Select a component —</option>
+              {filteredComponents.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.name} · ${Number(c.unit_cost).toFixed(2)}/{c.unit}
+                  {(c.colour_variants || []).length > 0 ? ` · ${c.colour_variants.length} colours` : ''}
+                </option>
+              ))}
+            </select>
+            {displayComp && (
+              <div style={{ fontSize: 12, color: 'var(--warm-300)', marginTop: 6 }}>
+                {displayComp.supplier && `${displayComp.supplier} · `}
+                ${Number(displayComp.unit_cost || 0).toFixed(2)} per {displayComp.unit}
               </div>
-            </>
-          )}
-
-          {/* ---- EDITING: show component name as read-only ---- */}
-          {productComponent && (
-            <div style={{
-              background: 'var(--warm-100)', borderRadius: 'var(--radius-sm)',
-              padding: '10px 12px', marginBottom: 16,
-              fontSize: 15, fontWeight: 600
-            }}>
-              {productComponent.component?.name}
-              <div style={{ fontSize: 12, color: 'var(--warm-300)', fontWeight: 400, marginTop: 2 }}>
-                {productComponent.component?.supplier && `${productComponent.component.supplier} · `}
-                ${Number(productComponent.component?.unit_cost || 0).toFixed(2)} per {productComponent.component?.unit}
-              </div>
-            </div>
-          )}
+            )}
+          </div>
 
           {/* Colour variant picker */}
           {hasColours && (
@@ -612,7 +603,7 @@ export default function ProductComponentModal({
           <button className="btn btn-secondary" style={{ flex: 1 }} onClick={handleClose}>Cancel</button>
           <button className="btn btn-primary" style={{ flex: 2 }}
             onClick={() => { onSave(form); setDirty(false) }}
-            disabled={saving || (!productComponent && !form.component_id)}>
+            disabled={saving || !form.component_id}>
             {saving ? 'Saving...' : productComponent ? 'Save Changes' : 'Add to Recipe'}
           </button>
         </div>
