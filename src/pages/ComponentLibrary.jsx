@@ -37,6 +37,7 @@ export default function ComponentLibrary({ components, suppliers, componentUsage
 
   const labour    = filter(components.filter(c => c.order_type === 'labour'))
   const bars      = filter(components.filter(c => c.order_type === 'bar'))
+  const fabrics   = filter(components.filter(c => c.order_type === 'fabric'))
   const pack      = filter(components.filter(c => c.order_type === 'pack' || (!c.order_type)))
 
   const SectionHeader = ({ emoji, title, count }) => (
@@ -62,10 +63,11 @@ export default function ComponentLibrary({ components, suppliers, componentUsage
       <div className="component-avatar" style={{
         background: c.order_type === 'labour' ? 'var(--blue-bg)'
           : c.order_type === 'bar' ? '#FFF7ED'
+          : c.order_type === 'fabric' ? '#FDF2F8'
           : 'var(--accent-bg)',
         fontSize: 18,
       }}>
-        {c.order_type === 'labour' ? '🕐' : c.order_type === 'bar' ? '📏' : '📦'}
+        {c.order_type === 'labour' ? '🕐' : c.order_type === 'bar' ? '📏' : c.order_type === 'fabric' ? '🧵' : '📦'}
       </div>
       <div className="component-info">
         <div className="component-name">{c.name}</div>
@@ -74,6 +76,9 @@ export default function ComponentLibrary({ components, suppliers, componentUsage
           {c.supplier_pn ? ` · ${c.supplier_pn}` : ''}
           {c.order_type === 'bar' && c.bar_length_mm
             ? ` · ${Number(c.bar_length_mm).toLocaleString()}mm bars`
+            : ''}
+          {c.order_type === 'fabric'
+            ? ` · ${c.fabric_code || '?'} · ${(c.roll_widths || []).join(' / ') || '?'}mm rolls`
             : ''}
         </div>
         <div style={{ fontSize: 11, marginTop: 3, color: (componentUsage[c.id]?.length || 0) > 0 ? 'var(--accent)' : 'var(--warm-300)' }}>
@@ -95,7 +100,7 @@ export default function ComponentLibrary({ components, suppliers, componentUsage
     </div>
   )
 
-  const allShown = labour.length + bars.length + pack.length
+  const allShown = labour.length + bars.length + fabrics.length + pack.length
 
   return (
     <>
@@ -185,6 +190,16 @@ export default function ComponentLibrary({ components, suppliers, componentUsage
                 <SectionHeader emoji="📏" title="Tracks & Tubes" count={bars.length} />
                 <div className="card" style={{ marginBottom: 4 }}>
                   {bars.map(c => <ComponentRow key={c.id} c={c} />)}
+                </div>
+              </>
+            )}
+
+            {/* ---- FABRICS ---- */}
+            {fabrics.length > 0 && (
+              <>
+                <SectionHeader emoji="🧵" title="Fabrics" count={fabrics.length} />
+                <div className="card" style={{ marginBottom: 4 }}>
+                  {fabrics.map(c => <ComponentRow key={c.id} c={c} />)}
                 </div>
               </>
             )}

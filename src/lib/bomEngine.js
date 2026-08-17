@@ -180,7 +180,43 @@ const withinBand = (pc, widthMm, dropMm) =>
 
 const isBanded = pc =>
   pc.active_min_width != null || pc.active_max_width != null ||
-  pc.active_min_drop  != null || pc.active_max_drop  != null
+  pc.active_min_drop  != null || pc.active_max_drop  != null ||
+  hasDropLimit(pc)
+
+const hasDropLimit = pc =>
+  !!pc.drop_limit && Object.keys(pc.drop_limit).length > 0
+
+/**
+ * The drop at which a rule trips, for a given width.
+ *
+ * The map is { <width up to mm>: <drop threshold mm> }, read the same way as
+ * a width schedule — the first band the width fits into. Anything wider than
+ * the largest band uses that band's figure.
+ *
+ * Deliberately a table rather than a formula, because real thresholds don't
+ * move in one direction: 2000 → 1800, 2100 → 1600, 2200 → 1800. No expression
+ * of width and drop produces that, so nothing tries to.
+ */
+export function dropLimitAt(limitMap, widthMm) {
+  return qtyForWidth(limitMap, widthMm) || null
+}
+
+/**
+ * Is a drop-limited line in play at this size?
+ *
+ *   above        applies once the drop passes the threshold — the usual case,
+ *                where a taller blind needs an extra part.
+ *   at_or_below  applies while the drop is still under it, for the standard
+ *                part that the add-on replaces.
+ */
+const withinDropLimit = (pc, widthMm, dropMm) => {
+  if (!hasDropLimit(pc)) return true
+  const threshold = dropLimitAt(pc.drop_limit, widthMm)
+  if (threshold == null) return false
+  return pc.drop_limit_mode === 'at_or_below'
+    ? Number(dropMm) <= threshold
+    : Number(dropMm) > threshold
+}
 
 /**
  * Collapse group_key alternatives down to one line each.
@@ -224,11 +260,41 @@ export function resolveRecipe(productComponents = [], config = null, optionDefs 
 
   const applicable = productComponents.filter(pc =>
     (!pc.option_choice_id || chosen.has(pc.option_choice_id)) &&
-    withinBand(pc, widthMm, dropMm))
+    withinBand(pc, widthMm, dropMm) &&
+    withinDropLimit(pc, widthMm, dropMm))
 
   return applyGroups(applicable, config && config.overrides)
     .slice()
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+}
+
+/**
+ * The answers a price grid should assume: each option's default, falling back
+ * to its first real choice when it's required and no default is marked.
+ * Returned alongside so the grid can say what it assumed.
+ */
+export function previewConfig(optionDefs = []) {
+  const options = {}, assumed = []
+  optionDefs.forEach(o => {
+    const choices = (o.choices || []).filter(c => c.selectable !== false)
+    const pick = choices.find(c => c.is_default) || (o.required ? choices[0] : null)
+    if (pick) { options[o.code] = pick.value; assumed.push(`${o.name}: ${pick.label}`) }
+  })
+  return { config: { options }, assumed }
+}
+
+/**
+ * Cost of one product at a given size, with the recipe resolved first.
+ * Without resolution this would total every option's lines at once.
+ */
+export function calcCostAt(productComponents, widthMm, dropMm, optionDefs = [], config = null) {
+  const lines = resolveRecipe(productComponents, config, optionDefs, widthMm, dropMm)
+  return lines.reduce((total, pc) => {
+    const qty      = calcQty(pc, widthMm, dropMm)
+    const base     = Number(pc.component?.unit_cost) || 0
+    const discount = Number(pc.component?.discount) || 0
+    return total + qty * base * (1 - discount / 100)
+  }, 0)
 }
 
 /**
@@ -366,17 +432,19 @@ export function calcJobSummary(windowsWithBOM) {
 export const fmt    = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 export const fmtQty = n => Number(n) % 1 === 0 ? String(Number(n)) : Number(n).toFixed(3).replace(/\.?0+$/, '')
 
-export function calcCostAtWidth(productComponents, widthMm) {
-  return productComponents.reduce((total, pc) => {
-    const qty      = calcQty(pc, widthMm, 0)
-    const base     = Number(pc.component?.unit_cost) || 0
-    const discount = Number(pc.component?.discount) || 0
-    const cost     = base * (1 - discount / 100)
-    return total + qty * cost
-  }, 0)
+// Tracks price on width alone. Kept as a thin wrapper so the call sites read
+// the way they always did, but it resolves now — before options existed a
+// plain sum was correct, and afterwards it silently totalled every choice.
+export function calcCostAtWidth(productComponents, widthMm, optionDefs = [], config = null) {
+  return calcCostAt(productComponents, widthMm, 0, optionDefs, config)
 }
 
 export const GRID_WIDTHS = [900,1200,1500,1800,2100,2400,2700,3000,3300,3600,3900,4200,4500,4800,5100,5400,5700,6000]
+
+// Blinds price on both axes, so their grid is square and stops at a drop
+// nobody orders past.
+export const GRID_BLIND_WIDTHS = [900,1200,1500,1800,2100,2400,2700,3000]
+export const GRID_BLIND_DROPS  = [900,1200,1500,1800,2100,2400,2700,3000]
 
 // Human-readable formula description for display in recipe lists and modals
 export function formulaDescription(pc) {

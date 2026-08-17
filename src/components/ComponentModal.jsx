@@ -8,6 +8,9 @@ const DEFAULT = {
   unit: 'each',
   unit_cost: 0,
   discount: 0,
+  fabric_code: null,
+  roll_widths: [],
+  fabric_category: null,
   supplier_id: '',
   supplier_pn: '',
   notes: '',
@@ -23,6 +26,7 @@ export default function ComponentModal({ open, component, suppliers, onClose, on
   const [form, setForm]                   = useState(DEFAULT)
   const [newColourName, setNewColourName]  = useState('')
   const [newColourSuffix, setNewColourSuffix] = useState('')
+  const [newWidth, setNewWidth]           = useState('')
 
   // isEditing = true only when we have an existing saved component (has an id)
   const isEditing = !!component?.id
@@ -43,8 +47,21 @@ export default function ComponentModal({ open, component, suppliers, onClose, on
     const next = { ...p, [k]: v }
     // Lock unit to hours for labour components
     if (k === 'order_type' && v === 'labour') next.unit = 'hours'
+    if (k === 'order_type' && v === 'fabric') next.unit = 'm²'
     return next
   })
+
+  // Roll widths this fabric can be ordered in — width lives on each physical
+  // roll, these are just what's buyable.
+  const rollWidths = (Array.isArray(form.roll_widths) ? form.roll_widths : [])
+    .map(Number).filter(n => n > 0).sort((a, b) => a - b)
+  const addWidth = () => {
+    const w = Number(newWidth)
+    if (!w || rollWidths.includes(w)) { setNewWidth(''); return }
+    set('roll_widths', [...rollWidths, w].sort((a, b) => a - b))
+    setNewWidth('')
+  }
+  const removeWidth = (w) => set('roll_widths', rollWidths.filter(x => x !== w))
 
   // When supplier changes, default the discount to the supplier's discount
   const handleSupplierChange = (supplierId) => {
@@ -73,7 +90,7 @@ export default function ComponentModal({ open, component, suppliers, onClose, on
   }
 
   // Derive unit cost from pack or bar pricing
-  const derivedUnitCost = form.order_type === 'labour'
+  const derivedUnitCost = (form.order_type === 'labour' || form.order_type === 'fabric')
     ? Number(form.unit_cost) || 0   // entered directly as hourly rate
     : form.order_type === 'pack'
     ? (Number(form.pack_qty) > 0 ? Number(form.pack_price) / Number(form.pack_qty) : 0)
@@ -153,11 +170,12 @@ export default function ComponentModal({ open, component, suppliers, onClose, on
           <div className="field" style={{ marginBottom: 8 }}>
             <label className="field-label">Order Type</label>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
             {[
               { val: 'labour', label: '🕐 Labour', note: 'Hourly rate' },
               { val: 'pack',   label: '📦 Pack',   note: 'Fixed qty per order' },
               { val: 'bar',    label: '📏 Bar',     note: 'Cut to length' },
+              { val: 'fabric', label: '🧵 Fabric',  note: 'Cut from a roll' },
             ].map(ot => (
               <button key={ot.val} type="button"
                 onClick={() => set('order_type', ot.val)}
@@ -241,6 +259,70 @@ export default function ComponentModal({ open, component, suppliers, onClose, on
             </div>
           )}
 
+          {/* Fabric — one row per roll width, because the price and the stock
+              are both per width. Several rows share a fabric code. */}
+          {form.order_type === 'fabric' && (
+            <div style={{ background: 'var(--warm-100)', borderRadius: 'var(--radius-sm)', padding: 14, marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--warm-300)', marginBottom: 12 }}>
+                Fabric
+              </div>
+              <div className="grid-2" style={{ marginBottom: 12 }}>
+                <div>
+                  <label className="field-label">Fabric code</label>
+                  <input className="field-input" value={form.fabric_code || ''}
+                    onChange={e => set('fabric_code', e.target.value.toUpperCase())}
+                    placeholder="e.g. VIBE" />
+                </div>
+                <div>
+                  <label className="field-label">Category</label>
+                  <input className="field-input" value={form.fabric_category || ''}
+                    onChange={e => set('fabric_category', e.target.value)}
+                    placeholder="e.g. Category A" />
+                </div>
+              </div>
+
+              <div className="field" style={{ marginBottom: 12 }}>
+                <label className="field-label">Price per m² ($)</label>
+                <input className="field-input" type="number" step="0.01" min="0"
+                  value={form.unit_cost} onChange={e => set('unit_cost', e.target.value)}
+                  style={{ textAlign: 'right', maxWidth: '50%' }} />
+              </div>
+
+              <label className="field-label">Roll widths available (mm)</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                {rollWidths.map(w => (
+                  <span key={w} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    background: 'var(--accent-bg)', color: 'var(--accent-dark)',
+                    borderRadius: 6, padding: '5px 8px', fontSize: 13, fontWeight: 600,
+                  }}>
+                    {w.toLocaleString()}
+                    <button type="button" onClick={() => removeWidth(w)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--accent-dark)', padding: 0, lineHeight: 1 }}>×</button>
+                  </span>
+                ))}
+                {rollWidths.length === 0 && (
+                  <span style={{ fontSize: 12, color: 'var(--warm-300)' }}>None yet</span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input className="field-input" type="number" step="100" min="1"
+                  value={newWidth} onChange={e => setNewWidth(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addWidth() } }}
+                  placeholder="e.g. 2100" style={{ flex: 1, textAlign: 'right' }} />
+                <button type="button" className="btn btn-secondary btn-sm" onClick={addWidth}>Add</button>
+              </div>
+
+              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 10, lineHeight: 1.5 }}>
+                One row per fabric — the rate is per m², so a 2.1m roll and a 3m roll of
+                {' '}{form.fabric_code || 'VIBE'} cost the same per m² and don't need separate rows.
+                These widths are what can be ordered; each roll records its own width when it
+                arrives. Colours go in Colour Variants below, and the category ties this fabric
+                to a blind product.
+              </div>
+            </div>
+          )}
+
           {/* Discount — defaults from supplier, editable per component */}
           <div className="grid-2" style={{ marginBottom: 16 }}>
             <div>
@@ -279,6 +361,7 @@ export default function ComponentModal({ open, component, suppliers, onClose, on
                 </div>
               </div>
             )}
+
           </div>
 
           {/* Colour variants */}

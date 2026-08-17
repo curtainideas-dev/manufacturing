@@ -318,6 +318,9 @@ export default function App() {
       pack_qty:         Number(formData.pack_qty) || 1,
       bar_length_mm:    Number(formData.bar_length_mm) || 6000,
       bar_price:        Number(formData.bar_price) || 0,
+      fabric_code:      formData.fabric_code?.trim() || null,
+      roll_widths:      Array.isArray(formData.roll_widths) && formData.roll_widths.length ? formData.roll_widths : null,
+      fabric_category:  formData.fabric_category?.trim() || null,
     }
     const result = editingComp?.id
       ? await supabase.from('components').update(payload).eq('id', editingComp.id)
@@ -364,7 +367,12 @@ export default function App() {
   const handleProductUpdate = async (updates) => {
     const updated = { ...currentProduct, ...updates }
     setCurrentProduct(updated)
-    await supabase.from('products').update(updates).eq('id', currentProduct.id)
+    // Keep the list in step too — without this the product page shows the new
+    // name while every other screen still reads the old one, which looks
+    // exactly like the save having failed.
+    setProducts(prev => prev.map(p => (p.id === updated.id ? { ...p, ...updates } : p)))
+    const { error } = await supabase.from('products').update(updates).eq('id', currentProduct.id)
+    if (error) showToast('Failed to save product', 'error')
   }
 
   const handleProductDelete = async () => {
@@ -386,9 +394,18 @@ export default function App() {
     setProdSaving(true)
     const { data: newProd, error: pe } = await supabase
       .from('products')
-      .insert({ name: newName, category: currentProduct.category, notes: currentProduct.notes })
+      .insert({
+        name:            newName,
+        category:        currentProduct.category,
+        // NOT NULL in the schema — omitting it made every duplicate fail.
+        product_type:    currentProduct.product_type || currentProduct.category || 'track',
+        notes:           currentProduct.notes,
+        markup:          currentProduct.markup ?? 1.6,
+        fabric_category: currentProduct.fabric_category || null,
+        market_matrix:   currentProduct.market_matrix || null,
+      })
       .select().single()
-    if (pe) { showToast('Duplicate failed', 'error'); setProdSaving(false); return }
+    if (pe) { showToast(pe.message || 'Duplicate failed', 'error'); setProdSaving(false); return }
 
     const sourceRecipe = productComponentsMap[currentProduct.id] || []
     if (sourceRecipe.length > 0) {
@@ -402,9 +419,21 @@ export default function App() {
         formula_interval:  pc.formula_interval || 500,
         width_schedule_id: pc.width_schedule_id || null,
         colour_variant:    pc.colour_variant || null,
+        option_choice_id:  pc.option_choice_id || null,
+        group_key:         pc.group_key || null,
+        active_min_width:  pc.active_min_width ?? null,
+        active_max_width:  pc.active_max_width ?? null,
+        active_min_drop:   pc.active_min_drop ?? null,
+        active_max_drop:   pc.active_max_drop ?? null,
+        drop_limit:        pc.drop_limit || null,
+        drop_limit_mode:   pc.drop_limit_mode || 'above',
         sort_order:        pc.sort_order,
       }))
-      await supabase.from('product_components').insert(copies)
+      const { error: ce } = await supabase.from('product_components').insert(copies)
+      if (ce) {
+        showToast(ce.message || 'Copied the product, but not its recipe', 'error')
+        await loadAll(); setProdSaving(false); return
+      }
     }
 
     showToast(`"${newName}" created ✓`, 'success')
@@ -462,6 +491,8 @@ export default function App() {
       active_max_width:  formData.active_max_width ?? null,
       active_min_drop:   formData.active_min_drop ?? null,
       active_max_drop:   formData.active_max_drop ?? null,
+      drop_limit:        formData.drop_limit && Object.keys(formData.drop_limit).length ? formData.drop_limit : null,
+      drop_limit_mode:   formData.drop_limit_mode || 'above',
       sort_order:        sortOrder,
     })
     if (error) showToast(error.message || 'Failed to add', 'error')
@@ -485,6 +516,8 @@ export default function App() {
       active_max_width:  formData.active_max_width ?? null,
       active_min_drop:   formData.active_min_drop ?? null,
       active_max_drop:   formData.active_max_drop ?? null,
+      drop_limit:        formData.drop_limit && Object.keys(formData.drop_limit).length ? formData.drop_limit : null,
+      drop_limit_mode:   formData.drop_limit_mode || 'above',
     }).eq('id', id)
     showToast('Updated ✓', 'success')
     await loadAll()

@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { ChevronLeftIcon, PlusIcon, TrashIcon, XIcon } from '../components/Icons'
 import ProductComponentModal from '../components/ProductComponentModal'
-import { calcCostAtWidth, calcQty, GRID_WIDTHS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel } from '../lib/bomEngine'
+import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel } from '../lib/bomEngine'
 
 const COST_TYPE_LABELS = {
   fixed: 'Fixed qty', width_based: 'Width-based',
@@ -16,6 +16,23 @@ export default function ProductDetail({
   onBack, onUpdateProduct, onAddComponent, onUpdateComponent,
   onRemoveComponent, onDuplicate, onDeleteProduct, saving,
 }) {
+  const [nameDraft, setNameDraft]     = useState(product.name || '')
+  const [notesDraft, setNotesDraft]   = useState(product.notes || '')
+  useEffect(() => {
+    setNameDraft(product.name || '')
+    setNotesDraft(product.notes || '')
+  }, [product.id, product.name, product.notes])
+
+  const commitName = () => {
+    const next = nameDraft.trim()
+    if (!next || next === product.name) { setNameDraft(product.name || ''); return }
+    onUpdateProduct({ name: next })
+  }
+  const commitNotes = () => {
+    if (notesDraft === (product.notes || '')) return
+    onUpdateProduct({ notes: notesDraft })
+  }
+
   const [addOpen, setAddOpen]         = useState(false)
   const [editingPc, setEditingPc]     = useState(null)
   const [showDupMenu, setShowDupMenu] = useState(false)
@@ -29,11 +46,29 @@ export default function ProductDetail({
     setNewName('')
   }
 
-  // Pricing grid — only meaningful for tracks (width-based, no drop)
-  const isTrack = product.category === 'track'
-  const gridCosts = isTrack
-    ? GRID_WIDTHS.map(w => ({ width: w, cost: calcCostAtWidth(productComponents, w) }))
-    : []
+  // Grids assume each option's default answer, since a price grid has to pick
+  // one build to price. What it assumed is shown above the table.
+  const { config: previewCfg, assumed } = useMemo(() => previewConfig(optionDefs), [optionDefs])
+
+  const isTrack = (product.product_type || product.category) === 'track'
+  const isBlind = (product.product_type || product.category) === 'blind'
+
+  const gridCosts = useMemo(() => isTrack
+    ? GRID_WIDTHS.map(w => ({ width: w, cost: calcCostAtWidth(productComponents, w, optionDefs, previewCfg) }))
+    : [], [isTrack, productComponents, optionDefs, previewCfg])
+
+  // Blinds price on both axes, so the grid is a matrix rather than a row.
+  const blindGrid = useMemo(() => !isBlind ? [] :
+    GRID_BLIND_DROPS.map(drop => ({
+      drop,
+      cells: GRID_BLIND_WIDTHS.map(width => ({
+        width,
+        cost: calcCostAt(productComponents, width, drop, optionDefs, previewCfg),
+      })),
+    })), [isBlind, productComponents, optionDefs, previewCfg])
+
+  const markup = Number(product.markup) || 1.6
+
 
   return (
     <>
@@ -75,10 +110,17 @@ export default function ProductDetail({
           {/* Product details */}
           <div className="card card-body" style={{ marginBottom: 16 }}>
             <div className="field" style={{ marginBottom: 12 }}>
-              <label className="field-label">Product Name</label>
-              <input className="field-input" value={product.name}
-                onChange={e => onUpdateProduct({ name: e.target.value })}
-                placeholder="e.g. Wave Track Centre Open" />
+              <label className="field-label">
+                {product.product_type === 'blind' ? 'Fabric category' : 'Profile code'}
+              </label>
+              {/* Held locally and committed on blur. Writing on every keystroke
+                  fired one UPDATE per character, and out-of-order responses
+                  could land a half-typed name back in the database. */}
+              <input className="field-input" value={nameDraft}
+                onChange={e => setNameDraft(e.target.value)}
+                onBlur={commitName}
+                onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                placeholder={product.product_type === 'blind' ? 'e.g. Bancoora' : 'e.g. TCO51'} />
             </div>
             <div className="grid-2">
               <div>
@@ -94,8 +136,9 @@ export default function ProductDetail({
             {product.notes !== undefined && (
               <div style={{ marginTop: 12 }}>
                 <label className="field-label">Notes</label>
-                <textarea className="field-input" rows={2} value={product.notes || ''}
-                  onChange={e => onUpdateProduct({ notes: e.target.value })}
+                <textarea className="field-input" rows={2} value={notesDraft}
+                  onChange={e => setNotesDraft(e.target.value)}
+                  onBlur={commitNotes}
                   placeholder="Optional notes..." />
               </div>
             )}
@@ -134,6 +177,10 @@ export default function ProductDetail({
                     const d = [pc.active_min_drop, pc.active_max_drop]
                     if (w[0] != null || w[1] != null) badges.push({ t: `W ${w[0] ?? '0'}–${w[1] ?? '∞'}`, bg: 'var(--warning-bg)', fg: 'var(--warning)' })
                     if (d[0] != null || d[1] != null) badges.push({ t: `D ${d[0] ?? '0'}–${d[1] ?? '∞'}`, bg: 'var(--warning-bg)', fg: 'var(--warning)' })
+                    if (pc.drop_limit && Object.keys(pc.drop_limit).length) {
+                      const n = Object.keys(pc.drop_limit).length
+                      badges.push({ t: `drop limit · ${n} band${n === 1 ? '' : 's'}`, bg: 'var(--warning-bg)', fg: 'var(--warning)' })
+                    }
                     if (!badges.length) return null
                     return (
                       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
@@ -168,6 +215,70 @@ export default function ProductDetail({
           <button className="btn btn-secondary btn-block" style={{ marginBottom: 24 }} onClick={() => setAddOpen(true)}>
             <PlusIcon size={16} /> Add Component to Recipe
           </button>
+
+
+          {/* Blind price grid — width across, drop down */}
+          {isBlind && productComponents.length > 0 && (
+            <>
+              <div className="section-title" style={{ padding: '0 0 8px' }}>Pricing Grid</div>
+              {assumed.length > 0 && (
+                <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginBottom: 8 }}>
+                  Priced as {assumed.join(' · ')}
+                </div>
+              )}
+              <div style={{
+                background: '#fff', border: '1px solid var(--warm-200)',
+                borderRadius: 'var(--radius)', overflow: 'hidden', marginBottom: 10,
+              }}>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 620, fontVariantNumeric: 'tabular-nums' }}>
+                    <thead>
+                      <tr style={{ background: 'var(--accent-dark)' }}>
+                        <th style={{
+                          padding: '9px 12px', textAlign: 'left', fontSize: 10.5, fontWeight: 700,
+                          textTransform: 'uppercase', letterSpacing: '0.06em',
+                          color: 'rgba(255,255,255,0.7)', position: 'sticky', left: 0,
+                          background: 'var(--accent-dark)', zIndex: 1, whiteSpace: 'nowrap',
+                        }}>Drop \ Width</th>
+                        {GRID_BLIND_WIDTHS.map(w => (
+                          <th key={w} style={{
+                            padding: '9px 8px', textAlign: 'right', fontSize: 11, fontWeight: 700,
+                            color: 'rgba(255,255,255,0.85)', whiteSpace: 'nowrap',
+                          }}>{w}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {blindGrid.map((row, ri) => (
+                        <tr key={row.drop} style={{ background: ri % 2 ? 'var(--warm-100)' : '#fff' }}>
+                          <td style={{
+                            padding: '8px 12px', fontSize: 12, fontWeight: 700,
+                            borderTop: '1px solid var(--warm-100)', whiteSpace: 'nowrap',
+                            position: 'sticky', left: 0, zIndex: 1,
+                            background: ri % 2 ? 'var(--warm-100)' : '#fff',
+                          }}>{row.drop}</td>
+                          {row.cells.map(cell => (
+                            <td key={cell.width} style={{
+                              padding: '8px 8px', textAlign: 'right', fontSize: 12,
+                              borderTop: '1px solid var(--warm-100)', whiteSpace: 'nowrap',
+                            }}>
+                              ${fmt(cell.cost)}
+                              <div style={{ fontSize: 10, color: 'var(--warm-300)' }}>
+                                ${fmt(cell.cost * markup)}
+                              </div>
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginBottom: 24 }}>
+                Cost on top, cost × {markup} beneath. Sizes in mm.
+              </div>
+            </>
+          )}
 
           {/* Pricing grid — tracks only */}
           {isTrack && productComponents.length > 0 && (

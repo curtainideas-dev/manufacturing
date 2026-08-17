@@ -28,6 +28,8 @@ const DEFAULT = {
   active_max_width: null,
   active_min_drop: null,
   active_max_drop: null,
+  drop_limit: null,
+  drop_limit_mode: 'above',
 }
 
 export default function ProductComponentModal({
@@ -94,6 +96,24 @@ export default function ProductComponentModal({
   }
 
   const set = (k, v) => { setForm(p => ({ ...p, [k]: v })); setDirty(true) }
+
+  // Drop-limit table: { <width up to>: <drop limit> }, kept sorted by width.
+  const limitRows = Object.entries(form.drop_limit || {})
+    .map(([w, d]) => [Number(w), Number(d)])
+    .sort((a, b) => a[0] - b[0])
+
+  const writeLimits = (pairs) => {
+    const next = {}
+    pairs.forEach(([w, d]) => { if (w > 0) next[w] = Number(d) || 0 })
+    set('drop_limit', Object.keys(next).length ? next : null)
+  }
+  const setLimit    = (w, d)  => writeLimits(limitRows.map(r => (r[0] === w ? [w, d] : r)))
+  const removeLimit = (w)     => writeLimits(limitRows.filter(r => r[0] !== w))
+  const renameLimit = (w, nw) => writeLimits(limitRows.map(r => (r[0] === w ? [Number(nw), r[1]] : r)))
+  const addLimit    = ()      => {
+    const last = limitRows[limitRows.length - 1]
+    writeLimits([...limitRows, [last ? last[0] + 100 : 2000, last ? last[1] : 1800]])
+  }
 
   const handleClose = () => { dirty ? setShowUnsaved(true) : onClose() }
   const handleOverlayClick = (e) => { if (e.target === e.currentTarget) handleClose() }
@@ -514,8 +534,65 @@ export default function ProductComponentModal({
                   value={form.active_max_drop ?? ''}
                   onChange={e => set('active_max_drop', e.target.value === '' ? null : Number(e.target.value))} />
               </div>
-              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4 }}>
+              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4, marginBottom: 12 }}>
                 Leave blank for no limit. This is how a wider blind swaps to a heavier tube.
+              </div>
+
+              {/* Width → drop threshold. A table rather than a formula, because
+                  real thresholds don't move in one direction. */}
+              <label className="field-label">Drop limit per width (optional)</label>
+              <div style={{
+                border: '1px solid var(--warm-200)', borderRadius: 'var(--radius-sm)',
+                padding: 10, background: '#fff',
+              }}>
+                <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                  {[
+                    { val: 'above',       label: 'Applies over the limit' },
+                    { val: 'at_or_below', label: 'Applies up to the limit' },
+                  ].map(m => (
+                    <button key={m.val} type="button"
+                      onClick={() => set('drop_limit_mode', m.val)}
+                      style={{
+                        flex: 1, padding: '7px 6px', borderRadius: 6, cursor: 'pointer', fontSize: 12,
+                        fontWeight: 600,
+                        border: `1.5px solid ${(form.drop_limit_mode || 'above') === m.val ? 'var(--accent)' : 'var(--warm-200)'}`,
+                        background: (form.drop_limit_mode || 'above') === m.val ? 'var(--accent-bg)' : '#fff',
+                        color: (form.drop_limit_mode || 'above') === m.val ? 'var(--accent-dark)' : 'var(--ink)',
+                      }}>{m.label}</button>
+                  ))}
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 28px', gap: 6, marginBottom: 4 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--warm-300)' }}>Width up to</div>
+                  <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--warm-300)' }}>Drop limit</div>
+                  <div />
+                </div>
+
+                {limitRows.map(([w, d]) => (
+                  <div key={w} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 28px', gap: 6, marginBottom: 5 }}>
+                    <input className="field-input" style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right' }}
+                      type="number" value={w} onChange={e => renameLimit(w, e.target.value)} />
+                    <input className="field-input" style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right' }}
+                      type="number" value={d} onChange={e => setLimit(w, e.target.value)} />
+                    <button type="button" onClick={() => removeLimit(w)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)' }}>
+                      <TrashIcon size={14} />
+                    </button>
+                  </div>
+                ))}
+
+                <button type="button" onClick={addLimit}
+                  style={{
+                    width: '100%', marginTop: 4, padding: '7px', borderRadius: 6, fontSize: 12.5,
+                    fontWeight: 600, cursor: 'pointer', border: '1.5px dashed var(--warm-200)',
+                    background: 'none', color: 'var(--warm-300)',
+                  }}>+ Add width band</button>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6, lineHeight: 1.5 }}>
+                Read as: up to that width, the limit is that drop. A width past the last band uses
+                the last band's figure. Thresholds don't have to rise or fall in order —
+                2000&nbsp;→&nbsp;1800, 2100&nbsp;→&nbsp;1600, 2200&nbsp;→&nbsp;1800 is fine, which is
+                why it's a table and not a formula.
               </div>
             </>
           )}
