@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef } from 'react'
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon } from '../components/Icons'
-import { buildWindowBOM, calcJobSummary, missingAnswers, fmt, fmtQty } from '../lib/bomEngine'
+import { buildWindowBOM, calcJobSummary, missingAnswers, fabricSelectionFor, fmt, fmtQty } from '../lib/bomEngine'
 import { exportJobPDF } from '../lib/exportPDF'
 import { exportPackagingLabels, exportTrackLabels, exportPartsLabels } from '../lib/exportLabels'
 import PartsListModal from '../components/PartsListModal'
@@ -14,7 +14,11 @@ const DownloadIcon = () => (
   </svg>
 )
 
-export default function JobDetail({ job, products, productComponentsMap, optionDefsFor, onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onConfirm, onComplete, onReopen, onAttachPO, poUploading, onDeductStock }) {
+export default function JobDetail({
+  job, products, productComponentsMap, optionDefsFor,
+  allComponents = [], fabricCategories = [],
+  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onConfirm, onComplete, onReopen, onAttachPO, poUploading, onDeductStock,
+}) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(false)
   const [labeling, setLabeling]   = useState(null) // 'pack' | 'track' | 'parts' | null
@@ -31,17 +35,19 @@ export default function JobDetail({ job, products, productComponentsMap, optionD
   // doesn't move when component pricing changes.
   const windowsWithBOM = useMemo(() => {
     return (job.windows || []).map(win => {
-      const recipe = productComponentsMap[win.product_id] || []
+      const recipe  = productComponentsMap[win.product_id] || []
+      const product = products.find(p => p.id === win.product_id)
       return {
         ...win,
         bom: buildWindowBOM(
           recipe, win, optionDefsFor(win.product_id),
           job.price_snapshot || null,
           job.qty_snapshot?.[win.id] || null,
+          fabricSelectionFor(win, product, allComponents, fabricCategories),
         ),
       }
     })
-  }, [job.windows, productComponentsMap, optionDefsFor, job.price_snapshot, job.qty_snapshot])
+  }, [job.windows, productComponentsMap, optionDefsFor, job.price_snapshot, job.qty_snapshot, products, allComponents, fabricCategories])
 
   const jobSummary = useMemo(() => calcJobSummary(windowsWithBOM), [windowsWithBOM])
   const jobTotal   = jobSummary.reduce((s, r) => s + r.total_cost, 0)

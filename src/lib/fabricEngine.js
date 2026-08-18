@@ -66,10 +66,32 @@ export const orderableWidths = (fabric) =>
   (Array.isArray(fabric?.roll_widths) ? fabric.roll_widths : [])
     .map(Number).filter(n => n > 0).sort((a, b) => a - b)
 
-/** Fabrics offered by a blind's category, each with its colours. */
-export function fabricsInCategory(components = [], category) {
+/**
+ * Pricing categories (A-F), ascending by their price ceiling — used to find
+ * the first tier a fabric's real cost fits under, the same way a width
+ * schedule finds the first band a width fits into.
+ */
+export const sortedCategories = (categories = []) =>
+  categories.slice().sort((a, b) => Number(a.max_price) - Number(b.max_price))
+
+/**
+ * Which pricing category a fabric's real unit cost falls into. Never stored
+ * on the fabric — always derived live, so it can't go stale when an admin
+ * moves a threshold. Anything pricier than every configured ceiling lands in
+ * the top category, same fallback a width schedule uses past its last band.
+ * Null only when no categories are configured yet.
+ */
+export function categoryForPrice(categories = [], price) {
+  const sorted = sortedCategories(categories)
+  if (sorted.length === 0) return null
+  const p = Number(price) || 0
+  return sorted.find(c => p <= Number(c.max_price)) || sorted[sorted.length - 1]
+}
+
+/** Fabrics currently classified into a pricing category, each with its colours. */
+export function fabricsInCategory(components = [], categories = [], categoryCode) {
   return components
-    .filter(c => c.order_type === 'fabric' && c.fabric_category === category)
+    .filter(c => c.order_type === 'fabric' && categoryForPrice(categories, c.unit_cost)?.code === categoryCode)
     .sort((a, b) => String(a.fabric_code || a.name).localeCompare(String(b.fabric_code || b.name)))
 }
 

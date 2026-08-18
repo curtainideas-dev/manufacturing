@@ -16,6 +16,7 @@ const TYPES = [
  */
 export default function AddWindowModal({
   open, windowNumber, products, productComponentsMap = {}, productOptions = {},
+  allComponents = [], fabricCategories = [],
   onClose, onAdd,
 }) {
   const [form, setForm]     = useState(DEFAULT)
@@ -37,6 +38,8 @@ export default function AddWindowModal({
   const handleClose = () => { reset(); onClose() }
 
   const canContinue = form.product_id && form.width_mm && form.drop_mm
+  // Blinds always need the fabric picked in step 2, even with zero options.
+  const needsCustomise = optionDefs.length > 0 || selected?.product_type === 'blind'
 
   const handleSave = (config) => {
     onAdd({ ...form, label: form.label || `Window ${windowNumber}`, config })
@@ -55,6 +58,8 @@ export default function AddWindowModal({
         product={selected}
         productComponents={recipe}
         optionDefs={optionDefs}
+        allComponents={allComponents}
+        categories={fabricCategories}
         widthMm={form.width_mm}
         dropMm={form.drop_mm}
         config={null}
@@ -168,9 +173,9 @@ export default function AddWindowModal({
         <div className="modal-footer">
           <button className="btn btn-secondary" style={{ flex: 1 }} onClick={handleClose}>Cancel</button>
           <button className="btn btn-primary" style={{ flex: 2 }}
-            onClick={() => optionDefs.length ? setStep(2) : handleSave({ options: {} })}
+            onClick={() => needsCustomise ? setStep(2) : handleSave({ options: {} })}
             disabled={!canContinue}>
-            {optionDefs.length ? 'Customise →' : 'Add window'}
+            {needsCustomise ? 'Customise →' : 'Add window'}
           </button>
         </div>
       </div>

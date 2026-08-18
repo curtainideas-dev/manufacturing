@@ -6,7 +6,7 @@ const TYPES = [
   { val: 'blind', label: 'Blinds', blank: 'No blinds yet',  hint: 'A blind product is a fabric category — Bancoora' },
 ]
 
-export default function ProductList({ products, onOpen, onNew, onOpenOptions }) {
+export default function ProductList({ products, onOpen, onNew }) {
   const [type, setType]     = useState('track')
   const [search, setSearch] = useState('')
 
@@ -22,13 +22,6 @@ export default function ProductList({ products, onOpen, onNew, onOpenOptions }) 
     <>
       <div className="header">
         <div className="header-title">Products</div>
-        <div className="header-actions">
-          <button onClick={onOpenOptions} style={{
-            padding: '6px 12px', fontSize: 13, fontWeight: 600,
-            background: 'rgba(255,255,255,0.15)', color: '#fff',
-            border: '1px solid rgba(255,255,255,0.3)', borderRadius: 8, cursor: 'pointer',
-          }}>🎛️ Options</button>
-        </div>
       </div>
 
       <div className="scroll-area">

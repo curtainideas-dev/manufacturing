@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { ChevronLeftIcon, PlusIcon, TrashIcon, XIcon } from '../components/Icons'
 import ProductComponentModal from '../components/ProductComponentModal'
-import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel } from '../lib/bomEngine'
+import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, fabricLineFor, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel } from '../lib/bomEngine'
 
 const COST_TYPE_LABELS = {
   fixed: 'Fixed qty', width_based: 'Width-based',
@@ -12,7 +12,7 @@ const COST_TYPE_LABELS = {
 
 export default function ProductDetail({
   product, productComponents, allComponents, suppliers = [], optionDefs = [],
-  widthSchedules = [], onSaveSchedule, onDeleteSchedule,
+  widthSchedules = [], onSaveSchedule, onDeleteSchedule, fabricCategories = [],
   onBack, onUpdateProduct, onAddComponent, onUpdateComponent,
   onRemoveComponent, onDuplicate, onDeleteProduct, saving,
 }) {
@@ -53,6 +53,21 @@ export default function ProductDetail({
   const isTrack = (product.product_type || product.category) === 'track'
   const isBlind = (product.product_type || product.category) === 'blind'
 
+  // The fabric is never a stored recipe line — it's picked per window — but a
+  // blind's price always assumes one at its category's flat rate, so the grid
+  // (and this page's own recipe list) has to fold that in rather than showing
+  // hardware-only numbers that understate every real quote.
+  const fabricCategory = fabricCategories.find(c => c.code === product.fabric_category)
+  const categoryFabricLine = useMemo(() => (isBlind && fabricCategory)
+    ? fabricLineFor({
+        component: { id: 'category-fabric', name: `Category ${fabricCategory.code} Fabric`, unit: 'm²', unit_cost: fabricCategory.max_price, discount: 0 },
+        colour_variant: null,
+        categoryPrice: Number(fabricCategory.max_price) || 0,
+      })
+    : null, [isBlind, fabricCategory])
+
+  const pricedComponents = categoryFabricLine ? [categoryFabricLine, ...productComponents] : productComponents
+
   const gridCosts = useMemo(() => isTrack
     ? GRID_WIDTHS.map(w => ({ width: w, cost: calcCostAtWidth(productComponents, w, optionDefs, previewCfg) }))
     : [], [isTrack, productComponents, optionDefs, previewCfg])
@@ -63,9 +78,9 @@ export default function ProductDetail({
       drop,
       cells: GRID_BLIND_WIDTHS.map(width => ({
         width,
-        cost: calcCostAt(productComponents, width, drop, optionDefs, previewCfg),
+        cost: calcCostAt(pricedComponents, width, drop, optionDefs, previewCfg),
       })),
-    })), [isBlind, productComponents, optionDefs, previewCfg])
+    })), [isBlind, pricedComponents, optionDefs, previewCfg])
 
   const markup = Number(product.markup) || 1.6
 
@@ -109,30 +124,59 @@ export default function ProductDetail({
 
           {/* Product details */}
           <div className="card card-body" style={{ marginBottom: 16 }}>
-            <div className="field" style={{ marginBottom: 12 }}>
-              <label className="field-label">
-                {product.product_type === 'blind' ? 'Fabric category' : 'Profile code'}
-              </label>
-              {/* Held locally and committed on blur. Writing on every keystroke
-                  fired one UPDATE per character, and out-of-order responses
-                  could land a half-typed name back in the database. */}
-              <input className="field-input" value={nameDraft}
-                onChange={e => setNameDraft(e.target.value)}
-                onBlur={commitName}
-                onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-                placeholder={product.product_type === 'blind' ? 'e.g. Bancoora' : 'e.g. TCO51'} />
-            </div>
-            <div className="grid-2">
-              <div>
+            {isBlind ? (
+              // A blind product's identity IS its pricing category — one
+              // selector sets both the name and the fabric_category, rather
+              // than a free-text name that could drift from the category
+              // that actually prices it.
+              <div className="field" style={{ marginBottom: 12 }}>
                 <label className="field-label">Category</label>
-                <select className="field-input" value={product.category}
-                  onChange={e => onUpdateProduct({ category: e.target.value })}>
-                  <option value="track">Track</option>
-                  <option value="blind">Blind</option>
-                  <option value="sheer">Sheer</option>
+                <select className="field-input" value={product.fabric_category || ''}
+                  onChange={e => {
+                    const code = e.target.value
+                    onUpdateProduct(code
+                      ? { fabric_category: code, name: `Category ${code}` }
+                      : { fabric_category: null })
+                  }}>
+                  <option value="">— Not set —</option>
+                  {fabricCategories.map(c => (
+                    <option key={c.code} value={c.code}>
+                      Category {c.code} (${Number(c.max_price).toFixed(2)}/m²)
+                    </option>
+                  ))}
                 </select>
+                {!product.fabric_category && (
+                  <div style={{ fontSize: 12, color: 'var(--warning)', marginTop: 8 }}>
+                    No category set — windows on this product won't be able to pick a fabric until one is.
+                  </div>
+                )}
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="field" style={{ marginBottom: 12 }}>
+                  <label className="field-label">Profile code</label>
+                  {/* Held locally and committed on blur. Writing on every keystroke
+                      fired one UPDATE per character, and out-of-order responses
+                      could land a half-typed name back in the database. */}
+                  <input className="field-input" value={nameDraft}
+                    onChange={e => setNameDraft(e.target.value)}
+                    onBlur={commitName}
+                    onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                    placeholder="e.g. TCO51" />
+                </div>
+                <div className="grid-2">
+                  <div>
+                    <label className="field-label">Category</label>
+                    <select className="field-input" value={product.category}
+                      onChange={e => onUpdateProduct({ category: e.target.value })}>
+                      <option value="track">Track</option>
+                      <option value="blind">Blind</option>
+                      <option value="sheer">Sheer</option>
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
             {product.notes !== undefined && (
               <div style={{ marginTop: 12 }}>
                 <label className="field-label">Notes</label>
@@ -143,6 +187,34 @@ export default function ProductDetail({
               </div>
             )}
           </div>
+
+          {/* Fabric — always priced at the category's flat rate, whichever
+              real fabric ends up picked per window. Not part of the editable
+              recipe below since it isn't a stored component line, but its
+              rate feeds the price grid at the bottom the same as if it were. */}
+          {isBlind && (
+            <div className="card card-body" style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--warm-300)', marginBottom: 8 }}>
+                Fabric
+              </div>
+              {fabricCategory ? (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600 }}>Category {fabricCategory.code} fabric</div>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--accent-dark)' }}>
+                    ${Number(fabricCategory.max_price).toFixed(2)}/m²
+                  </div>
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: 'var(--warm-300)' }}>
+                  Set a category above to include fabric in this product's price.
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
+                Priced into the grid below on top of the hardware recipe — the actual fabric is
+                picked per window.
+              </div>
+            </div>
+          )}
 
           {/* Recipe */}
           <div className="section-title" style={{ padding: '0 0 8px' }}>

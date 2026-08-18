@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { XIcon, TrashIcon, PlusIcon } from './Icons'
+import { categoryForPrice } from '../lib/fabricEngine'
 
 const UNITS = ['each', 'metres', 'mm', 'm²', 'hours']
 
@@ -22,7 +23,7 @@ const DEFAULT = {
   bar_price: 0,
 }
 
-export default function ComponentModal({ open, component, suppliers, onClose, onSave, onDelete, saving }) {
+export default function ComponentModal({ open, component, suppliers, fabricCategories = [], onClose, onSave, onDelete, saving }) {
   const [form, setForm]                   = useState(DEFAULT)
   const [newColourName, setNewColourName]  = useState('')
   const [newColourSuffix, setNewColourSuffix] = useState('')
@@ -95,6 +96,8 @@ export default function ComponentModal({ open, component, suppliers, onClose, on
     : form.order_type === 'pack'
     ? (Number(form.pack_qty) > 0 ? Number(form.pack_price) / Number(form.pack_qty) : 0)
     : (Number(form.bar_length_mm) > 0 ? (Number(form.bar_price) / Number(form.bar_length_mm)) * 1000 : 0)
+
+  const liveCategory = form.order_type === 'fabric' ? categoryForPrice(fabricCategories, derivedUnitCost) : null
 
   const selectedSupplier = suppliers.find(s => s.id === form.supplier_id)
   const supplierDiscount = Number(selectedSupplier?.discount) || 0
@@ -274,10 +277,14 @@ export default function ComponentModal({ open, component, suppliers, onClose, on
                     placeholder="e.g. VIBE" />
                 </div>
                 <div>
-                  <label className="field-label">Category</label>
-                  <input className="field-input" value={form.fabric_category || ''}
-                    onChange={e => set('fabric_category', e.target.value)}
-                    placeholder="e.g. Category A" />
+                  <label className="field-label">Pricing category</label>
+                  <div className="field-input" style={{
+                    display: 'flex', alignItems: 'center',
+                    color: liveCategory ? 'var(--accent-dark)' : 'var(--warm-300)',
+                    fontWeight: liveCategory ? 700 : 400, background: 'var(--warm-100)',
+                  }}>
+                    {liveCategory ? `Category ${liveCategory.code}` : 'No categories configured'}
+                  </div>
                 </div>
               </div>
 
@@ -286,6 +293,10 @@ export default function ComponentModal({ open, component, suppliers, onClose, on
                 <input className="field-input" type="number" step="0.01" min="0"
                   value={form.unit_cost} onChange={e => set('unit_cost', e.target.value)}
                   style={{ textAlign: 'right', maxWidth: '50%' }} />
+                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
+                  Sets the pricing category above automatically — set the category
+                  thresholds in Admin → Fabric Categories.
+                </div>
               </div>
 
               <label className="field-label">Roll widths available (mm)</label>
@@ -317,8 +328,8 @@ export default function ComponentModal({ open, component, suppliers, onClose, on
                 One row per fabric — the rate is per m², so a 2.1m roll and a 3m roll of
                 {' '}{form.fabric_code || 'VIBE'} cost the same per m² and don't need separate rows.
                 These widths are what can be ordered; each roll records its own width when it
-                arrives. Colours go in Colour Variants below, and the category ties this fabric
-                to a blind product.
+                arrives. Colours go in Colour Variants below. A blind product locked to this
+                fabric's category will offer it at window-add time.
               </div>
             </div>
           )}

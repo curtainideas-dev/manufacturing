@@ -6,6 +6,8 @@ import StockPage        from './pages/StockPage'
 import ProductList       from './pages/ProductList'
 import ProductDetail     from './pages/ProductDetail'
 import OptionsAdmin      from './pages/OptionsAdmin'
+import AdminHome              from './pages/AdminHome'
+import FabricCategoriesAdmin  from './pages/FabricCategoriesAdmin'
 import JobList           from './pages/JobList'
 import JobDetail         from './pages/JobDetail'
 import WindowDetail      from './pages/WindowDetail'
@@ -26,7 +28,7 @@ import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
 import { buildStockMap, stockKey, checkLowStock, getStock } from './lib/stockEngine'
-import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot } from './lib/bomEngine'
+import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor } from './lib/bomEngine'
 import { orderUnitInfo } from './lib/poEngine'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
 import './index.css'
@@ -38,6 +40,7 @@ const NAV_TABS = [
   { id: 'bom',        label: 'Jobs',       emoji: '📋' },
   { id: 'stock',      label: 'Stock',      emoji: '🏪' },
   { id: 'orders',     label: 'Orders',     emoji: '🧾' },
+  { id: 'admin',      label: 'Admin',      emoji: '🛠️' },
 ]
 
 export default function App() {
@@ -51,6 +54,7 @@ export default function App() {
   const [productOptions, setProductOptions]             = useState({ track: [], blind: [] })
   const [jobs, setJobs]                                 = useState([])
   const [widthSchedules, setWidthSchedules]             = useState([])
+  const [fabricCategories, setFabricCategories]         = useState([])
   const [loading, setLoading]                           = useState(true)
   const [poUploading, setPoUploading]                   = useState(false)
 
@@ -60,6 +64,7 @@ export default function App() {
   const [currentWindow, setCurrentWindow]     = useState(null)
   const [currentSupplier, setCurrentSupplier] = useState(null)
   const [currentPO, setCurrentPO]             = useState(null)
+  const [adminSection, setAdminSection]       = useState(null) // 'options' | 'fabric_categories' | null
 
   const [compModalOpen, setCompModalOpen]         = useState(false)
   const [editingComp, setEditingComp]             = useState(null)
@@ -125,10 +130,11 @@ export default function App() {
         optionDefsFor(win.product_id),
         currentJob.price_snapshot || null,
         currentJob.qty_snapshot?.[win.id] || null,
+        fabricSelectionFor(win, products.find(p => p.id === win.product_id), components, fabricCategories),
       )
     }))
     return calcJobSummary(windowsWithBOM)
-  }, [currentJob, productComponentsMap, optionDefsFor])
+  }, [currentJob, productComponentsMap, optionDefsFor, products, components, fabricCategories])
 
   // Superseded products stay in `products` so historical jobs can still name
   // the product they were built against — but they must never be pickable.
@@ -158,7 +164,7 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     if (!hasLoadedRef.current) setLoading(true)
-    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes] = await Promise.all([
+    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes, fcRes] = await Promise.all([
       supabase.from('components').select('*').order('name'),
       supabase.from('suppliers').select('*').order('name'),
       supabase.from('products').select('*').order('name'),
@@ -170,10 +176,13 @@ export default function App() {
       supabase.from('purchase_orders').select('*, supplier:suppliers(*)').order('created_at', { ascending: false }),
       supabase.from('purchase_order_lines').select('*, component:components(*)').order('created_at'),
       supabase.from('product_options').select('*, choices:product_option_choices(*)').order('sort_order'),
+      supabase.from('fabric_categories').select('*').order('code'),
     ])
 
     const schedules = wsRes.error ? [] : (wsRes.data || [])
     if (!wsRes.error) setWidthSchedules(schedules)
+
+    if (!fcRes.error) setFabricCategories(fcRes.data || [])
 
     // Option definitions, keyed by product type, each with its choices sorted.
     // Recipe resolution needs these — without them a product's option lines
@@ -475,6 +484,19 @@ export default function App() {
     else { showToast('Schedule deleted'); await loadAll() }
   }
 
+  // ==== FABRIC PRICING CATEGORIES ====
+  // Six fixed rows (A-F) seeded by migration — this only ever updates one,
+  // never inserts or deletes.
+
+  const handleSaveFabricCategoryPrice = async (code, max_price) => {
+    setProdSaving(true)
+    const { error } = await supabase.from('fabric_categories')
+      .update({ max_price: Number(max_price) || 0 }).eq('code', code)
+    if (error) showToast(error.message || 'Failed to save', 'error')
+    else { showToast(`Category ${code} updated ✓`, 'success'); await loadAll() }
+    setProdSaving(false)
+  }
+
   const handleAddProductComponent = async (formData) => {
     setProdSaving(true)
     const sortOrder = (productComponentsMap[currentProduct.id] || []).length
@@ -678,7 +700,11 @@ export default function App() {
   const computeJobLock = useCallback((job) => {
     const windowsWithBOM = (job.windows || []).map(win => ({
       ...win,
-      bom: buildWindowBOM(productComponentsMap[win.product_id] || [], win, optionDefsFor(win.product_id))
+      bom: buildWindowBOM(
+        productComponentsMap[win.product_id] || [], win, optionDefsFor(win.product_id),
+        null, null,
+        fabricSelectionFor(win, products.find(p => p.id === win.product_id), components, fabricCategories),
+      )
     }))
     const total = calcJobSummary(windowsWithBOM).reduce((s, r) => s + r.total_cost, 0)
     return {
@@ -686,7 +712,7 @@ export default function App() {
       qty_snapshot:   buildQtySnapshot(windowsWithBOM),
       locked_total:   Math.round(total * 100) / 100,
     }
-  }, [productComponentsMap, optionDefsFor])
+  }, [productComponentsMap, optionDefsFor, products, components, fabricCategories])
 
   // One-off: jobs confirmed before pricing was locked have no snapshot, so their
   // value would keep moving with component costs. Lock them at current prices.
@@ -1151,6 +1177,8 @@ export default function App() {
           product={product}
           productComponents={recipe}
           optionDefs={optionDefsFor(win.product_id)}
+          allComponents={components}
+          fabricCategories={fabricCategories}
           onBack={() => setCurrentWindow(null)}
           onUpdate={(updates) => handleWindowUpdate(currentWindow.idx, updates)}
           onDelete={() => handleWindowDelete(currentWindow.idx)}
@@ -1167,6 +1195,8 @@ export default function App() {
           products={products}
           productComponentsMap={productComponentsMap}
           optionDefsFor={optionDefsFor}
+          allComponents={components}
+          fabricCategories={fabricCategories}
           onBack={() => setCurrentJob(null)}
           onUpdate={handleJobUpdate}
           onDelete={handleJobDelete}
@@ -1196,6 +1226,7 @@ export default function App() {
           suppliers={suppliers}
           optionDefs={productOptions[currentProduct.product_type] || []}
           widthSchedules={widthSchedules}
+          fabricCategories={fabricCategories}
           onSaveSchedule={handleSaveWidthSchedule}
           onDeleteSchedule={handleDeleteWidthSchedule}
           onBack={() => setCurrentProduct(null)}
@@ -1211,15 +1242,15 @@ export default function App() {
     }
 
     if (navTab === 'products') {
-      return <ProductList products={activeProducts} onOpen={setCurrentProduct} onNew={handleNewProduct}
-               onOpenOptions={() => setNavTab('options')} />
+      return <ProductList products={activeProducts} onOpen={setCurrentProduct} onNew={handleNewProduct} />
     }
 
-    if (navTab === 'options') {
+    // Admin — a hub of config sections, each with its own back button
+    if (navTab === 'admin' && adminSection === 'options') {
       return (
         <OptionsAdmin
           productOptions={productOptions}
-          onBack={() => setNavTab('products')}
+          onBack={() => setAdminSection(null)}
           onSaveOption={handleSaveOption}
           onDeleteOption={handleDeleteOption}
           onSaveChoice={handleSaveChoice}
@@ -1227,6 +1258,22 @@ export default function App() {
           saving={prodSaving}
         />
       )
+    }
+
+    if (navTab === 'admin' && adminSection === 'fabric_categories') {
+      return (
+        <FabricCategoriesAdmin
+          categories={fabricCategories}
+          onBack={() => setAdminSection(null)}
+          onSave={handleSaveFabricCategoryPrice}
+          saving={prodSaving}
+        />
+      )
+    }
+
+    if (navTab === 'admin') {
+      return <AdminHome onOpenOptions={() => setAdminSection('options')}
+               onOpenFabricCategories={() => setAdminSection('fabric_categories')} />
     }
 
     // Supplier detail
@@ -1315,7 +1362,7 @@ export default function App() {
   }
 
   // Hide bottom nav when drilling into details
-  const showBottomNav = !currentProduct && !currentJob && !currentWindow && !currentSupplier && !currentPO
+  const showBottomNav = !currentProduct && !currentJob && !currentWindow && !currentSupplier && !currentPO && !adminSection
 
   return (
     <div className="app">
@@ -1350,6 +1397,7 @@ export default function App() {
         open={compModalOpen}
         component={editingComp}
         suppliers={suppliers}
+        fabricCategories={fabricCategories}
         onClose={() => { setCompModalOpen(false); setEditingComp(null) }}
         onSave={handleCompSave}
         onDelete={handleCompDelete}
@@ -1371,6 +1419,8 @@ export default function App() {
         products={activeProducts}
         productComponentsMap={productComponentsMap}
         productOptions={productOptions}
+        allComponents={components}
+        fabricCategories={fabricCategories}
         onClose={() => setAddWindowOpen(false)}
         onAdd={handleAddWindow}
       />

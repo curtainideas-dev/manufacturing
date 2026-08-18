@@ -297,14 +297,61 @@ export function calcCostAt(productComponents, widthMm, dropMm, optionDefs = [], 
   }, 0)
 }
 
+/* ==========================================================================
+ * Blind fabric pricing
+ *
+ * A blind's recipe (product_components) only ever holds hardware — the
+ * fabric it's cut from is chosen per window, not fixed on the product, so it
+ * can't live there as an ordinary line. It's synthesised instead: a
+ * width_drop_based line built on demand from whatever the window picked,
+ * priced at its pricing category's flat rate rather than the fabric's own
+ * unit_cost — see supabase_fabric_pricing.sql for why. Being an ordinary
+ * line by the time it reaches calcWindowBOM, it freezes into a confirmed
+ * job's price/qty snapshot the same way every other line does.
+ * ========================================================================== */
+
+/**
+ * Resolve a blind window's chosen fabric into what the BOM needs: the real
+ * component (for name/part no/colour/stock matching) plus the flat price its
+ * category charges. Null whenever there's nothing to price yet — a track
+ * window, no fabric picked, or a product with no category assigned.
+ */
+export function fabricSelectionFor(win, product, components = [], categories = []) {
+  if (product?.product_type !== 'blind') return null
+  const picked = win?.config?.fabric
+  if (!picked?.component_id) return null
+  const component = components.find(c => c.id === picked.component_id)
+  if (!component) return null
+  const category = categories.find(c => c.code === product.fabric_category)
+  if (!category) return null
+  return { component, colour_variant: picked.colour_variant || null, categoryPrice: Number(category.max_price) || 0 }
+}
+
+/** The synthetic fabric line itself, or null when there's nothing to add. */
+export function fabricLineFor(fabricSelection) {
+  if (!fabricSelection?.component) return null
+  const { component, colour_variant, categoryPrice } = fabricSelection
+  return {
+    id:                 'fabric-slot',
+    component_id:       component.id,
+    component:          { ...component, unit_cost: categoryPrice, discount: 0 },
+    colour_variant:     colour_variant || null,
+    cost_type:          'width_drop_based',
+    formula_deduction:  0,
+    formula_buffer:     0,
+    sort_order:         -1,
+  }
+}
+
 /**
  * Resolve then cost, in one call. Every BOM in the app goes through here so
  * a call site can't accidentally skip resolution and cost the whole recipe.
  */
-export function buildWindowBOM(productComponents, win, optionDefs = [], priceMap = null, qtyMap = null) {
+export function buildWindowBOM(productComponents, win, optionDefs = [], priceMap = null, qtyMap = null, fabricSelection = null) {
   const widthMm = Number(win.width_mm), dropMm = Number(win.drop_mm)
   const lines = resolveRecipe(productComponents, win.config, optionDefs, widthMm, dropMm)
-  return calcWindowBOM(lines, widthMm, dropMm, priceMap, qtyMap)
+  const fabricLine = fabricLineFor(fabricSelection)
+  return calcWindowBOM(fabricLine ? [fabricLine, ...lines] : lines, widthMm, dropMm, priceMap, qtyMap)
 }
 
 // Key used for snapshotted unit costs — component + colour variant.

@@ -1,16 +1,21 @@
 import { useState, useMemo } from 'react'
 import { ChevronLeftIcon, TrashIcon } from '../components/Icons'
-import { buildWindowBOM, missingAnswers, resolveAnswers, fmt, fmtQty } from '../lib/bomEngine'
+import { buildWindowBOM, missingAnswers, resolveAnswers, fabricSelectionFor, fmt, fmtQty } from '../lib/bomEngine'
 import CustomiseWindowModal from '../components/CustomiseWindowModal'
 
-export default function WindowDetail({ window: win, windowIndex, totalWindows, product, productComponents, optionDefs = [], onBack, onUpdate, onDelete, readOnly }) {
+export default function WindowDetail({
+  window: win, windowIndex, totalWindows, product, productComponents, optionDefs = [],
+  allComponents = [], fabricCategories = [],
+  onBack, onUpdate, onDelete, readOnly,
+}) {
   const [overrides, setOverrides] = useState(win.bom_overrides || {})
 
   // Recalculate BOM whenever dimensions or the window's answers change —
   // both feed recipe resolution, not just the quantity formulas.
   const bom = useMemo(() =>
-    buildWindowBOM(productComponents, win, optionDefs),
-    [productComponents, optionDefs, win]
+    buildWindowBOM(productComponents, win, optionDefs, null, null,
+      fabricSelectionFor(win, product, allComponents, fabricCategories)),
+    [productComponents, optionDefs, win, product, allComponents, fabricCategories]
   )
 
   const bomWithOverrides = bom.map(line => {
@@ -26,7 +31,12 @@ export default function WindowDetail({ window: win, windowIndex, totalWindows, p
 
   const windowTotal = bomWithOverrides.reduce((s, l) => s + l.line_cost, 0)
 
-  const missing = useMemo(() => missingAnswers(optionDefs, win.config), [optionDefs, win.config])
+  const category = fabricCategories.find(c => c.code === product?.fabric_category)
+  const fabricMissing = product?.product_type === 'blind' && !!category && !win.config?.fabric?.component_id
+  const missing = useMemo(() => {
+    const base = missingAnswers(optionDefs, win.config)
+    return fabricMissing ? [...base, 'Fabric'] : base
+  }, [optionDefs, win.config, fabricMissing])
 
   const [customiseOpen, setCustomiseOpen] = useState(false)
 
@@ -121,7 +131,7 @@ export default function WindowDetail({ window: win, windowIndex, totalWindows, p
 
           {/* Answers live behind the same modal used when the window was
               added, so there is one place these questions are ever asked. */}
-          {optionDefs.length > 0 && (
+          {(optionDefs.length > 0 || product?.product_type === 'blind') && (
             <button className="btn btn-secondary btn-block" style={{ marginBottom: 14 }}
               onClick={() => setCustomiseOpen(true)} disabled={readOnly}>
               🎛️ {readOnly ? 'Answers locked' : 'Customise'}
@@ -257,6 +267,8 @@ export default function WindowDetail({ window: win, windowIndex, totalWindows, p
         product={product}
         productComponents={productComponents}
         optionDefs={optionDefs}
+        allComponents={allComponents}
+        categories={fabricCategories}
         widthMm={win.width_mm}
         dropMm={win.drop_mm}
         config={win.config}

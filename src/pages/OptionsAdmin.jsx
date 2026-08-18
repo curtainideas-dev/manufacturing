@@ -54,7 +54,7 @@ export default function OptionsAdmin({
     <>
       <div className="header">
         <button className="header-back" onClick={onBack}>
-          <ChevronLeftIcon size={18} /> Products
+          <ChevronLeftIcon size={18} /> Admin
         </button>
         <div className="header-title" style={{ fontSize: 15 }}>Options</div>
         <div className="header-actions">
