@@ -31,6 +31,7 @@ import { buildStockMap, stockKey, checkLowStock, getStock } from './lib/stockEng
 import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor } from './lib/bomEngine'
 import { orderUnitInfo } from './lib/poEngine'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
+import { exportProductPricingXLSX } from './lib/exportPricing'
 import './index.css'
 
 const NAV_TABS = [
@@ -110,6 +111,7 @@ export default function App() {
   const [addLinesOpen, setAddLinesOpen]           = useState(false)
   const [addingLines, setAddingLines]             = useState(false)
   const [poExporting, setPoExporting]             = useState(false)
+  const [pricingExporting, setPricingExporting]   = useState(false)
 
   const { toasts, showToast } = useToast()
 
@@ -1150,6 +1152,21 @@ export default function App() {
     }
   }
 
+  const handleExportPricing = async (product) => {
+    setPricingExporting(true)
+    try {
+      const optionDefs = productOptions[product.product_type] || []
+      const { truncated } = await exportProductPricingXLSX(
+        product, productComponentsMap[product.id] || [], optionDefs, fabricCategories, Number(product.markup) || 1.6)
+      if (truncated) showToast('Too many option combinations — export was capped', 'error')
+      else showToast('Pricing downloaded ✓', 'success')
+    } catch (e) {
+      showToast(e.message || 'Export failed', 'error')
+    } finally {
+      setPricingExporting(false)
+    }
+  }
+
   // ==== LOADING ====
 
   if (loading) {
@@ -1236,6 +1253,8 @@ export default function App() {
           onRemoveComponent={handleRemoveProductComponent}
           onDuplicate={handleDuplicate}
           onDeleteProduct={handleProductDelete}
+          onExportPricing={() => handleExportPricing(currentProduct)}
+          pricingExporting={pricingExporting}
           saving={prodSaving}
         />
       )

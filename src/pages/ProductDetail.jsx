@@ -15,6 +15,7 @@ export default function ProductDetail({
   widthSchedules = [], onSaveSchedule, onDeleteSchedule, fabricCategories = [],
   onBack, onUpdateProduct, onAddComponent, onUpdateComponent,
   onRemoveComponent, onDuplicate, onDeleteProduct, saving,
+  onExportPricing, pricingExporting,
 }) {
   const [nameDraft, setNameDraft]     = useState(product.name || '')
   const [notesDraft, setNotesDraft]   = useState(product.notes || '')
@@ -92,7 +93,16 @@ export default function ProductDetail({
           <ChevronLeftIcon size={18} /> Products
         </button>
         <div className="header-title" style={{ fontSize: 15 }} />
-        <div className="header-actions">
+        <div className="header-actions" style={{ display: 'flex', alignItems: 'center' }}>
+          {(isTrack || isBlind) && (
+            <button
+              style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.8)', background: 'none', border: 'none', cursor: 'pointer', padding: '6px 10px' }}
+              onClick={onExportPricing}
+              disabled={pricingExporting || productComponents.length === 0}
+            >
+              {pricingExporting ? 'Exporting…' : '⬇ Pricing'}
+            </button>
+          )}
           <button
             style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.8)', background: 'none', border: 'none', cursor: 'pointer', padding: '6px 10px' }}
             onClick={() => setShowDupMenu(v => !v)}
