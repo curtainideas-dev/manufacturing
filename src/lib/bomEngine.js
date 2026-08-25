@@ -440,7 +440,8 @@ export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = nul
 export function calcJobSummary(windowsWithBOM) {
   // Group by component_id + colour_variant so different colours are separate lines
   const map = {}
-  windowsWithBOM.forEach(win => {
+  windowsWithBOM.forEach((win, idx) => {
+    const windowLabel = win.label || `Window ${idx + 1}`
     win.bom.forEach(line => {
       const colourKey = line.colour_variant?.suffix || 'none'
       const key = `${line.component_id}__${colourKey}`
@@ -451,7 +452,7 @@ export function calcJobSummary(windowsWithBOM) {
           display_pn:     line.display_pn,
           total_qty:      0,
           unit_cost:      line.unit_cost_snapshot,
-          cuts:           [], // individual cut lengths in mm, for bar components
+          cuts:           [], // { mm, label } per cut, for bar components — label is the window it came from
           widthFormulas:  [], // "1×12" style labels, one per contributing window
         }
       }
@@ -460,7 +461,7 @@ export function calcJobSummary(windowsWithBOM) {
       if (line.component?.order_type === 'bar' && line.qty > 0) {
         const unit  = line.component?.unit || 'each'
         const cutMm = unit === 'metres' ? Math.round(line.qty * 1000) : Math.round(line.qty)
-        map[key].cuts.push(cutMm)
+        map[key].cuts.push({ mm: cutMm, label: windowLabel })
       }
       if (line.width_formula) map[key].widthFormulas.push(line.width_formula)
     })

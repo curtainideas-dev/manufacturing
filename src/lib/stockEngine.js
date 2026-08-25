@@ -60,16 +60,19 @@ export function checkLowStock(jobSummary, stockMap) {
  * First-fit decreasing bin packing.
  * Returns an array of bins, each with the cuts assigned to it and the leftover length.
  * Bins where a single cut exceeds the bar length are flagged as oversized.
+ *
+ * @param cuts array of { mm, label } — label is the window a cut came from,
+ *             carried through untouched so the picker can show it.
  */
-export function packCuts(cutsMm, barLengthMm) {
-  const sorted = [...cutsMm].sort((a, b) => b - a)
+export function packCuts(cuts, barLengthMm) {
+  const sorted = [...cuts].sort((a, b) => b.mm - a.mm)
   const bins = []
   for (const cut of sorted) {
     let placed = false
     for (const bin of bins) {
-      if (!bin.oversized && bin.remaining >= cut) {
+      if (!bin.oversized && bin.remaining >= cut.mm) {
         bin.cuts.push(cut)
-        bin.remaining -= cut
+        bin.remaining -= cut.mm
         placed = true
         break
       }
@@ -77,8 +80,8 @@ export function packCuts(cutsMm, barLengthMm) {
     if (!placed) {
       bins.push({
         cuts:      [cut],
-        remaining: barLengthMm - cut,
-        oversized: cut > barLengthMm,
+        remaining: barLengthMm - cut.mm,
+        oversized: cut.mm > barLengthMm,
       })
     }
   }
@@ -96,7 +99,7 @@ export function packCuts(cutsMm, barLengthMm) {
  * within the same bin still share a single bar, preserving the packing
  * optimisation for the common case.
  *
- * @param cutsMm required cut lengths (mm)
+ * @param cuts required cuts, as { mm, label }
  * @param barLengthMm length of a full bar (mm)
  * @param selections   { "<binIdx>.<cutInBinIdx>": sourceId }
  *                      sourceId is '__full_bar__' or a specific offcut's id
@@ -106,8 +109,8 @@ export function packCuts(cutsMm, barLengthMm) {
  * @returns [{ bar_id, offcut }] — one entry per physical bar/offcut consumed,
  *          in the shape the deduct-stock handler already expects.
  */
-export function buildBarDeductions(cutsMm, barLengthMm, selections, leftoverChoices = {}) {
-  const packed = packCuts(cutsMm, barLengthMm)
+export function buildBarDeductions(cuts, barLengthMm, selections, leftoverChoices = {}) {
+  const packed = packCuts(cuts, barLengthMm)
   const bars = []
 
   const offcutFrom = (lo) => (lo?.add && lo.length_mm > 0)
@@ -116,7 +119,7 @@ export function buildBarDeductions(cutsMm, barLengthMm, selections, leftoverChoi
 
   packed.forEach((bin, binIdx) => {
     const fullBarCutIdxs = []
-    bin.cuts.forEach((cutLength, cutInBinIdx) => {
+    bin.cuts.forEach((cut, cutInBinIdx) => {
       const selKey = `${binIdx}.${cutInBinIdx}`
       const sel    = selections[selKey]
       if (sel === '__full_bar__') {
@@ -135,8 +138,8 @@ export function buildBarDeductions(cutsMm, barLengthMm, selections, leftoverChoi
 
 // Total individual cut slots across all bins — used to check every cut has a
 // source selected before a bar-component line can be marked picked.
-export function countCutSlots(cutsMm, barLengthMm) {
-  return packCuts(cutsMm, barLengthMm).reduce((s, bin) => s + bin.cuts.length, 0)
+export function countCutSlots(cuts, barLengthMm) {
+  return packCuts(cuts, barLengthMm).reduce((s, bin) => s + bin.cuts.length, 0)
 }
 
 /**

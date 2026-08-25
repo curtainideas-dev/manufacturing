@@ -111,7 +111,7 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
         const isBar  = row.component.order_type === 'bar'
         if (isBar) {
           const barLengthMm = Number(row.component.bar_length_mm) || 6000
-          const cuts  = row.cuts?.length ? row.cuts : [Math.round(row.total_qty * 1000)]
+          const cuts  = row.cuts?.length ? row.cuts : [{ mm: Math.round(row.total_qty * 1000), label: null }]
           const bars  = buildBarDeductions(cuts, barLengthMm, barSelections[key] || {}, offcutData[key] || {})
           return { component: row.component, colour_variant: row.colour_variant, qty: row.total_qty, bars }
         }
@@ -222,10 +222,10 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
     const qtyOnHand   = Number(stock?.qty_on_hand) || 0
     const barLengthMm = Number(row.component.bar_length_mm) || 6000
 
-    const cuts   = row.cuts?.length ? row.cuts : [Math.round(row.total_qty * 1000)]
+    const cuts   = row.cuts?.length ? row.cuts : [{ mm: Math.round(row.total_qty * 1000), label: null }]
     const packed = packCuts(cuts, barLengthMm)
 
-    const totalMm     = cuts.reduce((s, c) => s + c, 0)
+    const totalMm     = cuts.reduce((s, c) => s + c.mm, 0)
     const totalCuts   = countCutSlots(cuts, barLengthMm)
     const selections  = barSelections[key] || {}
     const allSelected = Object.values(selections).filter(Boolean).length === totalCuts
@@ -259,7 +259,7 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
               <div style={{ fontSize: 12, color: 'var(--success)', fontWeight: 600, marginTop: 2 }}>✓ Already deducted</div>
             ) : (
               <div style={{ fontSize: 12, color: 'var(--warm-300)', marginTop: 2 }}>
-                {cuts.length} cut{cuts.length !== 1 ? 's' : ''}: {cuts.map(c => `${c.toLocaleString()}mm`).join(' + ')} = {totalMm.toLocaleString()}mm
+                {cuts.length} cut{cuts.length !== 1 ? 's' : ''}: {cuts.map(c => `${c.mm.toLocaleString()}mm${c.label ? ` (${c.label})` : ''}`).join(' + ')} = {totalMm.toLocaleString()}mm
                 <span style={{ marginLeft: 8, fontWeight: 700, color: 'var(--ink)' }}>→ up to {packed.length} bar{packed.length !== 1 ? 's' : ''} needed</span>
                 {stock && <span style={{ marginLeft: 8, color: qtyOnHand >= packed.length ? 'var(--success)' : 'var(--danger)' }}>· {qtyOnHand} in stock</span>}
               </div>
@@ -282,13 +282,13 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
             cuts within a group can be mixed across offcuts and a shared full
             bar, not forced onto one single source. */}
         {!isDone && status !== 'skipped' && packed.map((bin, binIdx) => {
-          const binCutTotal = bin.cuts.reduce((s, c) => s + c, 0)
+          const binCutTotal = bin.cuts.reduce((s, c) => s + c.mm, 0)
           // Cuts in this bin currently set to share a full bar, for the
           // bin-level leftover prompt.
           const fullBarCutIdxs = bin.cuts
             .map((_, i) => i)
             .filter(i => selections[`${binIdx}.${i}`] === '__full_bar__')
-          const fullBarUsedMm   = fullBarCutIdxs.reduce((s, i) => s + bin.cuts[i], 0)
+          const fullBarUsedMm   = fullBarCutIdxs.reduce((s, i) => s + bin.cuts[i].mm, 0)
           const fullBarRemainMm = barLengthMm - fullBarUsedMm
           const barLeftoverKey  = `bar:${binIdx}`
           const barOd           = offcutData[key]?.[barLeftoverKey]
@@ -306,7 +306,7 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
                 <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink)' }}>
                   {bin.cuts.length > 1 ? `Bar group ${binIdx + 1}` : `Cut ${binIdx + 1}`}
                   <span style={{ fontWeight: 400, color: 'var(--warm-300)', marginLeft: 8 }}>
-                    {bin.cuts.length > 1 && `${bin.cuts.map(c => `${c.toLocaleString()}mm`).join(' + ')} = ${binCutTotal.toLocaleString()}mm total`}
+                    {bin.cuts.length > 1 && `${bin.cuts.map(c => `${c.mm.toLocaleString()}mm${c.label ? ` (${c.label})` : ''}`).join(' + ')} = ${binCutTotal.toLocaleString()}mm total`}
                   </span>
                 </div>
                 {bin.oversized && (
@@ -318,7 +318,7 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
 
               {!bin.oversized && (
                 <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {bin.cuts.map((cutLength, cutInBinIdx) => {
+                  {bin.cuts.map(({ mm: cutLength, label: cutLabel }, cutInBinIdx) => {
                     const selKey    = `${binIdx}.${cutInBinIdx}`
                     const selectedId = selections[selKey]
                     const od         = offcutData[key]?.[`cut:${selKey}`]
@@ -344,6 +344,12 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                           <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
                             {cutLength.toLocaleString()}mm cut
+                            {cutLabel && (
+                              <span style={{
+                                fontSize: 10, fontWeight: 700, marginLeft: 6, padding: '1px 6px',
+                                borderRadius: 4, background: 'var(--blue-bg)', color: 'var(--blue)',
+                              }}>{cutLabel}</span>
+                            )}
                           </span>
                           {selectedId && <span style={{ fontSize: 11, color: 'var(--success)', fontWeight: 600 }}>✓ Selected</span>}
                         </div>
