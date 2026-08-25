@@ -80,21 +80,33 @@ export async function exportJobPDF(job, windowsWithBOM, jobSummary, products) {
     y += 7
   }
 
-  // Table data row
+  // Table data row. A col can carry a `sub` — a smaller grey line underneath,
+  // used for the carrier chart's "N×M" figure so it reads straight off the
+  // supplier's chart next to the qty it produced, not just as a raw number.
   const tableRow = (cols, rowIndex, height = 7) => {
     const bg = rowIndex % 2 === 0 ? WARM_100 : WHITE
     setFill(bg)
     doc.rect(MX, y, CW, height, 'F')
-    setColor(INK)
-    doc.setFontSize(8.5)
-    doc.setFont('helvetica', 'normal')
-    cols.forEach(({ text, x, align, bold }) => {
-      if (bold) doc.setFont('helvetica', 'bold')
-      doc.text(String(text ?? '—'), x, y + (height / 2) + 1.5, { align: align || 'left' })
-      if (bold) doc.setFont('helvetica', 'normal')
+    const hasSub = cols.some(c => c.sub)
+    cols.forEach(({ text, x, align, bold, sub }) => {
+      setColor(INK)
+      doc.setFontSize(8.5)
+      doc.setFont('helvetica', bold ? 'bold' : 'normal')
+      doc.text(String(text ?? '—'), x, hasSub ? y + 4.3 : y + (height / 2) + 1.5, { align: align || 'left' })
+      if (sub) {
+        setColor(WARM_300)
+        doc.setFontSize(6.5)
+        doc.setFont('helvetica', 'normal')
+        doc.text(String(sub), x, y + 8.3, { align: align || 'left' })
+      }
     })
+    doc.setFont('helvetica', 'normal')
     y += height
   }
+
+  // Row height for a line that may carry a carrier chart figure — taller so
+  // the "N×M" sub-line has room under the qty.
+  const rowHeightFor = (formulaLabel) => formulaLabel ? 10 : 7
 
   const fmtQty = n => {
     const num = Number(n)
@@ -166,13 +178,14 @@ export async function exportJobPDF(job, windowsWithBOM, jobSummary, products) {
   ])
 
   jobSummary.forEach((row, i) => {
-    checkPage(8)
+    const rh = rowHeightFor(row.widthFormulaLabel)
+    checkPage(rh + 1)
     tableRow([
       { text: row.component.name,                        x: MX + 2,    bold: true },
       { text: row.display_pn || row.component?.supplier_pn || '—',          x: MX + 80 },
       { text: row.component.unit,                        x: MX + 125 },
-      { text: fmtQty(row.total_qty),                     x: MXR - 2,   align: 'right', bold: true },
-    ], i)
+      { text: fmtQty(row.total_qty),                     x: MXR - 2,   align: 'right', bold: true, sub: row.widthFormulaLabel },
+    ], i, rh)
   })
 
   // Summary total bar
@@ -188,9 +201,9 @@ export async function exportJobPDF(job, windowsWithBOM, jobSummary, products) {
 
   // ---- PER-WINDOW SECTIONS ----
   windowsWithBOM.forEach((win, winIdx) => {
-    const product   = products.find(p => p.id === win.product_id)
-    const rowHeight = 7
-    const sectionHeight = 12 + 7 + win.bom.length * rowHeight + 10
+    const product    = products.find(p => p.id === win.product_id)
+    const bomHeight  = win.bom.reduce((s, l) => s + rowHeightFor(l.width_formula), 0)
+    const sectionHeight = 12 + 7 + bomHeight + 10
 
     checkPage(sectionHeight)
 
@@ -231,14 +244,15 @@ export async function exportJobPDF(job, windowsWithBOM, jobSummary, products) {
       y += 8
     } else {
       win.bom.forEach((line, li) => {
-        checkPage(rowHeight + 2)
+        const rh = rowHeightFor(line.width_formula)
+        checkPage(rh + 2)
         const effectiveQty = line.override_qty ?? line.calculated_qty
         tableRow([
           { text: line.component?.name || '—',        x: MX + 2,   bold: true },
           { text: line.display_pn || line.component?.supplier_pn || '—', x: MX + 80 },
           { text: line.component?.unit || '—',        x: MX + 125 },
-          { text: fmtQty(effectiveQty),               x: MXR - 2,  align: 'right', bold: true },
-        ], li)
+          { text: fmtQty(effectiveQty),               x: MXR - 2,  align: 'right', bold: true, sub: line.width_formula },
+        ], li, rh)
       })
     }
 

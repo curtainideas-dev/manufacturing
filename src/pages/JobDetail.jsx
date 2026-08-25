@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef } from 'react'
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon } from '../components/Icons'
 import { buildWindowBOM, calcJobSummary, missingAnswers, fabricSelectionFor, fmt, fmtQty } from '../lib/bomEngine'
+import { describeCombo } from '../lib/pricingCombos'
 import { exportJobPDF } from '../lib/exportPDF'
 import { exportPackagingLabels, exportTrackLabels, exportPartsLabels } from '../lib/exportLabels'
 import PartsListModal from '../components/PartsListModal'
@@ -274,7 +275,16 @@ export default function JobDetail({
                 ) : windowsWithBOM.map((win, idx) => {
                   const product  = products.find(p => p.id === win.product_id)
                   const winTotal = win.bom.reduce((s, l) => s + l.line_cost, 0)
-                  const missing  = missingAnswers(optionDefsFor(win.product_id), win.config)
+                  const optionDefs = optionDefsFor(win.product_id)
+                  const missing  = missingAnswers(optionDefs, win.config)
+                  // Every answered option, for a quick eyeball against the customer's PO —
+                  // exactly what was entered, not what the recipe resolved it to.
+                  const optionTags = describeCombo(optionDefs, win.config?.options || {})
+                  // Carrier/bracket chart picks — "N×M" read straight off the supplier's
+                  // chart, same label the recipe and pricing breakdown already use.
+                  const carrierTags = win.bom
+                    .filter(l => l.width_formula)
+                    .map(l => `${l.component?.name || 'Carrier'}: ${l.width_formula}`)
                   return (
                     <div key={win.id} className="component-item" onClick={() => onOpenWindow(win, idx)}>
                       <div className="component-avatar">🔩</div>
@@ -292,6 +302,22 @@ export default function JobDetail({
                           {product?.name || '—'} · {win.width_mm}W × {win.drop_mm}D mm
                           {missing.length > 0 && ` · needs ${missing.join(', ')}`}
                         </div>
+                        {(optionTags.length > 0 || carrierTags.length > 0) && (
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 5 }}>
+                            {optionTags.map((t, i) => (
+                              <span key={`o${i}`} style={{
+                                fontSize: 10, fontWeight: 700, padding: '1px 6px',
+                                borderRadius: 4, background: 'var(--accent-bg)', color: 'var(--accent-dark)',
+                              }}>{t}</span>
+                            ))}
+                            {carrierTags.map((t, i) => (
+                              <span key={`c${i}`} style={{
+                                fontSize: 10, fontWeight: 700, padding: '1px 6px',
+                                borderRadius: 4, background: 'var(--blue-bg)', color: 'var(--blue)',
+                              }}>{t}</span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       <div className="component-right">
                         <div className="component-cost">${fmt(winTotal)}</div>
