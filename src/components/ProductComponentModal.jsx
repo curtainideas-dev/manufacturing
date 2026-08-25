@@ -64,24 +64,37 @@ export default function ProductComponentModal({
   const selectedSchedule = widthSchedules.find(s => s.id === form.width_schedule_id)
 
   const startNewSchedule  = () => setEditingSchedule({ id: null, name: '', qty_map: {} })
-  // The inline editor below only offers the standard 18-band grid — safe for
-  // schedules built from it, but opening it on a schedule with its own finer
-  // custom bands (e.g. a supplier chart) would show them all as blank and risk
-  // adding unrelated standard-grid entries alongside the real data. Block that.
-  const isCustomSchedule = (s) => {
-    const keys = Object.keys(s?.qty_map || {}).map(Number)
-    return keys.some(k => !GRID_WIDTHS.includes(k))
-  }
-  const startEditSchedule = () => selectedSchedule && !isCustomSchedule(selectedSchedule) && setEditingSchedule({
+  const startEditSchedule = () => selectedSchedule && setEditingSchedule({
     id: selectedSchedule.id, name: selectedSchedule.name, qty_map: { ...(selectedSchedule.qty_map || {}) },
   })
 
-  const setScheduleQty = (w, v) => setEditingSchedule(s => {
-    const next = { ...(s.qty_map || {}) }
-    if (v === '' || Number(v) === 0) delete next[w]
-    else next[w] = Number(v)
-    return { ...s, qty_map: next }
-  })
+  // The grid itself — an explicit list of { width up to → qty } bands, same
+  // free-form shape as the drop-limit table below. Not tied to GRID_WIDTHS,
+  // so a supplier's own chart (e.g. a wave-slider carrier count every 120mm)
+  // can be entered at its real breakpoints instead of being approximated.
+  const scheduleRows = Object.entries(editingSchedule?.qty_map || {})
+    .map(([w, q]) => [Number(w), Number(q)])
+    .sort((a, b) => a[0] - b[0])
+
+  const writeScheduleRows = (pairs) => {
+    const next = {}
+    pairs.forEach(([w, q]) => { if (w > 0) next[w] = Number(q) || 0 })
+    setEditingSchedule(s => ({ ...s, qty_map: next }))
+  }
+  const setScheduleQty    = (w, q)  => writeScheduleRows(scheduleRows.map(r => (r[0] === w ? [w, q] : r)))
+  const renameScheduleRow = (w, nw) => writeScheduleRows(scheduleRows.map(r => (r[0] === w ? [Number(nw), r[1]] : r)))
+  const removeScheduleRow = (w)     => writeScheduleRows(scheduleRows.filter(r => r[0] !== w))
+  const addScheduleRow    = () => {
+    const last = scheduleRows[scheduleRows.length - 1]
+    writeScheduleRows([...scheduleRows, [last ? last[0] + 120 : 300, last ? last[1] + 2 : 1]])
+  }
+  // Convenience seed for a schedule that does follow the standard grid —
+  // fills in any band not already present, leaves existing rows alone.
+  const loadStandardGrid = () => {
+    const next = { ...(editingSchedule?.qty_map || {}) }
+    GRID_WIDTHS.forEach(w => { if (!(w in next)) next[w] = 0 })
+    setEditingSchedule(s => ({ ...s, qty_map: next }))
+  }
 
   const saveSchedule = async () => {
     if (!editingSchedule?.name.trim()) return
@@ -372,7 +385,7 @@ export default function ProductComponentModal({
                           ))}
                         </select>
                       </div>
-                      {selectedSchedule && !isCustomSchedule(selectedSchedule) && (
+                      {selectedSchedule && (
                         <button type="button" className="btn btn-secondary btn-sm" onClick={startEditSchedule}>
                           Edit
                         </button>
@@ -385,7 +398,6 @@ export default function ProductComponentModal({
                     {selectedSchedule && (() => {
                       const bands = Object.keys(selectedSchedule.qty_map || {})
                         .map(Number).filter(n => Number(selectedSchedule.qty_map[n]) > 0).sort((a, b) => a - b)
-                      const custom = isCustomSchedule(selectedSchedule)
                       return (
                         <div style={{
                           marginTop: 8, padding: '8px 10px', background: '#fff',
@@ -394,14 +406,9 @@ export default function ProductComponentModal({
                         }}>
                           {bands.length === 0
                             ? 'This schedule has no quantities set yet.'
-                            : custom
-                            ? `${bands.length} width bands, ${bands[0].toLocaleString()}–${bands[bands.length - 1].toLocaleString()}mm · qty ${selectedSchedule.qty_map[bands[0]]}–${selectedSchedule.qty_map[bands[bands.length - 1]]}`
+                            : bands.length > 8
+                            ? `${bands.length} width bands, ${bands[0].toLocaleString()}–${bands[bands.length - 1].toLocaleString()}mm · qty ${selectedSchedule.qty_map[bands[0]]}–${selectedSchedule.qty_map[bands[bands.length - 1]]} · Edit to see every band`
                             : bands.map(w => `≤${w.toLocaleString()}: ${selectedSchedule.qty_map[w]}`).join('   ·   ')}
-                          {custom && (
-                            <div style={{ marginTop: 4, color: 'var(--warning)' }}>
-                              Custom bands — not editable here. Ask for the numbers to be updated directly.
-                            </div>
-                          )}
                         </div>
                       )
                     })()}
@@ -422,24 +429,44 @@ export default function ProductComponentModal({
                     </div>
 
                     <div style={{ fontSize: 11, color: 'var(--warm-300)', marginBottom: 8 }}>
-                      Quantity for each width band. Blank = 0.
+                      Width up to → quantity, read straight off a supplier's chart. A window uses
+                      the first band its width fits into — bands don't have to be evenly spaced.
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-                      {GRID_WIDTHS.map(w => (
-                        <div key={w} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span style={{
-                            fontSize: 11, color: 'var(--warm-300)', width: 46,
-                            textAlign: 'right', flexShrink: 0, fontVariantNumeric: 'tabular-nums',
-                          }}>
-                            ≤{w.toLocaleString()}
-                          </span>
-                          <input className="field-input" type="number" step="1" min="0"
-                            value={editingSchedule.qty_map?.[w] ?? ''}
-                            onChange={e => setScheduleQty(w, e.target.value)}
-                            placeholder="0"
-                            style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right' }} />
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 28px', gap: 6, marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--warm-300)' }}>Width up to (mm)</div>
+                      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--warm-300)' }}>Quantity</div>
+                      <div />
+                    </div>
+
+                    <div style={{ maxHeight: 280, overflowY: 'auto', paddingRight: 2 }}>
+                      {scheduleRows.map(([w, q]) => (
+                        <div key={w} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 28px', gap: 6, marginBottom: 5 }}>
+                          <input className="field-input" style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right' }}
+                            type="number" value={w} onChange={e => renameScheduleRow(w, e.target.value)} />
+                          <input className="field-input" style={{ padding: '6px 8px', fontSize: 13, textAlign: 'right' }}
+                            type="number" step="1" min="0" value={q} onChange={e => setScheduleQty(w, e.target.value)} />
+                          <button type="button" onClick={() => removeScheduleRow(w)}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)' }}>
+                            <TrashIcon size={14} />
+                          </button>
                         </div>
                       ))}
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                      <button type="button" onClick={addScheduleRow}
+                        style={{
+                          flex: 1, padding: '7px', borderRadius: 6, fontSize: 12.5,
+                          fontWeight: 600, cursor: 'pointer', border: '1.5px dashed var(--warm-200)',
+                          background: 'none', color: 'var(--warm-300)',
+                        }}>+ Add band</button>
+                      <button type="button" onClick={loadStandardGrid}
+                        style={{
+                          flex: 1, padding: '7px', borderRadius: 6, fontSize: 12.5,
+                          fontWeight: 600, cursor: 'pointer', border: '1.5px dashed var(--warm-200)',
+                          background: 'none', color: 'var(--warm-300)',
+                        }}>+ Standard 300mm grid</button>
                     </div>
 
                     <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
