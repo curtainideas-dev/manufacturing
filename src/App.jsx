@@ -803,6 +803,34 @@ export default function App() {
     await supabase.from('mfg_windows').update(updates).eq('id', windows[idx].id)
   }
 
+  // Copies everything but identity — product, dimensions, options, fabric —
+  // so a near-identical window (same track/blind, same config, different
+  // room and maybe a tweaked size) doesn't mean re-answering every option
+  // from scratch. Lands at the end of the list, ready to open and adjust.
+  const handleWindowDuplicate = async (idx) => {
+    const source = currentJob.windows[idx]
+    const sortOrder = (currentJob.windows || []).length
+    const { data, error } = await supabase
+      .from('mfg_windows')
+      .insert({
+        job_id:        currentJob.id,
+        product_id:    source.product_id,
+        label:         source.label ? `${source.label} (copy)` : '',
+        width_mm:      source.width_mm,
+        drop_mm:       source.drop_mm,
+        sort_order:    sortOrder,
+        bom_overrides: {},
+        config:        source.config || {},
+      })
+      .select().single()
+    if (error) { showToast('Failed to duplicate window', 'error'); return }
+    const newWin = { ...data, bom_overrides: {}, config: data.config || {} }
+    const updated = { ...currentJob, windows: [...(currentJob.windows || []), newWin] }
+    setCurrentJob(updated)
+    setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
+    setCurrentWindow({ win: newWin, idx: updated.windows.length - 1 })
+  }
+
   const handleWindowDelete = async (idx) => {
     if (!window.confirm('Remove this window?')) return
     const win = currentJob.windows[idx]
@@ -1219,6 +1247,7 @@ export default function App() {
           onDelete={handleJobDelete}
           onAddWindow={() => setAddWindowOpen(true)}
           onOpenWindow={(win, idx) => setCurrentWindow({ win, idx })}
+          onDuplicateWindow={handleWindowDuplicate}
           onConfirm={handleJobConfirm}
           onComplete={handleJobComplete}
           onReopen={handleJobReopen}

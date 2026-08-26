@@ -3,6 +3,7 @@ import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon } fro
 import { buildWindowBOM, calcJobSummary, missingAnswers, fabricSelectionFor, fmt, fmtQty } from '../lib/bomEngine'
 import { describeCombo } from '../lib/pricingCombos'
 import { exportJobPDF } from '../lib/exportPDF'
+import { exportCutSheetPDF } from '../lib/exportCutSheet'
 import { exportPackagingLabels, exportTrackLabels, exportPartsLabels } from '../lib/exportLabels'
 import PartsListModal from '../components/PartsListModal'
 
@@ -15,13 +16,21 @@ const DownloadIcon = () => (
   </svg>
 )
 
+const CopyIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="9" y="9" width="13" height="13" rx="2"/>
+    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+  </svg>
+)
+
 export default function JobDetail({
   job, products, productComponentsMap, optionDefsFor,
   allComponents = [], fabricCategories = [],
-  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onConfirm, onComplete, onReopen, onAttachPO, poUploading, onDeductStock,
+  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onConfirm, onComplete, onReopen, onAttachPO, poUploading, onDeductStock,
 }) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(false)
+  const [cutting, setCutting]     = useState(false)
   const [labeling, setLabeling]   = useState(null) // 'pack' | 'track' | 'parts' | null
   const [partsOpen, setPartsOpen] = useState(false)
   const poFileRef = useRef(null)
@@ -51,6 +60,18 @@ export default function JobDetail({
   }, [job.windows, productComponentsMap, optionDefsFor, job.price_snapshot, job.qty_snapshot, products, allComponents, fabricCategories])
 
   const jobSummary = useMemo(() => calcJobSummary(windowsWithBOM), [windowsWithBOM])
+
+  // Same buckets, order and icons the Components library uses, so the picker
+  // reads the BOM the way they already read the shelves. Empty groups drop out.
+  const summaryGroups = useMemo(() => {
+    const of = (t) => jobSummary.filter(r => (r.component?.order_type || 'pack') === t)
+    return [
+      { key: 'bar',    emoji: '📏', title: 'Tracks & Tubes', rows: of('bar') },
+      { key: 'fabric', emoji: '🧵', title: 'Fabrics',        rows: of('fabric') },
+      { key: 'pack',   emoji: '📦', title: 'Components',     rows: of('pack') },
+      { key: 'labour', emoji: '🕐', title: 'Labour',         rows: of('labour') },
+    ].filter(g => g.rows.length > 0)
+  }, [jobSummary])
   const jobTotal   = jobSummary.reduce((s, r) => s + r.total_cost, 0)
   const isReceived   = job.status === 'received'
   const isInProgress = job.status === 'in_progress'
@@ -64,6 +85,15 @@ export default function JobDetail({
       await exportJobPDF(job, windowsWithBOM, jobSummary, products)
     } finally {
       setExporting(false)
+    }
+  }
+
+  const handleCutSheet = async () => {
+    setCutting(true)
+    try {
+      await exportCutSheetPDF(job, windowsWithBOM, products)
+    } finally {
+      setCutting(false)
     }
   }
 
@@ -138,6 +168,26 @@ export default function JobDetail({
               background: 'var(--accent)', color: '#fff', border: 'none',
               borderRadius: 8, cursor: 'pointer'
             }}>Confirm</button>
+          )}
+
+          {/* Cut sheet — what the saw and the cutting table need. Available
+              from Received on, since it's read-only and gets checked against
+              the order before anything is actually cut. */}
+          {hasWindows && (
+            <button
+              onClick={handleCutSheet}
+              disabled={cutting}
+              title="Print cut sheet — final cut lengths and fabric sizes per window"
+              style={{
+                padding: '6px 12px', fontSize: 13, fontWeight: 600,
+                background: 'rgba(255,255,255,0.15)', color: '#fff',
+                border: '1px solid rgba(255,255,255,0.3)',
+                borderRadius: 8, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6,
+                opacity: cutting ? 0.6 : 1,
+              }}>
+              ✂️ {cutting ? 'Generating…' : 'Cut Sheet'}
+            </button>
           )}
 
           {/* In Progress → deduct stock + mark complete */}
@@ -323,6 +373,18 @@ export default function JobDetail({
                         <div className="component-cost">${fmt(winTotal)}</div>
                         <div className="component-unit">{win.bom.length} components</div>
                       </div>
+                      {isReceived && (
+                        <button
+                          onClick={e => { e.stopPropagation(); onDuplicateWindow(idx) }}
+                          title="Duplicate this window"
+                          style={{
+                            background: 'none', border: '1px solid var(--warm-200)', borderRadius: 7,
+                            padding: 6, cursor: 'pointer', color: 'var(--warm-300)', flexShrink: 0,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}>
+                          <CopyIcon />
+                        </button>
+                      )}
                       <ChevronRightIcon size={16} color="var(--warm-200)" style={{ flexShrink: 0 }} />
                     </div>
                   )
@@ -419,27 +481,41 @@ export default function JobDetail({
                       <div style={{ textAlign: 'right' }}>Total</div>
                     </div>
 
-                    {jobSummary.map(row => (
-                      <div key={row.component.id} style={{
-                        display: 'grid', gridTemplateColumns: '1fr 70px 65px 75px',
-                        padding: '11px 16px', borderBottom: '1px solid var(--warm-100)',
-                        fontSize: 14, alignItems: 'center'
-                      }}>
-                        <div>
-                          <div style={{ fontWeight: 600 }}>{row.component.name}</div>
-                          <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
-                            {row.component.unit}
-                            {row.component.supplier_pn ? ` · ${row.component.supplier_pn}` : ''}
+                    {summaryGroups.map(group => (
+                      <div key={group.key}>
+                        <div style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          padding: '8px 16px', background: 'var(--warm-100)',
+                          borderBottom: '1px solid var(--warm-200)',
+                          fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                          letterSpacing: '0.06em', color: 'var(--warm-300)',
+                        }}>
+                          <span>{group.emoji} {group.title} ({group.rows.length})</span>
+                          <span>${fmt(group.rows.reduce((s, r) => s + r.total_cost, 0))}</span>
+                        </div>
+                        {group.rows.map(row => (
+                          <div key={row.component.id} style={{
+                            display: 'grid', gridTemplateColumns: '1fr 70px 65px 75px',
+                            padding: '11px 16px', borderBottom: '1px solid var(--warm-100)',
+                            fontSize: 14, alignItems: 'center'
+                          }}>
+                            <div>
+                              <div style={{ fontWeight: 600 }}>{row.component.name}</div>
+                              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
+                                {row.component.unit}
+                                {row.component.supplier_pn ? ` · ${row.component.supplier_pn}` : ''}
+                              </div>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                              <div style={{ fontWeight: 500 }}>{fmtQty(row.total_qty)}</div>
+                              {row.widthFormulaLabel && (
+                                <div style={{ fontSize: 10, color: 'var(--warm-300)', marginTop: 1 }}>{row.widthFormulaLabel}</div>
+                              )}
+                            </div>
+                            <div style={{ textAlign: 'right', color: 'var(--warm-300)', fontSize: 13 }}>${fmt(row.unit_cost)}</div>
+                            <div style={{ textAlign: 'right', fontWeight: 600 }}>${fmt(row.total_cost)}</div>
                           </div>
-                        </div>
-                        <div style={{ textAlign: 'right' }}>
-                          <div style={{ fontWeight: 500 }}>{fmtQty(row.total_qty)}</div>
-                          {row.widthFormulaLabel && (
-                            <div style={{ fontSize: 10, color: 'var(--warm-300)', marginTop: 1 }}>{row.widthFormulaLabel}</div>
-                          )}
-                        </div>
-                        <div style={{ textAlign: 'right', color: 'var(--warm-300)', fontSize: 13 }}>${fmt(row.unit_cost)}</div>
-                        <div style={{ textAlign: 'right', fontWeight: 600 }}>${fmt(row.total_cost)}</div>
+                        ))}
                       </div>
                     ))}
 
