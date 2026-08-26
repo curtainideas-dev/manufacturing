@@ -48,7 +48,7 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
     const next = { ...p, [k]: v }
     // Lock unit to hours for labour components
     if (k === 'order_type' && v === 'labour') next.unit = 'hours'
-    if (k === 'order_type' && v === 'fabric') next.unit = 'm²'
+    if (k === 'order_type' && v === 'fabric') next.unit = 'metres'
     return next
   })
 
@@ -289,7 +289,7 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
               </div>
 
               <div className="field" style={{ marginBottom: 12 }}>
-                <label className="field-label">Price per m² ($)</label>
+                <label className="field-label">Price per linear metre ($)</label>
                 <input className="field-input" type="number" step="0.01" min="0"
                   value={form.unit_cost} onChange={e => set('unit_cost', e.target.value)}
                   style={{ textAlign: 'right', maxWidth: '50%' }} />
@@ -325,11 +325,12 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
               </div>
 
               <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 10, lineHeight: 1.5 }}>
-                One row per fabric — the rate is per m², so a 2.1m roll and a 3m roll of
-                {' '}{form.fabric_code || 'VIBE'} cost the same per m² and don't need separate rows.
-                These widths are what can be ordered; each roll records its own width when it
-                arrives. Colours go in Colour Variants below. A blind product locked to this
-                fabric's category will offer it at window-add time.
+                One row per fabric. The rate above is per linear metre off the roll, so it
+                assumes the width you actually stock — if {form.fabric_code || 'VIBE'} ever came
+                in a second width it would need its own row at its own per-metre rate. These
+                widths are what can be ordered; each roll records its own width when it arrives.
+                Colours go in Colour Variants below. A blind product locked to this fabric's
+                category will offer it at window-add time.
               </div>
             </div>
           )}

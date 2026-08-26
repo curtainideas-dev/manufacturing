@@ -37,11 +37,12 @@ export default function FabricCategoriesAdmin({ categories, onBack, onSave, savi
       <div className="scroll-area">
         <div style={{ padding: 16 }}>
           <div style={{ fontSize: 12.5, color: 'var(--warm-300)', marginBottom: 14, lineHeight: 1.5 }}>
-            Set the price ceiling for each category ($/m²). A fabric is classified into the
-            first category (lowest ceiling first) whose ceiling covers its real cost — a fabric
-            pricier than every ceiling lands in Category F. A blind assigned to a category is
-            quoted at that category's rate on the BOM and cost sheet, whichever fabric within it
-            is actually picked.
+            Set the price ceiling for each category ($ per linear metre off the roll). A fabric
+            is classified into the first category (lowest ceiling first) whose ceiling covers its
+            real cost — a fabric pricier than every ceiling lands in Category F. A blind assigned
+            to a category is quoted at that category's rate on the BOM and cost sheet, whichever
+            fabric within it is actually picked. Blinds are costed by length, not area: a cut
+            takes the roll's full width however narrow the blind is.
           </div>
 
           <div className="card">
@@ -69,7 +70,7 @@ export default function FabricCategoriesAdmin({ categories, onBack, onSave, savi
                         onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
                         disabled={saving}
                         style={{ width: 90, textAlign: 'right' }} />
-                      <span style={{ fontSize: 12, color: 'var(--warm-300)' }}>/m²</span>
+                      <span style={{ fontSize: 12, color: 'var(--warm-300)' }}>/m</span>
                     </div>
                   ) : (
                     <div style={{ fontSize: 12, color: 'var(--warm-300)' }}>

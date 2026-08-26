@@ -327,31 +327,48 @@ export function fabricSelectionFor(win, product, components = [], categories = [
   return {
     component, colour_variant: picked.colour_variant || null,
     categoryPrice: Number(category.max_price) || 0,
-    dropAllowanceMm: Number(product.fabric_drop_allowance_mm) || 0,
+    dropAllowanceMm:    Number(product.fabric_drop_allowance_mm) || 0,
+    dropWastageMm:      Number(product.fabric_drop_wastage_mm) || 0,
+    widthDeductionMm:   Number(product.fabric_width_deduction_mm) || 0,
   }
 }
 
 /**
  * The synthetic fabric line itself, or null when there's nothing to add.
  *
- * `dropAllowanceMm` — set per product, next to its fabric category — is extra
- * length pulled off the roll beyond the window's raw drop (hem, pattern
- * repeat, wrap onto the tube, whatever the workroom needs that a bare
- * width×drop doesn't already cover). It rides on the same width_drop_based
- * formula every other line uses: a negative buffer *adds* to the drop instead
- * of subtracting, so calcQty needs no fabric-specific case.
+ * Costed by LENGTH, not area. A blind can't be railroaded (see fabricEngine),
+ * so every cut trims a strip the full width of the roll however narrow the
+ * blind is — a 600mm blind and a 2000mm blind of the same drop burn the same
+ * fabric. Pricing on the blind's own width × drop therefore undercharged
+ * narrow blinds for material nobody could reuse. Since only one roll width is
+ * stocked, that width is a constant and folds into the rate: fabric is quoted
+ * per linear metre pulled off the roll.
+ *
+ * Two separate per-product additions to the length pulled off the roll, both
+ * set next to the fabric category. They're kept apart rather than summed into
+ * one figure so each can be reasoned about — and argued with — on its own:
+ *   dropAllowanceMm  fabric the finished blind actually needs beyond its drop
+ *                    — hem, pattern repeat, wrap onto the tube.
+ *   dropWastageMm    fabric lost making the cut at all — trim, squaring up,
+ *                    the bit that never reaches the blind.
+ * Both ride on the same drop_based formula every other line uses: a negative
+ * deduction *adds* to the drop, so calcQty needs no fabric-specific case.
+ *
+ * `widthDeductionMm` is deliberately NOT used here — it's a cut-width spec for
+ * the factory, and width no longer drives cost.
  */
 export function fabricLineFor(fabricSelection) {
   if (!fabricSelection?.component) return null
-  const { component, colour_variant, categoryPrice, dropAllowanceMm } = fabricSelection
+  const { component, colour_variant, categoryPrice, dropAllowanceMm, dropWastageMm } = fabricSelection
+  const addedMm = (Number(dropAllowanceMm) || 0) + (Number(dropWastageMm) || 0)
   return {
     id:                 'fabric-slot',
     component_id:       component.id,
-    component:          { ...component, unit_cost: categoryPrice, discount: 0 },
+    component:          { ...component, unit: 'metres', unit_cost: categoryPrice, discount: 0 },
     colour_variant:     colour_variant || null,
-    cost_type:          'width_drop_based',
-    formula_deduction:  0,
-    formula_buffer:     -(Number(dropAllowanceMm) || 0),
+    cost_type:          'drop_based',
+    formula_deduction:  -addedMm,
+    formula_buffer:     0,
     sort_order:         -1,
   }
 }

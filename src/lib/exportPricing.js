@@ -45,10 +45,12 @@ export async function exportProductPricingXLSX(product, productComponents, optio
   const fabricCategory = fabricCategories.find(c => c.code === product.fabric_category)
   const categoryFabricLine = (isBlind && fabricCategory)
     ? fabricLineFor({
-        component: { id: 'category-fabric', name: `Category ${fabricCategory.code} Fabric`, unit: 'm²', unit_cost: fabricCategory.max_price, discount: 0 },
+        component: { id: 'category-fabric', name: `Category ${fabricCategory.code} Fabric`, unit: 'metres', unit_cost: fabricCategory.max_price, discount: 0 },
         colour_variant: null,
         categoryPrice: Number(fabricCategory.max_price) || 0,
         dropAllowanceMm: Number(product.fabric_drop_allowance_mm) || 0,
+        dropWastageMm: Number(product.fabric_drop_wastage_mm) || 0,
+        widthDeductionMm: Number(product.fabric_width_deduction_mm) || 0,
       })
     : null
   const pricedComponents = categoryFabricLine ? [categoryFabricLine, ...productComponents] : productComponents

@@ -61,10 +61,12 @@ export default function ProductDetail({
   const fabricCategory = fabricCategories.find(c => c.code === product.fabric_category)
   const categoryFabricLine = useMemo(() => (isBlind && fabricCategory)
     ? fabricLineFor({
-        component: { id: 'category-fabric', name: `Category ${fabricCategory.code} Fabric`, unit: 'm²', unit_cost: fabricCategory.max_price, discount: 0 },
+        component: { id: 'category-fabric', name: `Category ${fabricCategory.code} Fabric`, unit: 'metres', unit_cost: fabricCategory.max_price, discount: 0 },
         colour_variant: null,
         categoryPrice: Number(fabricCategory.max_price) || 0,
         dropAllowanceMm: Number(product.fabric_drop_allowance_mm) || 0,
+        dropWastageMm: Number(product.fabric_drop_wastage_mm) || 0,
+        widthDeductionMm: Number(product.fabric_width_deduction_mm) || 0,
       })
     : null, [isBlind, fabricCategory])
 
@@ -152,7 +154,7 @@ export default function ProductDetail({
                   <option value="">— Not set —</option>
                   {fabricCategories.map(c => (
                     <option key={c.code} value={c.code}>
-                      Category {c.code} (${Number(c.max_price).toFixed(2)}/m²)
+                      Category {c.code} (${Number(c.max_price).toFixed(2)}/m)
                     </option>
                   ))}
                 </select>
@@ -212,7 +214,7 @@ export default function ProductDetail({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div style={{ fontSize: 13.5, fontWeight: 600 }}>Category {fabricCategory.code} fabric</div>
                   <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--accent-dark)' }}>
-                    ${Number(fabricCategory.max_price).toFixed(2)}/m²
+                    ${Number(fabricCategory.max_price).toFixed(2)}/m
                   </div>
                 </div>
               ) : (
@@ -221,22 +223,58 @@ export default function ProductDetail({
                 </div>
               )}
               <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
-                Priced into the grid below on top of the hardware recipe — the actual fabric is
-                picked per window.
+                Priced by length off the roll, not area — a cut takes the roll's full width
+                however narrow the blind is. Folded into the grid below on top of the hardware
+                recipe; the actual fabric is picked per window.
               </div>
               <div className="divider" style={{ margin: '12px 0' }} />
-              <div className="field" style={{ marginBottom: 0 }}>
+              <div className="field">
+                <label className="field-label">Width deduction (mm)</label>
+                <input className="field-input" type="number" step="1" min="0"
+                  value={product.fabric_width_deduction_mm ?? 0}
+                  onChange={e => onUpdateProduct({ fabric_width_deduction_mm: Number(e.target.value) || 0 })}
+                  style={{ maxWidth: 140 }} />
+                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
+                  Cut-width spec — the fabric is cut this much narrower than the window's width.
+                  Doesn't change the cost, since fabric is charged by length off a fixed-width
+                  roll.
+                </div>
+              </div>
+              <div className="field">
                 <label className="field-label">Drop allowance (mm)</label>
                 <input className="field-input" type="number" step="1" min="0"
                   value={product.fabric_drop_allowance_mm ?? 0}
                   onChange={e => onUpdateProduct({ fabric_drop_allowance_mm: Number(e.target.value) || 0 })}
                   style={{ maxWidth: 140 }} />
                 <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
-                  Added to every window's drop before the fabric quantity and price are worked
-                  out — e.g. hem, pattern repeat, or wrap onto the tube. Doesn't affect the
-                  window's recorded drop, only how much fabric it consumes.
+                  Fabric the finished blind actually needs beyond its drop — hem, pattern
+                  repeat, wrap onto the tube.
                 </div>
               </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label className="field-label">Drop wastage allowance (mm)</label>
+                <input className="field-input" type="number" step="1" min="0"
+                  value={product.fabric_drop_wastage_mm ?? 0}
+                  onChange={e => onUpdateProduct({ fabric_drop_wastage_mm: Number(e.target.value) || 0 })}
+                  style={{ maxWidth: 140 }} />
+                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
+                  Fabric lost making the cut at all — trim, squaring up, the bit that never
+                  reaches the blind. Kept separate from the allowance above so each can be
+                  tuned on its own.
+                </div>
+              </div>
+              {(Number(product.fabric_drop_allowance_mm) || Number(product.fabric_drop_wastage_mm)) ? (
+                <div style={{
+                  marginTop: 10, padding: '8px 10px', background: 'var(--warm-100)',
+                  borderRadius: 'var(--radius-sm)', fontSize: 11.5, color: 'var(--warm-300)',
+                }}>
+                  Every window is costed on its drop{' '}
+                  <strong style={{ color: 'var(--ink)' }}>
+                    + {(Number(product.fabric_drop_allowance_mm) || 0) + (Number(product.fabric_drop_wastage_mm) || 0)}mm
+                  </strong>
+                  {' '}of fabric. Neither figure changes the window's recorded drop.
+                </div>
+              ) : null}
             </div>
           )}
 

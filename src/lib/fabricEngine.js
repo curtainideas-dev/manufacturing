@@ -13,10 +13,12 @@
  * orientation; the only lever left is picking the narrowest roll on hand (or
  * orderable) that's still wide enough for the blind's width.
  *
- * Fabric is priced per m², one figure per fabric whatever the roll width. So
- * what a cut costs is roll width × length consumed × that rate — meaning
- * cheapest and least-waste are the same question, answered by geometry with
- * no price data involved. The narrowest workable roll wins.
+ * Because of that, fabric is priced per LINEAR METRE pulled off the roll, not
+ * per m². The roll's own width is a constant (only one width is stocked), and
+ * a cut consumes that full width whatever the blind's width — so length is the
+ * only thing that varies, and the width folds into the rate. Least-waste is
+ * therefore just "narrowest roll that fits", answered by geometry with no
+ * price data involved.
  *
  * Roll width belongs to the physical roll, not the priced item: the same
  * fabric can arrive 2.1m wide one month and 3m wide the next.
@@ -100,9 +102,9 @@ export function fabricsInCategory(components = [], categories = [], categoryCode
  */
 export function planFabricCut(fabric, widthMm, dropMm, rollStock = [], colourSuffix = null) {
   const suffix = colourSuffix || null
-  const rate = Number(fabric?.unit_cost) || 0          // $/m²
+  const rate = Number(fabric?.unit_cost) || 0          // $/linear metre
   const discount = Number(fabric?.discount) || 0
-  const priced = (areaM2) => areaM2 * rate * (1 - discount / 100)
+  const priced = (consumeMm) => (consumeMm / 1000) * rate * (1 - discount / 100)
 
   const fromStock = rollStock
     .filter(s =>
@@ -128,7 +130,7 @@ export function planFabricCut(fabric, widthMm, dropMm, rollStock = [], colourSuf
       consumeMm:    best.consumeMm,
       areaM2:       best.areaM2,
       remainingAfterMm: Number(best.roll.length_mm) - best.consumeMm,
-      cost:         priced(best.areaM2),
+      cost:         priced(best.consumeMm),
     }
   }
 
@@ -147,6 +149,6 @@ export function planFabricCut(fabric, widthMm, dropMm, rollStock = [], colourSuf
     consumeMm:   toOrder.consumeMm,
     areaM2:      toOrder.areaM2,
     remainingAfterMm: null,
-    cost:        priced(toOrder.areaM2),
+    cost:        priced(toOrder.consumeMm),
   }
 }

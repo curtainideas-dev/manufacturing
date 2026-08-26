@@ -42,6 +42,8 @@ export default function CustomiseWindowModal({
         component: selectedFabric, colour_variant: fabricAnswer.colour_variant,
         categoryPrice: Number(category.max_price) || 0,
         dropAllowanceMm: Number(product.fabric_drop_allowance_mm) || 0,
+        dropWastageMm: Number(product.fabric_drop_wastage_mm) || 0,
+        widthDeductionMm: Number(product.fabric_width_deduction_mm) || 0,
       }
     : null
 
@@ -146,8 +148,8 @@ export default function CustomiseWindowModal({
 
                   {selectedFabric && (
                     <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
-                      Priced at Category {category.code}'s rate — ${Number(category.max_price).toFixed(2)}/m²
-                      — not {selectedFabric.name}'s own ${Number(selectedFabric.unit_cost).toFixed(2)}/m².
+                      Priced at Category {category.code}'s rate — ${Number(category.max_price).toFixed(2)}/m
+                      — not {selectedFabric.name}'s own ${Number(selectedFabric.unit_cost).toFixed(2)}/m.
                     </div>
                   )}
                 </>
