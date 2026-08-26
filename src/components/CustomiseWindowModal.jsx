@@ -38,7 +38,11 @@ export default function CustomiseWindowModal({
   const fabricColours  = selectedFabric?.colour_variants || []
 
   const fabricSelection = (isBlind && selectedFabric && category)
-    ? { component: selectedFabric, colour_variant: fabricAnswer.colour_variant, categoryPrice: Number(category.max_price) || 0 }
+    ? {
+        component: selectedFabric, colour_variant: fabricAnswer.colour_variant,
+        categoryPrice: Number(category.max_price) || 0,
+        dropAllowanceMm: Number(product.fabric_drop_allowance_mm) || 0,
+      }
     : null
 
   const draft = useMemo(() => ({ options: answers, fabric: fabricAnswer }), [answers, fabricAnswer])

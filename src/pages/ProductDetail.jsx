@@ -64,6 +64,7 @@ export default function ProductDetail({
         component: { id: 'category-fabric', name: `Category ${fabricCategory.code} Fabric`, unit: 'm²', unit_cost: fabricCategory.max_price, discount: 0 },
         colour_variant: null,
         categoryPrice: Number(fabricCategory.max_price) || 0,
+        dropAllowanceMm: Number(product.fabric_drop_allowance_mm) || 0,
       })
     : null, [isBlind, fabricCategory])
 
@@ -222,6 +223,19 @@ export default function ProductDetail({
               <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
                 Priced into the grid below on top of the hardware recipe — the actual fabric is
                 picked per window.
+              </div>
+              <div className="divider" style={{ margin: '12px 0' }} />
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label className="field-label">Drop allowance (mm)</label>
+                <input className="field-input" type="number" step="1" min="0"
+                  value={product.fabric_drop_allowance_mm ?? 0}
+                  onChange={e => onUpdateProduct({ fabric_drop_allowance_mm: Number(e.target.value) || 0 })}
+                  style={{ maxWidth: 140 }} />
+                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
+                  Added to every window's drop before the fabric quantity and price are worked
+                  out — e.g. hem, pattern repeat, or wrap onto the tube. Doesn't affect the
+                  window's recorded drop, only how much fabric it consumes.
+                </div>
               </div>
             </div>
           )}

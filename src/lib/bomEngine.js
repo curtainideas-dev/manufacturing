@@ -324,13 +324,26 @@ export function fabricSelectionFor(win, product, components = [], categories = [
   if (!component) return null
   const category = categories.find(c => c.code === product.fabric_category)
   if (!category) return null
-  return { component, colour_variant: picked.colour_variant || null, categoryPrice: Number(category.max_price) || 0 }
+  return {
+    component, colour_variant: picked.colour_variant || null,
+    categoryPrice: Number(category.max_price) || 0,
+    dropAllowanceMm: Number(product.fabric_drop_allowance_mm) || 0,
+  }
 }
 
-/** The synthetic fabric line itself, or null when there's nothing to add. */
+/**
+ * The synthetic fabric line itself, or null when there's nothing to add.
+ *
+ * `dropAllowanceMm` — set per product, next to its fabric category — is extra
+ * length pulled off the roll beyond the window's raw drop (hem, pattern
+ * repeat, wrap onto the tube, whatever the workroom needs that a bare
+ * width×drop doesn't already cover). It rides on the same width_drop_based
+ * formula every other line uses: a negative buffer *adds* to the drop instead
+ * of subtracting, so calcQty needs no fabric-specific case.
+ */
 export function fabricLineFor(fabricSelection) {
   if (!fabricSelection?.component) return null
-  const { component, colour_variant, categoryPrice } = fabricSelection
+  const { component, colour_variant, categoryPrice, dropAllowanceMm } = fabricSelection
   return {
     id:                 'fabric-slot',
     component_id:       component.id,
@@ -338,7 +351,7 @@ export function fabricLineFor(fabricSelection) {
     colour_variant:     colour_variant || null,
     cost_type:          'width_drop_based',
     formula_deduction:  0,
-    formula_buffer:     0,
+    formula_buffer:     -(Number(dropAllowanceMm) || 0),
     sort_order:         -1,
   }
 }

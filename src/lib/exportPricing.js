@@ -48,6 +48,7 @@ export async function exportProductPricingXLSX(product, productComponents, optio
         component: { id: 'category-fabric', name: `Category ${fabricCategory.code} Fabric`, unit: 'm²', unit_cost: fabricCategory.max_price, discount: 0 },
         colour_variant: null,
         categoryPrice: Number(fabricCategory.max_price) || 0,
+        dropAllowanceMm: Number(product.fabric_drop_allowance_mm) || 0,
       })
     : null
   const pricedComponents = categoryFabricLine ? [categoryFabricLine, ...productComponents] : productComponents
