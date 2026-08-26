@@ -10,6 +10,40 @@ const STATUS_META = {
   completed:   { label: 'Completed',   emoji: '✅', avatarBg: 'var(--success-bg)', pill: 'pill-green'  },
 }
 
+// What kind of work is in a job. Deliberately quieter than the status pill on
+// the right — status is what you act on, this is what you're looking at.
+const TYPE_META = {
+  track: { label: 'Tracks', bg: 'var(--accent-bg)',  fg: 'var(--accent-dark)' },
+  blind: { label: 'Blinds', bg: 'var(--blue-bg)',    fg: 'var(--blue)' },
+  sheer: { label: 'Sheers', bg: 'var(--warning-bg)', fg: 'var(--warning)' },
+}
+const TYPE_ORDER = ['track', 'blind', 'sheer']
+
+/**
+ * The product types a job actually contains, in a fixed order so the same mix
+ * always reads the same way down the list.
+ *
+ * Counts only ride along on a mixed job — on a single-type job the window
+ * count in the line above already says it, and repeating it is noise.
+ */
+export function productTypesIn(job, products) {
+  const counts = {}
+  ;(job.mfg_windows || []).forEach(w => {
+    const p = products.find(x => x.id === w.product_id)
+    const t = p?.product_type || p?.category
+    if (t) counts[t] = (counts[t] || 0) + 1
+  })
+  // Anything unrecognised still shows rather than silently vanishing.
+  const extra = Object.keys(counts).filter(t => !TYPE_ORDER.includes(t)).sort()
+  const types = [...TYPE_ORDER.filter(t => counts[t]), ...extra]
+  return types.map(t => ({
+    type:  t,
+    count: counts[t],
+    meta:  TYPE_META[t] || { label: t, bg: 'var(--warm-100)', fg: 'var(--warm-300)' },
+    showCount: types.length > 1,
+  }))
+}
+
 const PERIODS = [
   { id: 'month', label: 'This month' },
   { id: 'year',  label: 'This year' },
@@ -21,7 +55,7 @@ const fmtMoney = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits:
 // Completed jobs are dated by manufacture date where set, else when created
 const jobDate = (j) => new Date(j.date_manufacture || j.created_at)
 
-export default function JobList({ jobs, onOpen, onNew, onUploadPO, poUploading }) {
+export default function JobList({ jobs, products = [], onOpen, onNew, onUploadPO, poUploading }) {
   const fileRef    = useRef(null)
   const [period, setPeriod] = useState('month')
   const received   = jobs.filter(j => j.status === 'received')
@@ -55,7 +89,8 @@ export default function JobList({ jobs, onOpen, onNew, onUploadPO, poUploading }
         <div style={{ padding: '0 16px', marginBottom: 16 }}>
           <div className="card">
             {list.map(job => {
-              const meta = STATUS_META[job.status] || STATUS_META.received
+              const meta  = STATUS_META[job.status] || STATUS_META.received
+              const types = productTypesIn(job, products)
               return (
                 <div key={job.id} className="component-item" onClick={() => onOpen(job)}>
                   <div className="component-avatar" style={{ background: meta.avatarBg }}>
@@ -67,6 +102,18 @@ export default function JobList({ jobs, onOpen, onNew, onUploadPO, poUploading }
                       {job.job_number ? `#${job.job_number} · ` : ''}{formatDate(job.created_at)}
                       {' · '}{(job.mfg_windows || []).length} window{(job.mfg_windows||[]).length !== 1 ? 's' : ''}
                     </div>
+                    {types.length > 0 && (
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 5 }}>
+                        {types.map(t => (
+                          <span key={t.type} style={{
+                            fontSize: 10, fontWeight: 700, padding: '1px 6px',
+                            borderRadius: 4, background: t.meta.bg, color: t.meta.fg,
+                          }}>
+                            {t.meta.label}{t.showCount ? ` ${t.count}` : ''}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <span className={`pill ${meta.pill}`}>{meta.label}</span>
                   <ChevronRightIcon size={16} color="var(--warm-200)" style={{ flexShrink: 0 }} />

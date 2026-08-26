@@ -1259,7 +1259,7 @@ export default function App() {
     }
 
     if (navTab === 'bom') {
-      return <JobList jobs={jobs} onOpen={setCurrentJob} onNew={handleNewJob} onUploadPO={handleCreateJobFromPO} poUploading={poUploading} />
+      return <JobList jobs={jobs} products={products} onOpen={setCurrentJob} onNew={handleNewJob} onUploadPO={handleCreateJobFromPO} poUploading={poUploading} />
     }
 
     // Product detail
