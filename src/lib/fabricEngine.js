@@ -3,48 +3,40 @@
  *
  * Pure functions — no React, no Supabase.
  *
- * A blind is cut from a roll one of two ways:
+ * A blind is cut from a roll with its WIDTH running across the roll and the
+ * DROP pulled off it lengthwise. Needs roll width >= blind width.
  *
- *   normal      the blind's WIDTH runs across the roll, and you pull DROP
- *               metres off it. Needs roll width >= blind width.
- *
- *   railroaded  the blind is turned 90°, so the DROP runs across the roll and
- *               you pull WIDTH metres off it. Needs roll width >= blind drop.
- *               This is what lets a 2.1m roll make a 2.4m wide blind.
+ * Unlike curtain fabric, a blind can't be railroaded (turned 90° so the drop
+ * runs across the roll instead) — the fabric has to wind onto the tube the
+ * same way it comes off the roll, so which edge is the roll's own width isn't
+ * a free choice. That means wastage can't be minimised by picking an
+ * orientation; the only lever left is picking the narrowest roll on hand (or
+ * orderable) that's still wide enough for the blind's width.
  *
  * Fabric is priced per m², one figure per fabric whatever the roll width. So
  * what a cut costs is roll width × length consumed × that rate — meaning
  * cheapest and least-waste are the same question, answered by geometry with
- * no price data involved. The roll that burns the fewest m² wins.
+ * no price data involved. The narrowest workable roll wins.
  *
  * Roll width belongs to the physical roll, not the priced item: the same
  * fabric can arrive 2.1m wide one month and 3m wide the next.
  */
 
-export const ORIENTATIONS = { NORMAL: 'normal', RAILROADED: 'railroaded' }
-
-export const orientationLabel = o =>
-  o === ORIENTATIONS.RAILROADED ? 'railroaded' : 'normal'
-
 /**
- * The ways a roll of this width could produce the blind, least consumed first.
- * Empty when the roll is too narrow both ways round.
+ * The cut this roll width would produce — the blind's width across the roll,
+ * drop pulled off lengthwise. Null when the roll isn't wide enough.
  */
-export function orientationsFor(rollWidthMm, widthMm, dropMm) {
+export function cutFor(rollWidthMm, widthMm, dropMm) {
   const roll = Number(rollWidthMm) || 0
   const w = Number(widthMm) || 0
   const d = Number(dropMm) || 0
-  const out = []
-  if (roll >= w) out.push({ orientation: ORIENTATIONS.NORMAL,     consumeMm: d })
-  if (roll >= d) out.push({ orientation: ORIENTATIONS.RAILROADED, consumeMm: w })
-  return out
-    .map(o => ({ ...o, rollWidthMm: roll, areaM2: (roll / 1000) * (o.consumeMm / 1000) }))
-    .sort((a, b) => a.areaM2 - b.areaM2)
+  if (roll < w) return null
+  return { rollWidthMm: roll, consumeMm: d, areaM2: (roll / 1000) * (d / 1000) }
 }
 
 /** Least area across a set of roll widths. Null when none is wide enough. */
 export function bestCut(rollWidths = [], widthMm, dropMm) {
-  const all = rollWidths.flatMap(rw => orientationsFor(rw, widthMm, dropMm))
+  const all = rollWidths.map(rw => cutFor(rw, widthMm, dropMm)).filter(Boolean)
   return all.sort((a, b) => a.areaM2 - b.areaM2 || a.rollWidthMm - b.rollWidthMm)[0] || null
 }
 
@@ -52,11 +44,10 @@ export function bestCut(rollWidths = [], widthMm, dropMm) {
 export function cutOptions(rollWidths = [], widthMm, dropMm) {
   const seen = new Set()
   return rollWidths
-    .flatMap(rw => orientationsFor(rw, widthMm, dropMm))
+    .map(rw => cutFor(rw, widthMm, dropMm))
     .filter(o => {
-      const k = `${o.rollWidthMm}:${o.orientation}`
-      if (seen.has(k)) return false
-      seen.add(k); return true
+      if (!o || seen.has(o.rollWidthMm)) return false
+      seen.add(o.rollWidthMm); return true
     })
     .sort((a, b) => a.areaM2 - b.areaM2)
 }
@@ -99,11 +90,13 @@ export function fabricsInCategory(components = [], categories = [], categoryCode
  * What this blind needs and where it comes from.
  *
  * Stock first: every part-roll held in that fabric and colour is a candidate,
- * judged on its own width and what's left on it. The least-area cut wins, and
- * ties break toward the shorter remnant so long rolls stay whole.
+ * judged on its own width and what's left on it — none of them can be turned
+ * sideways to fit, so a roll narrower than the blind's width is never an
+ * option, however much length it has spare. The least-area cut wins, and ties
+ * break toward the shorter remnant so long rolls stay whole.
  *
- * Nothing usable in stock means a PO, and the width to order is the one that
- * would waste least.
+ * Nothing usable in stock means a PO, and the width to order is the narrowest
+ * one that's still wide enough.
  */
 export function planFabricCut(fabric, widthMm, dropMm, rollStock = [], colourSuffix = null) {
   const suffix = colourSuffix || null
@@ -116,9 +109,11 @@ export function planFabricCut(fabric, widthMm, dropMm, rollStock = [], colourSuf
       s.component_id === fabric?.id &&
       s.status === 'available' &&
       (s.colour_variant?.suffix || null) === suffix)
-    .flatMap(s => orientationsFor(s.roll_width_mm, widthMm, dropMm)
-      .filter(o => Number(s.length_mm) >= o.consumeMm)
-      .map(o => ({ ...o, roll: s })))
+    .map(s => {
+      const cut = cutFor(s.roll_width_mm, widthMm, dropMm)
+      return cut && Number(s.length_mm) >= cut.consumeMm ? { ...cut, roll: s } : null
+    })
+    .filter(Boolean)
     .sort((a, b) =>
       a.areaM2 - b.areaM2 ||                            // least fabric burned
       Number(a.roll.length_mm) - Number(b.roll.length_mm)) // then shortest remnant
@@ -130,7 +125,6 @@ export function planFabricCut(fabric, widthMm, dropMm, rollStock = [], colourSuf
       fabric,
       roll:         best.roll,
       rollWidthMm:  best.rollWidthMm,
-      orientation:  best.orientation,
       consumeMm:    best.consumeMm,
       areaM2:       best.areaM2,
       remainingAfterMm: Number(best.roll.length_mm) - best.consumeMm,
@@ -150,7 +144,6 @@ export function planFabricCut(fabric, widthMm, dropMm, rollStock = [], colourSuf
     fabric,
     roll:        null,
     rollWidthMm: toOrder.rollWidthMm,
-    orientation: toOrder.orientation,
     consumeMm:   toOrder.consumeMm,
     areaM2:      toOrder.areaM2,
     remainingAfterMm: null,
