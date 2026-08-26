@@ -25,12 +25,29 @@ export function printPDF(doc, filename) {
     iframe.style.height = '0'
     iframe.style.border = '0'
 
+    let printed = false
+
     const cleanup = () => {
       if (iframe.parentNode) document.body.removeChild(iframe)
       URL.revokeObjectURL(blobUrl)
     }
 
+    // Attaching an iframe makes the browser load about:blank before anything
+    // else, and that fires `load` exactly like a real document does. Printing
+    // on it put an empty sheet in front of whoever pressed the button, which
+    // they had to dismiss before the real one appeared. So only print for the
+    // blob we actually asked for, and only once.
+    const isDocumentReady = () => {
+      try {
+        return (iframe.contentWindow?.location?.href || '').startsWith('blob:')
+      } catch {
+        return true   // unreadable means it isn't the about:blank placeholder
+      }
+    }
+
     iframe.onload = () => {
+      if (printed || !isDocumentReady()) return
+      printed = true
       try {
         iframe.contentWindow.focus()
         iframe.contentWindow.print()
@@ -44,8 +61,9 @@ export function printPDF(doc, filename) {
     }
     iframe.onerror = () => { cleanup(); doc.save(filename) }
 
-    document.body.appendChild(iframe)
+    // src before attaching, so the one load event we get is the PDF itself.
     iframe.src = blobUrl
+    document.body.appendChild(iframe)
   } catch {
     doc.save(filename)
   }
