@@ -1,11 +1,13 @@
 import { useState, useMemo, useRef } from 'react'
-import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon } from '../components/Icons'
-import { buildWindowBOM, calcJobSummary, missingAnswers, fabricSelectionFor, fmt, fmtQty } from '../lib/bomEngine'
+import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon, GripIcon } from '../components/Icons'
+import { buildWindowBOM, calcJobSummary, applyFabricNesting, missingAnswers, fabricSelectionFor, substitutionsFor, fmt, fmtQty } from '../lib/bomEngine'
 import { describeCombo } from '../lib/pricingCombos'
 import { exportJobPDF } from '../lib/exportPDF'
-import { exportCutSheetPDF } from '../lib/exportCutSheet'
+import { exportCutSheetPDF, copyFabricSummary } from '../lib/exportCutSheet'
 import { exportPackagingLabels, exportTrackLabels, exportPartsLabels } from '../lib/exportLabels'
 import PartsListModal from '../components/PartsListModal'
+import SwapComponentModal from '../components/SwapComponentModal'
+import { useDragReorder } from '../hooks/useDragReorder'
 
 // Download icon inline since it's only used here
 const DownloadIcon = () => (
@@ -25,14 +27,16 @@ const CopyIcon = () => (
 
 export default function JobDetail({
   job, products, productComponentsMap, optionDefsFor,
-  allComponents = [], fabricCategories = [],
-  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onConfirm, onComplete, onReopen, onAttachPO, poUploading, onDeductStock,
+  allComponents = [], suppliers = [], fabricCategories = [], stockMap = {},
+  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onReorderWindows, onConfirm, onComplete, onReopen, onAttachPO, poUploading, onDeductStock,
 }) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(false)
   const [cutting, setCutting]     = useState(false)
+  const [copied, setCopied]       = useState(null) // true | 'failed' | null
   const [labeling, setLabeling]   = useState(null) // 'pack' | 'track' | 'parts' | null
   const [partsOpen, setPartsOpen] = useState(false)
+  const [swapRow, setSwapRow]     = useState(null)
   const poFileRef = useRef(null)
 
   const handlePOFile = (e) => {
@@ -44,7 +48,11 @@ export default function JobDetail({
   // Confirmed jobs price from the snapshot taken at confirm, so their cost
   // doesn't move when component pricing changes.
   const windowsWithBOM = useMemo(() => {
-    return (job.windows || []).map(win => {
+    // Fabric is re-quantified across the whole job afterwards: what has to
+    // come off the roll depends on how the blinds nest together, so it can't
+    // be settled one window at a time. This is also what makes the BOM agree
+    // with the cut sheet — both nest the same cuts the same way.
+    return applyFabricNesting((job.windows || []).map(win => {
       const recipe  = productComponentsMap[win.product_id] || []
       const product = products.find(p => p.id === win.product_id)
       return {
@@ -54,10 +62,11 @@ export default function JobDetail({
           job.price_snapshot || null,
           job.qty_snapshot?.[win.id] || null,
           fabricSelectionFor(win, product, allComponents, fabricCategories),
+          substitutionsFor(job, win, allComponents),
         ),
       }
-    })
-  }, [job.windows, productComponentsMap, optionDefsFor, job.price_snapshot, job.qty_snapshot, products, allComponents, fabricCategories])
+    }))
+  }, [job, productComponentsMap, optionDefsFor, products, allComponents, fabricCategories])
 
   const jobSummary = useMemo(() => calcJobSummary(windowsWithBOM), [windowsWithBOM])
 
@@ -79,6 +88,13 @@ export default function JobDetail({
   const locked       = !isReceived   // BOM/inputs locked once past Received
   const hasWindows   = (job.windows || []).length > 0
 
+  // Order is arrangement, not specification: nothing costed depends on it —
+  // the qty snapshot is keyed by window id, not position — so unlike the BOM
+  // it stays editable through In Progress, where reordering to match the
+  // install or cutting sequence is exactly when it earns its keep.
+  const canReorder = !isCompleted && (job.windows || []).length > 1
+  const { listRef, drag, startDrag } = useDragReorder(onReorderWindows, canReorder)
+
   const handleExport = async () => {
     setExporting(true)
     try {
@@ -91,10 +107,22 @@ export default function JobDetail({
   const handleCutSheet = async () => {
     setCutting(true)
     try {
-      await exportCutSheetPDF(job, windowsWithBOM, products)
+      await exportCutSheetPDF(job, windowsWithBOM, products, suppliers)
     } finally {
       setCutting(false)
     }
+  }
+
+  // Only offer the copy when the job actually has fabric to order.
+  const hasFabric = useMemo(
+    () => windowsWithBOM.some(w => (w.bom || []).some(l => l.fabric_cut)),
+    [windowsWithBOM])
+
+  const handleCopySummary = async () => {
+    const res = await copyFabricSummary(windowsWithBOM, suppliers, job)
+    if (!res.ok) { setCopied('failed'); setTimeout(() => setCopied(null), 2500); return }
+    setCopied(true)
+    setTimeout(() => setCopied(null), 2000)
   }
 
   const handlePackagingLabels = async () => {
@@ -132,6 +160,40 @@ export default function JobDetail({
       setPartsOpen(false)
     }
   }
+
+  /* ---- Component swaps (job-wide) ---------------------------------------
+   * Every window in the job, unless that window has swapped the same part
+   * itself. Filed under the component the RECIPE asks for, so a second swap
+   * replaces the first rather than stacking on it.
+   * --------------------------------------------------------------------- */
+  const jobSubs = useMemo(() => job.substitutions || {}, [job.substitutions])
+
+  const handleSwap = ({ from_component_id, component_id, colour_variant }) => {
+    onUpdate({ substitutions: { ...jobSubs, [from_component_id]: { component_id, colour_variant } } })
+    setSwapRow(null)
+  }
+
+  const clearSwap = (fromComponentId) => {
+    const next = { ...jobSubs }
+    delete next[fromComponentId]
+    onUpdate({ substitutions: next })
+  }
+
+  // Two summary rows for the same component would merge, so a swap can't
+  // target a part the job already uses.
+  const swapExcludeIds = useMemo(
+    () => jobSummary.map(r => r.component.id).filter(id => id !== swapRow?.component?.id),
+    [jobSummary, swapRow])
+
+  // The swaps in force job-wide, named — shown as their own panel so a swap
+  // stays visible (and revertible) even once the row it produced has merged
+  // into a part the job was already using.
+  const jobSwapList = useMemo(() => Object.entries(jobSubs).map(([fromId, sub]) => ({
+    fromId,
+    from: allComponents.find(c => c.id === fromId),
+    to:   allComponents.find(c => c.id === sub?.component_id),
+    colour_variant: sub?.colour_variant || null,
+  })), [jobSubs, allComponents])
 
   return (
     <>
@@ -187,6 +249,27 @@ export default function JobDetail({
                 opacity: cutting ? 0.6 : 1,
               }}>
               ✂️ {cutting ? 'Generating…' : 'Cut Sheet'}
+            </button>
+          )}
+
+          {/* The fabric summary on its own, for an email to the supplier.
+              Copied rather than printed, in both HTML and tab-separated text,
+              so it pastes into a mail composer as a real table. Only shown
+              when there's fabric to order. */}
+          {hasFabric && (
+            <button
+              onClick={handleCopySummary}
+              title="Copy the fabric summary — paste straight into an email"
+              style={{
+                padding: '6px 12px', fontSize: 13, fontWeight: 600,
+                background: copied === true ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.15)',
+                color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
+                borderRadius: 8, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6,
+              }}>
+              {copied === true    ? '✓ Copied'
+                : copied === 'failed' ? '⚠️ Copy blocked'
+                : <><CopyIcon /> Fabric Summary</>}
             </button>
           )}
 
@@ -315,7 +398,7 @@ export default function JobDetail({
           {/* ---- WINDOWS TAB ---- */}
           {tab === 'windows' && (
             <>
-              <div className="card" style={{ marginBottom: 12 }}>
+              <div className="card" style={{ marginBottom: 12 }} ref={listRef}>
                 {windowsWithBOM.length === 0 ? (
                   <div className="empty-state" style={{ padding: '28px 20px' }}>
                     <div className="empty-icon" style={{ fontSize: 32 }}>🪟</div>
@@ -335,8 +418,44 @@ export default function JobDetail({
                   const carrierTags = win.bom
                     .filter(l => l.width_formula)
                     .map(l => `${l.component?.name || 'Carrier'}: ${l.width_formula}`)
+                  const isDragged = drag?.index === idx
+                  // Where the row will land, drawn on the row it will sit
+                  // beside — above when moving up, below when moving down.
+                  const lineAbove = drag && drag.over === idx && drag.over < drag.index
+                  const lineBelow = drag && drag.over === idx && drag.over > drag.index
+                  const dropLine = (
+                    <div style={{ height: 2, background: 'var(--accent)', borderRadius: 2 }} />
+                  )
                   return (
-                    <div key={win.id} className="component-item" onClick={() => onOpenWindow(win, idx)}>
+                    <div key={win.id} data-reorder-item style={{
+                      // The dragged row rides above the rest of the list.
+                      position: 'relative',
+                      // The row divider moves out here: .component-item is now
+                      // the last child of this wrapper, so its own
+                      // :last-child rule would strip every border.
+                      borderBottom: idx < windowsWithBOM.length - 1 ? '1px solid var(--warm-100)' : 'none',
+                      zIndex: isDragged ? 2 : 1,
+                      transform: isDragged ? `translateY(${drag.dy}px)` : undefined,
+                      boxShadow: isDragged ? '0 8px 20px rgba(0,0,0,0.16)' : undefined,
+                      background: isDragged ? '#fff' : undefined,
+                      opacity: drag && !isDragged ? 0.65 : 1,
+                      transition: drag ? 'none' : 'opacity 0.15s',
+                    }}>
+                      {lineAbove && dropLine}
+                    <div className="component-item" onClick={() => onOpenWindow(win, idx)}>
+                      {canReorder && (
+                        <div
+                          onPointerDown={e => startDrag(idx, e)}
+                          onClick={e => e.stopPropagation()}
+                          title="Drag to reorder"
+                          style={{
+                            flexShrink: 0, cursor: 'grab', color: 'var(--warm-200)',
+                            padding: '4px 0', marginLeft: -4, touchAction: 'none',
+                            display: 'flex', alignItems: 'center',
+                          }}>
+                          <GripIcon size={18} />
+                        </div>
+                      )}
                       <div className="component-avatar">🔩</div>
                       <div className="component-info">
                         <div className="component-name">
@@ -386,6 +505,8 @@ export default function JobDetail({
                         </button>
                       )}
                       <ChevronRightIcon size={16} color="var(--warm-200)" style={{ flexShrink: 0 }} />
+                    </div>
+                      {lineBelow && dropLine}
                     </div>
                   )
                 })}
@@ -467,6 +588,43 @@ export default function JobDetail({
                     </div>
                   </div>
 
+                  {jobSwapList.length > 0 && (
+                    <div className="card card-body" style={{ marginBottom: 16 }}>
+                      <div style={{
+                        fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                        letterSpacing: '0.08em', color: 'var(--warm-300)', marginBottom: 8,
+                      }}>
+                        Component swaps · whole job
+                      </div>
+                      {jobSwapList.map(s => (
+                        <div key={s.fromId} style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          gap: 10, padding: '7px 0', borderTop: '1px solid var(--warm-100)',
+                        }}>
+                          <div style={{ minWidth: 0, fontSize: 13 }}>
+                            <span style={{ color: 'var(--warm-300)', textDecoration: 'line-through' }}>
+                              {s.from?.name || 'Removed component'}
+                            </span>
+                            <span style={{ color: 'var(--warm-300)', margin: '0 6px' }}>→</span>
+                            <span style={{ fontWeight: 600 }}>
+                              {s.to?.name || 'Missing component'}
+                              {s.colour_variant?.name ? ` · ${s.colour_variant.name}` : ''}
+                            </span>
+                          </div>
+                          {isReceived && (
+                            <button onClick={() => clearSwap(s.fromId)}
+                              style={{ fontSize: 11.5, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, flexShrink: 0 }}>
+                              Revert
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 8 }}>
+                        Applies to every window, except any that has swapped the same part itself.
+                      </div>
+                    </div>
+                  )}
+
                   <div className="card">
                     <div style={{
                       display: 'grid', gridTemplateColumns: '1fr 70px 65px 75px',
@@ -500,11 +658,34 @@ export default function JobDetail({
                             fontSize: 14, alignItems: 'center'
                           }}>
                             <div>
-                              <div style={{ fontWeight: 600 }}>{row.component.name}</div>
+                              <div style={{ fontWeight: 600 }}>
+                                {row.component.name}
+                                {row.substituted_from && (
+                                  <span style={{
+                                    fontSize: 10, fontWeight: 700, marginLeft: 6, padding: '1px 6px',
+                                    borderRadius: 4, background: 'var(--blue-bg)', color: 'var(--blue)',
+                                  }}>swapped</span>
+                                )}
+                              </div>
                               <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
                                 {row.component.unit}
                                 {row.component.supplier_pn ? ` · ${row.component.supplier_pn}` : ''}
                               </div>
+                              {row.substituted_from && (
+                                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
+                                  Recipe: {row.substituted_from.component?.name}
+                                  {row.nativeWindows.length > 0 &&
+                                    ` · also used as-is by ${row.nativeWindows.join(', ')}`}
+                                </div>
+                              )}
+                              {/* Fabric is picked per window in Customise, so it
+                                  isn't swapped from here. */}
+                              {isReceived && row.component.order_type !== 'fabric' && (
+                                <button onClick={() => setSwapRow(row)}
+                                  style={{ fontSize: 11, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, padding: 0, marginTop: 4 }}>
+                                  ⇄ {row.substituted_from ? 'Change swap' : 'Swap component'}
+                                </button>
+                              )}
                             </div>
                             <div style={{ textAlign: 'right' }}>
                               <div style={{ fontWeight: 500 }}>{fmtQty(row.total_qty)}</div>
@@ -549,6 +730,17 @@ export default function JobDetail({
         onClose={() => setPartsOpen(false)}
         onPrint={handlePrintParts}
         printing={labeling === 'parts'}
+      />
+
+      <SwapComponentModal
+        open={!!swapRow}
+        scope="job"
+        line={swapRow}
+        components={allComponents}
+        stockMap={stockMap}
+        excludeIds={swapExcludeIds}
+        onClose={() => setSwapRow(null)}
+        onSave={handleSwap}
       />
     </>
   )

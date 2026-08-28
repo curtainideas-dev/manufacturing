@@ -1,7 +1,38 @@
 import { useState, useEffect } from 'react'
 import { XIcon, CheckIcon } from './Icons'
 import { stockKey, findSuitableBars, packCuts, buildBarDeductions, countCutSlots } from '../lib/stockEngine'
+import { nestGroups, piecesFitting } from '../lib/fabricEngine'
 import { fmtQty } from '../lib/bomEngine'
+
+/**
+ * Label / width / length for a fabric offcut about to be saved.
+ *
+ * The width is editable rather than fixed at what the nesting calculated,
+ * because whoever's at the table is the one who knows what actually came off
+ * the roll — a strip that tore, or one they trimmed square before rolling it.
+ * What gets stored has to be what's physically on the shelf, or the next job
+ * matches a cut to a piece that won't take it.
+ */
+const OffcutFields = ({ value, defaultWidth, defaultLength, onLabel, onWidth, onLength }) => (
+  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+    <input className="field-input" style={{ flex: 2, fontSize: 13 }} placeholder="Label"
+      value={value?.label || ''} onChange={e => onLabel(e.target.value)} />
+    <div style={{ position: 'relative', flex: 1 }}>
+      <input className="field-input" type="number" min="1" step="1"
+        style={{ fontSize: 13, paddingRight: 44 }}
+        value={value?.roll_width_mm ?? defaultWidth}
+        onChange={e => onWidth(Number(e.target.value))} />
+      <span style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', fontSize: 10, color: 'var(--warm-300)', pointerEvents: 'none' }}>mm w</span>
+    </div>
+    <div style={{ position: 'relative', flex: 1 }}>
+      <input className="field-input" type="number" min="1" step="1"
+        style={{ fontSize: 13, paddingRight: 44 }}
+        value={value?.length_mm ?? defaultLength}
+        onChange={e => onLength(Number(e.target.value))} />
+      <span style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', fontSize: 10, color: 'var(--warm-300)', pointerEvents: 'none' }}>mm l</span>
+    </div>
+  </div>
+)
 
 export default function DeductStockModal({ open, job, jobSummary, jobMovements, stockMap, stockBars, onClose, onDeduct, saving }) {
   const [lineStatus,    setLineStatus]    = useState({})
@@ -10,7 +41,12 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
   // that both pick '__full_bar__' share one bar; anything else (a specific
   // offcut) is sourced independently, so offcuts and a full bar can mix.
   const [barSelections, setBarSelections] = useState({})
-  // Leftover "save as offcut" choices — key -> { "cut:<selKey>"|"bar:<binIdx>": { add, label, length_mm } }
+  // Which piece of stock each fabric BAND is cut from — key -> { "<bandIdx>": pieceId }
+  // pieceId is '__new_roll__' or a specific roll/offcut's id. Several bands can
+  // name the same piece; the lengths they take off it are summed.
+  const [fabricSelections, setFabricSelections] = useState({})
+  // Leftover "save as offcut" choices — key -> { "cut:<selKey>"|"bar:<binIdx>"|
+  // "side:<bandIdx>"|"tail:<pieceId>": { add, label, length_mm, roll_width_mm } }
   const [offcutData,    setOffcutData]    = useState({})
   const [qtyOverride,   setQtyOverride]   = useState({}) // key -> qty typed by the picker
 
@@ -23,6 +59,7 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
     deductedKeys.forEach(k => { initial[k] = 'done' })
     setLineStatus(initial)
     setBarSelections({})
+    setFabricSelections({})
     setOffcutData({})
     setQtyOverride({})
   }, [job?.id, jobMovements])
@@ -60,7 +97,7 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
     })
   }
 
-  const toggleOffcut = (key, leftoverKey, defaultLengthMm) => {
+  const toggleOffcut = (key, leftoverKey, defaultLengthMm, defaultWidthMm = null) => {
     setOffcutData(prev => {
       const lineData = { ...(prev[key] || {}) }
       const current  = lineData[leftoverKey]
@@ -68,8 +105,35 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
         ...current,
         add:       !current?.add,
         length_mm: current?.length_mm ?? Math.round(defaultLengthMm),
+        // Only fabric carries a width; a track offcut leaves it null.
+        roll_width_mm: current?.roll_width_mm ?? (defaultWidthMm != null ? Math.round(defaultWidthMm) : null),
       }
       return { ...prev, [key]: lineData }
+    })
+  }
+
+  const setOffcutWidth = (key, leftoverKey, roll_width_mm) => {
+    setOffcutData(prev => ({
+      ...prev,
+      [key]: { ...(prev[key] || {}), [leftoverKey]: { ...(prev[key]?.[leftoverKey]), roll_width_mm } },
+    }))
+  }
+
+  /**
+   * Point one band at a piece of stock.
+   *
+   * Unlike a bar offcut, a fabric piece is NOT claimed exclusively — several
+   * bands can be cut off one roll, one after another, so the same piece stays
+   * offerable. What stops it being over-committed is the length check at the
+   * point of selection, which counts what the other bands already took.
+   */
+  const selectFabricSource = (key, bandIdx, pieceId, totalBands) => {
+    setFabricSelections(prev => {
+      const next = { ...(prev[key] || {}), [bandIdx]: pieceId }
+      if (Object.values(next).filter(Boolean).length === totalBands) {
+        setLineStatus(ls => ls[key] !== 'done' ? { ...ls, [key]: 'picked' } : ls)
+      }
+      return { ...prev, [key]: next }
     })
   }
 
@@ -103,6 +167,50 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
   const totalLines    = jobSummary.length
   const progressCount = pickedCount + skippedCount + doneCount
 
+  /**
+   * The { piece_id, offcuts } list for one fabric line.
+   *
+   * A piece is consumed whole and whatever survives goes back as new pieces —
+   * the same shape a bar offcut uses, and for the same reason: what comes off
+   * a roll is a different physical thing from what went on it, and giving it
+   * its own row means it gets its own label to write on the fabric.
+   *
+   * Bands cut from one roll are collapsed into a single entry, so a roll that
+   * supplied three bands is only marked used once.
+   */
+  const buildFabricDeductions = (row, key) => {
+    const bands      = nestGroups(row.fabricCuts || [])
+    const selections = fabricSelections[key] || {}
+    const byPiece    = new Map()
+
+    bands.forEach((band, bandIdx) => {
+      const pieceId = selections[bandIdx]
+      if (!pieceId) return
+      if (!byPiece.has(pieceId)) byPiece.set(pieceId, { piece_id: pieceId, offcuts: [] })
+      const side = offcutData[key]?.[`side:${bandIdx}`]
+      if (side?.add && side.length_mm > 0 && side.roll_width_mm > 0) {
+        byPiece.get(pieceId).offcuts.push({
+          label:         side.label?.trim() || `${Math.round(side.roll_width_mm)}×${Math.round(side.length_mm)}mm`,
+          length_mm:     Math.round(side.length_mm),
+          roll_width_mm: Math.round(side.roll_width_mm),
+        })
+      }
+    })
+
+    byPiece.forEach((entry, pieceId) => {
+      const tail = offcutData[key]?.[`tail:${pieceId}`]
+      if (tail?.add && tail.length_mm > 0 && tail.roll_width_mm > 0) {
+        entry.offcuts.push({
+          label:         tail.label?.trim() || `${Math.round(tail.roll_width_mm)}×${Math.round(tail.length_mm)}mm`,
+          length_mm:     Math.round(tail.length_mm),
+          roll_width_mm: Math.round(tail.roll_width_mm),
+        })
+      }
+    })
+
+    return [...byPiece.values()]
+  }
+
   const handleDeduct = () => {
     const deductions = jobSummary
       .filter(row => lineStatus[stockKey(row.component.id, row.colour_variant)] === 'picked')
@@ -114,6 +222,14 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
           const cuts  = row.cuts?.length ? row.cuts : [{ mm: Math.round(row.total_qty * 1000), label: null }]
           const bars  = buildBarDeductions(cuts, barLengthMm, barSelections[key] || {}, offcutData[key] || {})
           return { component: row.component, colour_variant: row.colour_variant, qty: row.total_qty, bars }
+        }
+        if (row.component.order_type === 'fabric') {
+          return {
+            component:      row.component,
+            colour_variant: row.colour_variant,
+            qty:            row.total_qty,
+            fabric_pieces:  buildFabricDeductions(row, key),
+          }
         }
         // Pack component — may be adjusted up or down by the picker
         return {
@@ -127,8 +243,9 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
     onDeduct(deductions)
   }
 
-  const packRows = jobSummary.filter(r => r.component.order_type !== 'bar')
-  const barRows  = jobSummary.filter(r => r.component.order_type === 'bar')
+  const packRows   = jobSummary.filter(r => !['bar', 'fabric'].includes(r.component.order_type))
+  const barRows    = jobSummary.filter(r => r.component.order_type === 'bar')
+  const fabricRows = jobSummary.filter(r => r.component.order_type === 'fabric')
 
   const renderPackRow = (row) => {
     const key    = stockKey(row.component.id, row.colour_variant)
@@ -458,6 +575,243 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
     )
   }
 
+  /**
+   * A fabric line: the bands this job's blinds nest into, and which roll each
+   * band comes off.
+   *
+   * The unit here is the BAND, not the blind — the blinds sharing a band are
+   * cut from one length pulled off one roll, so they can't be sourced apart
+   * from each other. That's the whole difference from a bar line, where every
+   * cut is independent.
+   */
+  const renderFabricRow = (row) => {
+    const key    = stockKey(row.component.id, row.colour_variant)
+    const status = lineStatus[key] || 'pending'
+    const isDone = status === 'done'
+
+    const bands      = nestGroups(row.fabricCuts || [])
+    const selections = fabricSelections[key] || {}
+    const totalBands = bands.length
+    const allPicked  = totalBands > 0 && Object.values(selections).filter(Boolean).length === totalBands
+    const totalLengthMm = bands.reduce((s, b) => s + b.lengthMm, 0)
+
+    // How much each piece is already committed to by other bands, so a roll
+    // can't be picked for more length than it holds.
+    const committedTo = (pieceId, exceptBandIdx) => bands.reduce((s, b, i) =>
+      s + (i !== exceptBandIdx && selections[i] === pieceId ? b.lengthMm : 0), 0)
+
+    const rowBg = isDone ? '#f0fdf4' : status === 'picked' ? 'var(--success-bg)' : status === 'skipped' ? 'var(--warm-100)' : '#fff'
+
+    return (
+      <div key={key} style={{ borderBottom: '1px solid var(--warm-100)', background: rowBg, transition: 'background 0.15s' }}>
+        <div style={{ padding: '14px 20px', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button onClick={() => toggleLine(key)} style={{
+            width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+            border: `2px solid ${(status === 'picked' || isDone) ? 'var(--success)' : allPicked ? 'var(--accent)' : 'var(--warm-200)'}`,
+            background: (status === 'picked' || isDone) ? 'var(--success)' : '#fff',
+            cursor: isDone ? 'default' : 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            opacity: isDone ? 0.7 : 1,
+          }}>
+            {(status === 'picked' || isDone) && <CheckIcon size={14} color="#fff" />}
+          </button>
+
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 14, color: status === 'skipped' ? 'var(--warm-300)' : 'var(--ink)', textDecoration: status === 'skipped' ? 'line-through' : 'none' }}>
+              {row.component.fabric_code ? `${row.component.fabric_code} · ` : ''}{row.component.name}
+              {row.colour_variant && <span style={{ fontSize: 12, color: 'var(--warm-300)', fontWeight: 400, marginLeft: 6 }}>· {row.colour_variant.name}</span>}
+            </div>
+            {isDone ? (
+              <div style={{ fontSize: 12, color: 'var(--success)', fontWeight: 600, marginTop: 2 }}>✓ Already deducted</div>
+            ) : (
+              <div style={{ fontSize: 12, color: 'var(--warm-300)', marginTop: 2 }}>
+                {row.fabricCuts?.length || 0} blind{(row.fabricCuts?.length || 0) !== 1 ? 's' : ''} nested into{' '}
+                <strong style={{ color: 'var(--ink)' }}>{totalBands} band{totalBands !== 1 ? 's' : ''}</strong>
+                {' · '}{totalLengthMm.toLocaleString()}mm off the roll
+                <span style={{ marginLeft: 8 }}>· costed {fmtQty(row.total_qty)}m</span>
+              </div>
+            )}
+          </div>
+
+          {!isDone && (
+            <button onClick={() => skipLine(key)} style={{
+              fontSize: 11, fontWeight: 600, padding: '4px 10px', borderRadius: 6,
+              border: '1px solid var(--warm-200)',
+              background: status === 'skipped' ? 'var(--warm-200)' : 'none',
+              color: 'var(--warm-300)', cursor: 'pointer',
+            }}>
+              {status === 'skipped' ? 'Undo' : 'Skip'}
+            </button>
+          )}
+        </div>
+
+        {!isDone && status !== 'skipped' && bands.map((band, bandIdx) => {
+          const selectedId = selections[bandIdx]
+          // Every blind in a band is cut side by side out of ONE length, so
+          // the piece has to take all of them across — not just the widest.
+          const needWidthMm = band.usedWidthMm
+
+          // Wide enough for the whole band, and long enough for it on top of
+          // whatever the other bands already took off the same piece.
+          const sources = piecesFitting(
+            stockBars, row.component.id, row.colour_variant?.suffix || null,
+            needWidthMm, band.lengthMm, 0,
+          ).filter(p => (Number(p.length_mm) || 0) >= band.lengthMm + committedTo(p.id, bandIdx))
+
+          const sideKey  = `side:${bandIdx}`
+          const sideOd   = offcutData[key]?.[sideKey]
+          const selPiece = selectedId && selectedId !== '__new_roll__'
+            ? stockBars.find(b => b.id === selectedId) : null
+
+          // The strip really left across the roll. The band's own figure is
+          // against the product's NOMINAL roll width; once a specific piece is
+          // picked, that piece's actual width is what's left over — and it can
+          // be narrower than nominal if the source was itself an offcut.
+          const spareWidthMm = selPiece
+            ? Math.max(0, Number(selPiece.roll_width_mm) - band.usedWidthMm)
+            : band.remainingWidthMm
+
+          // The tail is only offered once per piece — on the last band using it.
+          const lastBandForPiece = selectedId &&
+            bands.map((_, i) => i).filter(i => selections[i] === selectedId).slice(-1)[0] === bandIdx
+          const tailKey    = `tail:${selectedId}`
+          const tailOd     = offcutData[key]?.[tailKey]
+          const tailLength = selPiece
+            ? Number(selPiece.length_mm) - bands.reduce((s, b, i) => s + (selections[i] === selectedId ? b.lengthMm : 0), 0)
+            : 0
+
+          return (
+            <div key={bandIdx} style={{
+              margin: '0 20px 10px 60px',
+              border: '1px solid var(--warm-200)', borderRadius: 8,
+              background: '#fff', overflow: 'hidden',
+            }}>
+              <div style={{ padding: '8px 12px', background: 'var(--warm-100)', borderBottom: '1px solid var(--warm-200)' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink)' }}>
+                  Band {bandIdx + 1}
+                  <span style={{ fontWeight: 400, color: 'var(--warm-300)', marginLeft: 8 }}>
+                    pull {band.lengthMm.toLocaleString()}mm off a {band.rollWidthMm.toLocaleString()}mm roll
+                  </span>
+                </div>
+                {band.oversized ? (
+                  <div style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 500, marginTop: 4 }}>
+                    ⚠️ {band.pieces[0]?.label}: {band.pieces[0]?.cutWidthMm.toLocaleString()}mm cut is wider than the
+                    {' '}{band.rollWidthMm.toLocaleString()}mm roll — check the product's width deduction and roll width
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginTop: 4 }}>
+                    {band.pieces.map(p => `${p.label} ${p.cutWidthMm.toLocaleString()}×${p.lengthMm.toLocaleString()}`).join('   ·   ')}
+                    {band.remainingWidthMm > 0 && (
+                      <span style={{ marginLeft: 8 }}>· {Math.round(band.remainingWidthMm).toLocaleString()}mm spare across</span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {!band.oversized && (
+                <div style={{ padding: '10px 12px' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    <button type="button" onClick={() => selectFabricSource(key, bandIdx, '__new_roll__', totalBands)} style={{
+                      padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                      border: `1.5px solid ${selectedId === '__new_roll__' ? 'var(--accent)' : 'var(--warm-200)'}`,
+                      background: selectedId === '__new_roll__' ? '#fff' : 'var(--warm-100)',
+                      color: selectedId === '__new_roll__' ? 'var(--accent-dark)' : 'var(--ink)',
+                    }}>
+                      New roll
+                    </button>
+                    {sources.slice(0, 5).map(p => (
+                      <button key={p.id} type="button" onClick={() => selectFabricSource(key, bandIdx, p.id, totalBands)} style={{
+                        padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                        border: `1.5px solid ${selectedId === p.id ? 'var(--accent)' : 'var(--warm-200)'}`,
+                        background: selectedId === p.id ? '#fff' : 'var(--warm-100)',
+                        color: selectedId === p.id ? 'var(--accent-dark)' : 'var(--ink)',
+                      }}>
+                        {p.label} ({Number(p.roll_width_mm).toLocaleString()}×{Number(p.length_mm).toLocaleString()}mm)
+                      </button>
+                    ))}
+                  </div>
+                  {sources.length === 0 && (
+                    <div style={{ fontSize: 12, color: 'var(--warning)', fontWeight: 500, marginTop: 8 }}>
+                      ⚠️ Nothing in stock is both {Math.round(needWidthMm).toLocaleString()}mm wide and
+                      {' '}{band.lengthMm.toLocaleString()}mm long — this band needs a new roll
+                    </div>
+                  )}
+
+                  {/* The strip left across the roll — the fabric this model
+                      exists to stop throwing away. */}
+                  {selectedId && spareWidthMm > 0 && (
+                    <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--warm-100)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 12, color: 'var(--warm-300)' }}>
+                          Spare strip: <strong style={{ color: 'var(--ink)' }}>
+                            {Math.round(spareWidthMm).toLocaleString()} × {band.lengthMm.toLocaleString()}mm
+                          </strong>
+                        </span>
+                        <button type="button"
+                          onClick={() => toggleOffcut(key, sideKey, band.lengthMm, spareWidthMm)}
+                          style={{
+                            fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 6, cursor: 'pointer',
+                            border: `1px solid ${sideOd?.add ? 'var(--accent)' : 'var(--warm-200)'}`,
+                            background: sideOd?.add ? 'var(--accent)' : 'none',
+                            color: sideOd?.add ? '#fff' : 'var(--warm-300)',
+                          }}>
+                          {sideOd?.add ? '✓ Keeping strip' : '+ Keep as offcut'}
+                        </button>
+                      </div>
+                      {sideOd?.add && (
+                        <OffcutFields
+                          value={sideOd}
+                          defaultWidth={Math.round(spareWidthMm)}
+                          defaultLength={Math.round(band.lengthMm)}
+                          onLabel={v => setOffcutLabel(key, sideKey, v)}
+                          onWidth={v => setOffcutWidth(key, sideKey, v)}
+                          onLength={v => setOffcutLength(key, sideKey, v)}
+                        />
+                      )}
+                    </div>
+                  )}
+
+                  {/* What's left on the roll once every band has come off it. */}
+                  {selPiece && lastBandForPiece && tailLength > 0 && (
+                    <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 6, background: 'var(--warm-100)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 12, color: 'var(--warm-300)' }}>
+                          Left on {selPiece.label}: <strong style={{ color: 'var(--ink)' }}>
+                            {Number(selPiece.roll_width_mm).toLocaleString()} × {Math.round(tailLength).toLocaleString()}mm
+                          </strong>
+                        </span>
+                        <button type="button"
+                          onClick={() => toggleOffcut(key, tailKey, tailLength, Number(selPiece.roll_width_mm))}
+                          style={{
+                            fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 6, cursor: 'pointer',
+                            border: `1px solid ${tailOd?.add ? 'var(--accent)' : 'var(--warm-200)'}`,
+                            background: tailOd?.add ? 'var(--accent)' : 'none',
+                            color: tailOd?.add ? '#fff' : 'var(--warm-300)',
+                          }}>
+                          {tailOd?.add ? '✓ Keeping remainder' : '+ Keep remainder'}
+                        </button>
+                      </div>
+                      {tailOd?.add && (
+                        <OffcutFields
+                          value={tailOd}
+                          defaultWidth={Math.round(Number(selPiece.roll_width_mm))}
+                          defaultLength={Math.round(tailLength)}
+                          onLabel={v => setOffcutLabel(key, tailKey, v)}
+                          onWidth={v => setOffcutWidth(key, tailKey, v)}
+                          onLength={v => setOffcutLength(key, tailKey, v)}
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+
   const SectionHeader = ({ label, count }) => (
     <div style={{ padding: '8px 20px', background: 'var(--warm-100)', borderBottom: '1px solid var(--warm-200)', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--warm-300)' }}>
       {label} ({count})
@@ -495,6 +849,12 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
             <>
               <SectionHeader label="Tracks & Tubes" count={barRows.length} />
               {barRows.map(renderBarRow)}
+            </>
+          )}
+          {fabricRows.length > 0 && (
+            <>
+              <SectionHeader label="Fabric" count={fabricRows.length} />
+              {fabricRows.map(renderFabricRow)}
             </>
           )}
         </div>

@@ -21,6 +21,13 @@ export const CheckIcon = (p) => <Icon {...p} d="M20 6L9 17l-5-5" />
 export const TrashIcon = (p) => (
   <Icon {...p} d={<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>} />
 )
+export const GripIcon = (p) => (
+  <Icon {...p} d={<>
+    <circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/>
+    <circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/>
+    <circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>
+  </>} />
+)
 export const InfoIcon = (p) => (
   <Icon {...p} d={<><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></>} />
 )

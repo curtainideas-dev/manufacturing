@@ -28,7 +28,7 @@ import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
 import { buildStockMap, stockKey, checkLowStock, getStock } from './lib/stockEngine'
-import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor } from './lib/bomEngine'
+import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting } from './lib/bomEngine'
 import { orderUnitInfo } from './lib/poEngine'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
 import { exportProductPricingXLSX } from './lib/exportPricing'
@@ -122,21 +122,44 @@ export default function App() {
     return productOptions[product?.product_type] || []
   }, [products, productOptions])
 
-  // Pre-compute current job's BOM summary for the deduct stock modal
-  const currentJobSummary = useMemo(() => {
-    if (!currentJob) return []
-    const windowsWithBOM = (currentJob.windows || []).map(win => ({
+  /**
+   * A job's windows with their BOMs, fabric re-quantified against the roll
+   * layout the whole job nests into.
+   *
+   * `useSnapshot` picks the basis: a confirmed job's frozen prices and
+   * quantities, or live recipes. Both are needed — the job's own screens show
+   * what it was confirmed at, while confirming a job has to cost it fresh.
+   */
+  const buildJobWindows = useCallback((job, useSnapshot) => {
+    if (!job) return []
+    return applyFabricNesting((job.windows || []).map(win => ({
       ...win,
       bom: buildWindowBOM(
         productComponentsMap[win.product_id] || [], win,
         optionDefsFor(win.product_id),
-        currentJob.price_snapshot || null,
-        currentJob.qty_snapshot?.[win.id] || null,
+        useSnapshot ? (job.price_snapshot || null) : null,
+        useSnapshot ? (job.qty_snapshot?.[win.id] || null) : null,
         fabricSelectionFor(win, products.find(p => p.id === win.product_id), components, fabricCategories),
+        substitutionsFor(job, win, components),
       )
-    }))
-    return calcJobSummary(windowsWithBOM)
-  }, [currentJob, productComponentsMap, optionDefsFor, products, components, fabricCategories])
+    })))
+  }, [productComponentsMap, optionDefsFor, products, components, fabricCategories])
+
+  // Pre-compute current job's BOM summary for the deduct stock modal
+  const currentJobSummary = useMemo(
+    () => calcJobSummary(buildJobWindows(currentJob, true)), [currentJob, buildJobWindows])
+
+  // Nested fabric metres per window on the LIVE basis, for the single-window
+  // page — which prices live, so a frozen quantity there would sit beside live
+  // rates and belong to neither. Keyed by window id.
+  const liveNestedFabricQty = useMemo(() => {
+    const out = {}
+    buildJobWindows(currentJob, false).forEach(w => {
+      const line = (w.bom || []).find(l => l.fabric_cut)
+      if (line) out[w.id] = line.calculated_qty
+    })
+    return out
+  }, [currentJob, buildJobWindows])
 
   // Superseded products stay in `products` so historical jobs can still name
   // the product they were built against — but they must never be pickable.
@@ -238,7 +261,7 @@ export default function App() {
         ...j,
         windows: (j.mfg_windows || [])
           .sort((a, b) => a.sort_order - b.sort_order)
-          .map(w => ({ ...w, bom_overrides: w.bom_overrides || {} }))
+          .map(w => ({ ...w, bom_overrides: w.bom_overrides || {}, substitutions: w.substitutions || {} }))
       })))
     }
 
@@ -700,21 +723,17 @@ export default function App() {
 
   // Compute the price snapshot + locked total for a job from current recipes
   const computeJobLock = useCallback((job) => {
-    const windowsWithBOM = (job.windows || []).map(win => ({
-      ...win,
-      bom: buildWindowBOM(
-        productComponentsMap[win.product_id] || [], win, optionDefsFor(win.product_id),
-        null, null,
-        fabricSelectionFor(win, products.find(p => p.id === win.product_id), components, fabricCategories),
-      )
-    }))
+    // Nested BEFORE snapshotting, so a confirmed job freezes the metres it
+    // will actually pull off the roll — not the sum of its blinds' ideal
+    // strips, which nobody could order against.
+    const windowsWithBOM = buildJobWindows(job, false)
     const total = calcJobSummary(windowsWithBOM).reduce((s, r) => s + r.total_cost, 0)
     return {
       price_snapshot: buildPriceSnapshot(windowsWithBOM),
       qty_snapshot:   buildQtySnapshot(windowsWithBOM),
       locked_total:   Math.round(total * 100) / 100,
     }
-  }, [productComponentsMap, optionDefsFor, products, components, fabricCategories])
+  }, [buildJobWindows])
 
   // One-off: jobs confirmed before pricing was locked have no snapshot, so their
   // value would keep moving with component costs. Lock them at current prices.
@@ -783,11 +802,12 @@ export default function App() {
         drop_mm:      Number(winData.drop_mm),
         sort_order:   sortOrder,
         bom_overrides: {},
+        substitutions: {},
         config:        winData.config || {},
       })
       .select().single()
     if (error) { showToast('Failed to add window', 'error'); return }
-    const newWin = { ...data, bom_overrides: {}, config: data.config || {} }
+    const newWin = { ...data, bom_overrides: {}, substitutions: {}, config: data.config || {} }
     const updated = { ...currentJob, windows: [...(currentJob.windows || []), newWin] }
     setCurrentJob(updated)
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
@@ -820,15 +840,40 @@ export default function App() {
         drop_mm:       source.drop_mm,
         sort_order:    sortOrder,
         bom_overrides: {},
+        substitutions: source.substitutions || {},
         config:        source.config || {},
       })
       .select().single()
     if (error) { showToast('Failed to duplicate window', 'error'); return }
-    const newWin = { ...data, bom_overrides: {}, config: data.config || {} }
+    const newWin = { ...data, bom_overrides: {}, substitutions: data.substitutions || {}, config: data.config || {} }
     const updated = { ...currentJob, windows: [...(currentJob.windows || []), newWin] }
     setCurrentJob(updated)
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
     setCurrentWindow({ win: newWin, idx: updated.windows.length - 1 })
+  }
+
+  // Move one window to another position. sort_order is renumbered 0..n-1 over
+  // the whole list rather than nudged, so a list that arrives with duplicate
+  // or gappy orders comes out clean; only the rows that actually moved are
+  // written back. Nothing costed depends on position — the qty snapshot is
+  // keyed by window id — so this is safe on a confirmed job too.
+  const handleWindowsReorder = async (from, to) => {
+    const windows = [...(currentJob.windows || [])]
+    if (from === to || !windows[from]) return
+    const [moved] = windows.splice(from, 1)
+    windows.splice(to, 0, moved)
+
+    const renumbered = windows.map((w, i) => ({ ...w, sort_order: i }))
+    const wasAt      = new Map((currentJob.windows || []).map(w => [w.id, w.sort_order]))
+    const changed    = renumbered.filter(w => wasAt.get(w.id) !== w.sort_order)
+
+    const updated = { ...currentJob, windows: renumbered }
+    setCurrentJob(updated)
+    setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
+
+    const results = await Promise.all(changed.map(w =>
+      supabase.from('mfg_windows').update({ sort_order: w.sort_order }).eq('id', w.id)))
+    if (results.some(r => r.error)) showToast('Failed to save the new order', 'error')
   }
 
   const handleWindowDelete = async (idx) => {
@@ -924,12 +969,18 @@ export default function App() {
 
   const handleSaveBar = async (formData) => {
     setStockSaving(true)
+    // A fabric piece carries its own width; a track offcut has none, and must
+    // not have one written over it.
+    const isFabric = barModalComp?.order_type === 'fabric'
+    const noun     = isFabric ? 'Fabric piece' : 'Bar'
+    const widthCol = isFabric ? { roll_width_mm: formData.roll_width_mm } : {}
     if (editingBar) {
       await supabase.from('stock_bars').update({
-        label: formData.label,
+        label:     formData.label,
         length_mm: formData.length_mm,
+        ...widthCol,
       }).eq('id', editingBar.id)
-      showToast('Bar updated ✓', 'success')
+      showToast(`${noun} updated ✓`, 'success')
     } else {
       await supabase.from('stock_bars').insert({
         component_id:   barModalComp.id,
@@ -937,8 +988,9 @@ export default function App() {
         label:          formData.label,
         length_mm:      formData.length_mm,
         status:         'available',
+        ...widthCol,
       })
-      showToast('Bar added to stock ✓', 'success')
+      showToast(`${noun} added to stock ✓`, 'success')
     }
     setBarModalOpen(false)
     await loadAll()
@@ -988,9 +1040,32 @@ export default function App() {
         qty:            -d.qty,
       })
 
-      // Update pack stock qty
-      if (stock?.id && d.component.order_type !== 'bar') {
+      // Update pack stock qty. Bars and fabric are held as individual pieces
+      // in stock_bars, not as a count on the stock row — decrementing a metre
+      // figure off qty_on_hand would be meaningless for either.
+      if (stock?.id && !['bar', 'fabric'].includes(d.component.order_type)) {
         stockUpdates.push({ id: stock.id, qty: (stock.qty_on_hand || 0) - d.qty })
+      }
+
+      // Fabric — a roll is consumed whole and whatever survives the nesting
+      // goes back as new pieces, each with its own width. Same shape as a bar
+      // offcut, with the width that decides what will fit on it next time.
+      if (d.component.order_type === 'fabric') {
+        for (const piece of d.fabric_pieces || []) {
+          if (piece.piece_id && piece.piece_id !== '__new_roll__') {
+            barUpdates.push(piece.piece_id)
+          }
+          for (const oc of piece.offcuts || []) {
+            offcutInserts.push({
+              component_id:   d.component.id,
+              colour_variant: d.colour_variant || null,
+              label:          oc.label,
+              length_mm:      Math.round(oc.length_mm),
+              roll_width_mm:  Math.round(oc.roll_width_mm),
+              status:         'available',
+            })
+          }
+        }
       }
 
       // Handle bar components — may require multiple bars (one per bin)
@@ -1219,11 +1294,14 @@ export default function App() {
           window={win}
           windowIndex={currentWindow.idx}
           totalWindows={currentJob.windows.length}
+          job={currentJob}
           product={product}
           productComponents={recipe}
           optionDefs={optionDefsFor(win.product_id)}
           allComponents={components}
           fabricCategories={fabricCategories}
+          stockMap={stockMap}
+          nestedFabricQty={liveNestedFabricQty[win.id]}
           onBack={() => setCurrentWindow(null)}
           onUpdate={(updates) => handleWindowUpdate(currentWindow.idx, updates)}
           onDelete={() => handleWindowDelete(currentWindow.idx)}
@@ -1241,13 +1319,16 @@ export default function App() {
           productComponentsMap={productComponentsMap}
           optionDefsFor={optionDefsFor}
           allComponents={components}
+          suppliers={suppliers}
           fabricCategories={fabricCategories}
+          stockMap={stockMap}
           onBack={() => setCurrentJob(null)}
           onUpdate={handleJobUpdate}
           onDelete={handleJobDelete}
           onAddWindow={() => setAddWindowOpen(true)}
           onOpenWindow={(win, idx) => setCurrentWindow({ win, idx })}
           onDuplicateWindow={handleWindowDuplicate}
+          onReorderWindows={handleWindowsReorder}
           onConfirm={handleJobConfirm}
           onComplete={handleJobComplete}
           onReopen={handleJobReopen}

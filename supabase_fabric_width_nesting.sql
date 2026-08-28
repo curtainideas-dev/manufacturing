@@ -1,0 +1,118 @@
+-- ============================================================================
+-- Blind fabric: the width offcut is reusable
+--
+-- Corrects the model in supabase_fabric_per_metre.sql, which charged every
+-- blind for the FULL width of the roll on the grounds that the strip beside it
+-- was unrecoverable. That was wrong. A blind still can't be railroaded — the
+-- fabric has to wind onto the tube the way it comes off the roll, so the drop
+-- always runs lengthwise — but nothing stops a second, third or fourth blind
+-- being cut ALONGSIDE the first, out of the width the first one didn't use.
+-- The roll is cut in bands: a band is one length pulled off the roll, holding
+-- as many blinds side by side as its width allows.
+--
+-- So a blind consumes a STRIP of the roll, not the whole of it:
+--
+--     occupied width = window width − width deduction + width cut allowance
+--     length off roll = window drop + drop allowance + drop wastage
+--     share of roll  = occupied width / roll width
+--
+-- A 750mm blind on a 3000mm roll takes a quarter of what a 3000mm blind of the
+-- same drop takes, instead of the same.
+--
+-- ---------------------------------------------------------------------------
+-- TWO QUESTIONS, TWO ANSWERS
+--
+-- The strip above is the IDEAL — one blind with nothing nested beside it. That
+-- is what a PRICE GRID needs, because a grid prices a size with no job around
+-- it and cannot know what it will share a length of roll with. The grid is
+-- costed on the ideal strip: no nesting, no nesting waste.
+--
+-- A JOB'S BOM needs the other answer: how many metres actually have to come
+-- off the roll to build it. That is always more than the sum of the ideal
+-- strips, because the strip beside the last blind in a band, and the run under
+-- every blind shorter than the band holding it, get pulled off whether or not
+-- they end up in a blind. So the BOM re-quantifies its fabric lines against
+-- the job's real layout (src/lib/bomEngine.js, applyFabricNesting), sharing
+-- each band's length across the blinds in it by the width each occupies.
+--
+-- The BOM therefore EQUALS the cut sheet, always and by construction — both go
+-- through the same nesting. Order off the BOM and the quantity is right, with
+-- the offcut it leaves already paid for and ready to be booked into stock.
+--
+-- Measured on job 1002480 (24 blinds, 3 fabrics): ideal strips total 17.00m,
+-- the nested requirement is 22.80m, and the BOM now reads 22.80m — matching
+-- its cut sheet to the millimetre on all three fabrics.
+--
+-- ---------------------------------------------------------------------------
+-- fabric_width_cut_allowance_mm
+--
+-- The margin that makes side-by-side cutting possible at all: the blade needs
+-- somewhere to go, and both edges need to be square. Charged per blind (every
+-- piece occupies its own width plus one allowance), so a band holding four
+-- blinds carries four allowances — the outer edge of the roll is trimmed too,
+-- and a per-piece figure is what the nesting in src/lib/fabricEngine.js packs
+-- against, keeping cost and the cut chart in exact agreement.
+--
+-- fabric_roll_width_mm
+--
+-- The roll width the category rate is quoted against — the denominator of the
+-- share above, and the width the cut chart nests into. Per product rather than
+-- per fabric because the price grid has to work before any fabric is picked.
+-- Defaults to 3000, the width supabase_fabric_per_metre.sql converted the
+-- category rates against, so the arithmetic lines up with the rates on file.
+--
+-- ---------------------------------------------------------------------------
+-- BLIND FABRIC COSTS DROP, AND SUBSTANTIALLY — the mirror image of what
+-- supabase_fabric_per_metre.sql did. Against a 3000mm roll and a 0mm
+-- allowance, a blind's fabric cost becomes (own width / 3000) of its current
+-- figure:
+--
+--     2400mm blind  ->  0.80x        1400mm blind  ->  0.47x
+--     1500mm blind  ->  0.50x         600mm blind  ->  0.20x
+--
+-- Set fabric_width_cut_allowance_mm per product before relying on the new
+-- figures: at 0mm the model assumes blinds can be cut edge to edge with no
+-- trim, which no cutting table does.
+--
+-- No confirmed job is affected — price_snapshot/qty_snapshot freeze a job at
+-- confirm time, and snapshots DO now contain fabric lines (job 1002480's does),
+-- so a confirmed job keeps its old full-roll-width figures for good. That is
+-- the snapshot working as intended, but it has a consequence worth knowing:
+--
+--   ON AN ALREADY-CONFIRMED JOB, THE BOM FABRIC QTY WILL NOT MATCH ITS CUT
+--   SHEET. The BOM is frozen at the old model; the cut sheet nests live.
+--
+-- On 1002480 the frozen BOM reads 46.00m against a nested requirement of
+-- 22.80m. Only jobs confirmed after this migration will agree. Re-confirming
+-- an old job would re-snapshot it at the new model — and change what it was
+-- quoted at.
+--
+-- Both columns are additive with defaults, so this migration alone changes no
+-- stored data. Re-running is a no-op.
+-- ============================================================================
+
+alter table products add column if not exists fabric_width_cut_allowance_mm integer not null default 0;
+alter table products add column if not exists fabric_roll_width_mm          integer not null default 3000;
+
+
+-- ---------------------------------------------------- fabric offcuts in stock --
+-- A fabric offcut is a piece with BOTH dimensions left over: the strip beside
+-- the last band (full length, part width) or the tail below it (part length,
+-- full width). stock_bars already carries length_mm and, since
+-- supabase_fabrics.sql, roll_width_mm — so a fabric offcut is just a stock_bars
+-- row with both set, and receiving / picking / best-fit all work as they do for
+-- a track offcut. Nothing new to create; this is the constraint that keeps a
+-- fabric piece from being saved without the width that decides what fits on it.
+do $$ begin
+  alter table stock_bars add constraint stock_bars_fabric_width_check
+    check (roll_width_mm is null or roll_width_mm > 0);
+exception when duplicate_object then null; end $$;
+
+
+-- ============================================================================
+-- ROLLBACK
+-- ============================================================================
+-- alter table stock_bars drop constraint if exists stock_bars_fabric_width_check;
+-- alter table products
+--   drop column if exists fabric_width_cut_allowance_mm,
+--   drop column if exists fabric_roll_width_mm;

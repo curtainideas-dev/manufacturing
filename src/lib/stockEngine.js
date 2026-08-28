@@ -193,3 +193,34 @@ export function stockValue(component, stock, offcutLengthMm = 0) {
   }
   return qty * unitCost
 }
+
+/**
+ * Value of the fabric held in one component and colour.
+ *
+ * A fabric's unit_cost is per linear metre of a FULL-WIDTH roll, so a piece
+ * narrower than full width is worth its share of that: a 900mm strip off a
+ * 3000mm roll is worth 30% of the rate per metre, not the whole of it. That's
+ * the same width-share the BOM charges a blind, so what leaves stock and what
+ * lands on the job agree.
+ *
+ * The reference width is the widest the fabric can be ordered in, falling back
+ * to the widest piece actually held — either way a full roll values at exactly
+ * its length × the rate.
+ */
+export function fabricStockValue(component, pieces = []) {
+  const base     = Number(component?.unit_cost) || 0
+  const discount = Number(component?.discount) || 0
+  const rate     = base * (1 - discount / 100)
+
+  const orderable = (Array.isArray(component?.roll_widths) ? component.roll_widths : [])
+    .map(Number).filter(n => n > 0)
+  const widestHeld = pieces.reduce((m, p) => Math.max(m, Number(p.roll_width_mm) || 0), 0)
+  const reference  = Math.max(0, ...orderable, widestHeld)
+  if (reference <= 0) return 0
+
+  return pieces.reduce((total, p) => {
+    const w = Number(p.roll_width_mm) || 0
+    const l = Number(p.length_mm) || 0
+    return total + (l / 1000) * rate * Math.min(1, w / reference)
+  }, 0)
+}

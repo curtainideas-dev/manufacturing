@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { PlusIcon, ChevronRightIcon } from '../components/Icons'
-import { getStock, stockValue } from '../lib/stockEngine'
+import { getStock, stockValue, fabricStockValue } from '../lib/stockEngine'
+import { fabricPieces } from '../lib/fabricEngine'
 import { exportStockTakeCSV } from '../lib/exportCSV'
 
 const fmtQty = n => {
@@ -19,8 +20,11 @@ export default function StockPage({
   const [tab, setTab]       = useState('components')
   const [search, setSearch] = useState('')
 
-  const packComponents = components.filter(c => c.order_type === 'pack' || !c.order_type)
-  const barComponents  = components.filter(c => c.order_type === 'bar')
+  const packComponents   = components.filter(c => c.order_type === 'pack' || !c.order_type)
+  const barComponents    = components.filter(c => c.order_type === 'bar')
+  // Fabric has no "full bars" count: every roll is its own piece with its own
+  // width and remaining length, so the whole holding lives in stock_bars.
+  const fabricComponents = components.filter(c => c.order_type === 'fabric')
 
   const filterComps = (list) => list.filter(c =>
     !search || c.name.toLowerCase().includes(search.toLowerCase())
@@ -60,8 +64,13 @@ export default function StockPage({
     }, 0)
     const packs = sumFor(packComponents)
     const bars  = sumFor(barComponents)
-    return { packs, bars, total: packs + bars }
-  }, [packComponents, barComponents, stockMap, stockBars])
+    // Fabric is valued straight off its pieces — no stock row to read, and
+    // each piece worth its share of a full-width metre.
+    const fabrics = fabricComponents.reduce((total, c) =>
+      total + fabricStockValue(c, stockBars.filter(b =>
+        b.component_id === c.id && b.status === 'available')), 0)
+    return { packs, bars, fabrics, total: packs + bars + fabrics }
+  }, [packComponents, barComponents, fabricComponents, stockMap, stockBars])
 
   // Status dot based on qty vs minimum
   const StatusDot = ({ qty, minimum }) => {
@@ -101,6 +110,9 @@ export default function StockPage({
         <button className={`tab-btn ${tab === 'bars' ? 'active' : ''}`} onClick={() => setTab('bars')}>
           Tracks & Tubes ({barComponents.length})
         </button>
+        <button className={`tab-btn ${tab === 'fabrics' ? 'active' : ''}`} onClick={() => setTab('fabrics')}>
+          Fabrics ({fabricComponents.length})
+        </button>
       </div>
 
       <div className="scroll-area">
@@ -120,6 +132,7 @@ export default function StockPage({
             <div style={{ textAlign: 'right', opacity: 0.75, fontSize: 12, lineHeight: 1.6 }}>
               <div>Components ${fmtMoney(value.packs)}</div>
               <div>Tracks &amp; tubes ${fmtMoney(value.bars)}</div>
+              <div>Fabric ${fmtMoney(value.fabrics)}</div>
             </div>
           </div>
         </div>
@@ -334,6 +347,144 @@ export default function StockPage({
                               </div>
                             </div>
                           ))
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ============ FABRICS TAB ============
+            Every piece is listed the same way, full roll or offcut alike,
+            because they behave identically: what decides whether a blind can
+            be cut from a piece is its width first and its length second, and a
+            part-width piece is a perfectly good source for a narrow blind. The
+            only thing separating a "roll" from an "offcut" is how much is left
+            on it, so the list is sorted widest-and-longest first and left at
+            that rather than split into two sections that would need a
+            made-up threshold. */}
+        {tab === 'fabrics' && (
+          <div style={{ padding: '0 16px' }}>
+            {filterComps(fabricComponents).length === 0 ? (
+              <div className="card">
+                <div className="empty-state">
+                  <div className="empty-icon">🧵</div>
+                  <div className="empty-title" style={{ fontSize: 18 }}>No fabrics</div>
+                  <div className="empty-desc">Components with order type "Fabric" appear here</div>
+                </div>
+              </div>
+            ) : filterComps(fabricComponents).map(c => (
+              <div key={c.id} style={{ marginBottom: 20 }}>
+                {getRows(c).map((row, gi) => {
+                  const pieces = fabricPieces(stockBars, c.id, row.colour_variant?.suffix || null)
+
+                  const totalLengthMm = pieces.reduce((s, p) => s + (Number(p.length_mm) || 0), 0)
+                  const totalM2 = pieces.reduce((s, p) =>
+                    s + ((Number(p.roll_width_mm) || 0) / 1000) * ((Number(p.length_mm) || 0) / 1000), 0)
+                  const widest = pieces.reduce((m, p) => Math.max(m, Number(p.roll_width_mm) || 0), 0)
+
+                  const colourLabel = row.colour_variant ? ` · ${row.colour_variant.name}` : ''
+                  const pn = c.supplier_pn
+                    ? `${c.supplier_pn}${row.colour_variant ? `-${row.colour_variant.suffix}` : ''}`
+                    : null
+
+                  return (
+                    <div key={gi} style={{ marginBottom: 12 }}>
+                      {/* Fabric + colour header */}
+                      <div style={{
+                        background: 'var(--accent-dark)', borderRadius: 'var(--radius) var(--radius) 0 0',
+                        padding: '12px 16px', color: '#fff',
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      }}>
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: 15 }}>
+                            {c.fabric_code ? `${c.fabric_code} · ` : ''}{c.name}{colourLabel}
+                          </div>
+                          {pn && <div style={{ fontSize: 11, opacity: 0.65, marginTop: 2 }}>{pn}</div>}
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: 13, fontWeight: 700 }}>{totalM2.toFixed(1)}m²</div>
+                          <div style={{ fontSize: 10, opacity: 0.65 }}>
+                            {fmt(totalLengthMm)}mm over {pieces.length} piece{pieces.length !== 1 ? 's' : ''}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{
+                        background: 'var(--warm-100)', border: '1px solid var(--warm-200)',
+                        borderTop: 'none', borderRadius: '0 0 var(--radius) var(--radius)',
+                      }}>
+                        <div style={{
+                          padding: '10px 16px', display: 'flex',
+                          alignItems: 'center', justifyContent: 'space-between',
+                          borderBottom: pieces.length > 0 ? '1px solid var(--warm-200)' : 'none',
+                        }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--warm-300)' }}>
+                            Rolls &amp; offcuts ({pieces.length})
+                            {widest > 0 && (
+                              <span style={{ fontWeight: 400, marginLeft: 6, textTransform: 'none', letterSpacing: 0 }}>
+                                · widest {fmt(widest)}mm
+                              </span>
+                            )}
+                          </div>
+                          <button className="btn btn-secondary btn-sm"
+                            onClick={() => onAddOffcut(c, row.colour_variant)}>
+                            <PlusIcon size={13} /> Add piece
+                          </button>
+                        </div>
+
+                        {pieces.length === 0 ? (
+                          <div style={{ padding: '12px 16px', fontSize: 13, color: 'var(--warm-300)' }}>
+                            Nothing in stock
+                          </div>
+                        ) : (
+                          pieces.map((p, pi) => {
+                            const w = Number(p.roll_width_mm) || 0
+                            const l = Number(p.length_mm) || 0
+                            // A piece narrower than the widest held is a
+                            // part-width offcut — worth flagging, since it can
+                            // only take blinds narrow enough to fit it.
+                            const isStrip = widest > 0 && w > 0 && w < widest
+                            return (
+                              <div key={p.id}
+                                onClick={() => onEditOffcut(p)}
+                                style={{
+                                  padding: '10px 16px', display: 'flex',
+                                  alignItems: 'center', justifyContent: 'space-between',
+                                  borderBottom: pi < pieces.length - 1 ? '1px solid var(--warm-200)' : 'none',
+                                  cursor: 'pointer', transition: 'background 0.15s',
+                                }}
+                                onMouseEnter={e => e.currentTarget.style.background = 'var(--warm-200)'}
+                                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                  <span style={{ fontSize: 16 }}>{isStrip ? '✂️' : '🧵'}</span>
+                                  <div>
+                                    <div style={{ fontWeight: 600, fontSize: 13 }}>{p.label}</div>
+                                    <div style={{ fontSize: 11, color: 'var(--warm-300)' }}>
+                                      {w > 0 ? `${fmt(w)}mm wide` : 'width not set'}
+                                      {' · '}
+                                      {((w / 1000) * (l / 1000)).toFixed(2)}m²
+                                    </div>
+                                  </div>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  {w <= 0 && (
+                                    <span className="pill" style={{ fontSize: 10, background: 'var(--warm-200)', color: 'var(--danger)' }}>
+                                      no width
+                                    </span>
+                                  )}
+                                  <span className={`pill ${isStrip ? 'pill-blue' : ''}`} style={{ fontSize: 11 }}>
+                                    {fmt(w)} × {fmt(l)}mm
+                                  </span>
+                                  <ChevronRightIcon size={14} color="var(--warm-300)" />
+                                </div>
+                              </div>
+                            )
+                          })
                         )}
                       </div>
                     </div>
