@@ -5,15 +5,19 @@ sent to customers, so no email is gated on customer data quality.
 
 | Email | Trigger | Recipient var |
 |---|---|---|
-| New order received | Supabase webhook — INSERT on `mfg_jobs`, portal submissions only | `NOTIFY_ORDERS` |
-| Order complete, ready for pickup | Supabase webhook — UPDATE on `mfg_jobs` where status becomes `completed` | `NOTIFY_PICKUP` |
+| New order received | pg_net trigger — INSERT on `mfg_jobs`, portal submissions only | `NOTIFY_ORDERS` |
+| Order complete, ready for pickup | pg_net trigger — UPDATE on `mfg_jobs` where status becomes `completed` | `NOTIFY_PICKUP` |
 | Jobs due soon (daily digest) | Vercel Cron, ~07:00 AEST | `NOTIFY_ORDERS` |
 | Stock running low (daily digest) | Vercel Cron, ~07:30 AEST | `NOTIFY_STOCK` |
 
-No schema changes were needed. The code lives in `api/`, which Vercel picks up
+No table or column changes were needed — nothing in `mfg_jobs` or `stock` moved.
+The only database object added is the trigger pair in
+`supabase_job_notifications.sql`, which drives the two event-driven emails.
+
+The code lives in `api/`, which Vercel picks up
 as serverless functions automatically on push — same deploy pipeline as the app.
 
-## Why webhooks rather than calling an endpoint from App.jsx
+## Why database triggers rather than calling an endpoint from App.jsx
 
 The database is the source of truth, so these fire whichever path caused the
 change — the ops screen, the `/submit` portal, or a hand-edited row. The webhook
@@ -62,19 +66,30 @@ node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
 
 Recipient vars accept a comma-separated list for more than one address.
 
-### 3. Supabase database webhooks
+### 3. Database triggers
 
-Dashboard → Database → Webhooks → Create a new hook. Two hooks, both HTTP POST,
-both with the header `x-webhook-secret` set to `NOTIFY_WEBHOOK_SECRET`:
+Supabase's **Database Webhooks UI is Pro-only**, so the two event-driven emails
+are wired with `pg_net` triggers instead — which is exactly what that UI builds
+underneath. Same architecture, available on the free plan.
 
-| Name | Table | Events | URL |
-|---|---|---|---|
-| `job_received` | `mfg_jobs` | Insert | `https://<your-app>/api/notify/job-received` |
-| `job_completed` | `mfg_jobs` | Update | `https://<your-app>/api/notify/job-completed` |
+Run `supabase_job_notifications.sql` (repo root) in the Supabase SQL editor,
+replacing `REPLACE_WITH_WEBHOOK_SECRET` with the `NOTIFY_WEBHOOK_SECRET` value
+first. The secret is not committed — this repo is not a place for it.
 
-Both endpoints filter in code — the insert hook ignores anything that isn't a
-portal submission, and the update hook ignores everything but a genuine
-transition into `completed`.
+It creates `public.notify_job_event()` plus two triggers on `mfg_jobs`:
+
+| Trigger | Fires | Calls |
+|---|---|---|
+| `mfg_jobs_notify_received` | After insert, `source = 'portal'` | `/api/notify/job-received` |
+| `mfg_jobs_notify_completed` | After update, status becomes `completed` | `/api/notify/job-completed` |
+
+The `WHEN` clauses filter in SQL so no pointless HTTP call is made, and the
+endpoints re-check the same conditions themselves. Requests go out through
+pg_net asynchronously after commit, so a slow or unreachable endpoint can never
+block saving a job.
+
+Run the migration only once the endpoints are live in production — before that
+the calls just 404, harmlessly but pointlessly.
 
 ### 4. Cron
 
