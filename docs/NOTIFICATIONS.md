@@ -7,8 +7,8 @@ sent to customers, so no email is gated on customer data quality.
 |---|---|---|
 | New order received | Supabase webhook — INSERT on `mfg_jobs`, portal submissions only | `NOTIFY_ORDERS` |
 | Order complete, ready for pickup | Supabase webhook — UPDATE on `mfg_jobs` where status becomes `completed` | `NOTIFY_PICKUP` |
-| Jobs due soon (daily digest) | Vercel Cron, 06:00–07:00 NZ | `NOTIFY_ORDERS` |
-| Stock running low (daily digest) | Vercel Cron, 06:30–07:30 NZ | `NOTIFY_STOCK` |
+| Jobs due soon (daily digest) | Vercel Cron, ~07:00 AEST | `NOTIFY_ORDERS` |
+| Stock running low (daily digest) | Vercel Cron, ~07:30 AEST | `NOTIFY_STOCK` |
 
 No schema changes were needed. The code lives in `api/`, which Vercel picks up
 as serverless functions automatically on push — same deploy pipeline as the app.
@@ -28,7 +28,7 @@ edit, because `handleJobUpdate` writes the whole job on any change.
 Resend's shared test domain only delivers to your own account address, so it
 can't reach several internal mailboxes. You need a verified domain.
 
-Verify a **subdomain** — `notifications.curtainideas.co.nz` — not the root
+Verify a **subdomain** — `notifications.curtainideas.com.au` — not the root
 domain. The DNS records are scoped to the subdomain and never touch the records
 governing real company mail, so a mistake here cannot disrupt actual email.
 
@@ -76,9 +76,10 @@ Already declared in `vercel.json`; it activates on deploy. Vercel's Hobby tier
 allows two daily cron jobs, which is exactly what this uses — a third would need
 a paid plan or merging the digests.
 
-Schedules are in UTC (`0 18` and `30 18`), landing early morning NZ. The exact
-local time shifts an hour with daylight saving, and Hobby-tier crons fire within
-roughly an hour of the stated time. Neither matters for a daily digest.
+Schedules are in UTC (`0 21` and `30 21`), landing ~7am on the Australian east
+coast. The exact local time shifts an hour with daylight saving, and Hobby-tier
+crons fire within roughly an hour of the stated time. Neither matters for a
+daily digest.
 
 ## Testing
 
@@ -105,7 +106,7 @@ mean an email went out — check the response body.
   email. Internally that is harmless; if it becomes noisy, add a
   `notification_log` table with a unique constraint on `(kind, ref_id)`.
 - **Timezone.** "Today" is computed in `NOTIFY_TIMEZONE` (default
-  `Pacific/Auckland`). Vercel runs UTC, and NZ is 12–13 hours ahead — without
+  `Australia/Sydney`). Vercel runs UTC, and AEST is 10–11 hours ahead — without
   this a job due today would read as due tomorrow.
 - **No deep links.** The app has no router (screens are state in `App.jsx`), so
   emails link to the app root via `APP_URL`. Per-job links would need routing.

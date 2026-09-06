@@ -32,9 +32,9 @@ export function formatDate(iso) {
   return `${Number(d)} ${months[Number(m) - 1]} ${y}`
 }
 
-// "Today" in the business's own timezone. Vercel runs UTC, and NZ is 12-13
+// "Today" in the business's own timezone. Vercel runs UTC, and AEST is 10-11
 // hours ahead — without this a job due today reads as due tomorrow.
-export function todayISO(tz = process.env.NOTIFY_TIMEZONE || 'Pacific/Auckland') {
+export function todayISO(tz = process.env.NOTIFY_TIMEZONE || 'Australia/Sydney') {
   try {
     return new Intl.DateTimeFormat('en-CA', {
       timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
