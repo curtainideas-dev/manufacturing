@@ -46,7 +46,13 @@ Settings → Environment Variables. See `.env.example` for the full list.
 **Do not put any of these in `.env` — that file is committed to this repo.**
 
 Required: `RESEND_API_KEY`, `NOTIFY_FROM`, `NOTIFY_ORDERS`, `NOTIFY_PICKUP`,
-`NOTIFY_STOCK`, `NOTIFY_WEBHOOK_SECRET`, `CRON_SECRET`.
+`NOTIFY_STOCK`, `NOTIFY_WEBHOOK_SECRET`, `CRON_SECRET`, `SUPABASE_URL` and
+`SUPABASE_SERVICE_ROLE_KEY`.
+
+The two Supabase values are easy to miss. The committed `.env` at the repo root
+is read by Vite at build time, for the browser bundle only — serverless
+functions read `process.env` at runtime, which contains just what is set on the
+Vercel project. Without them, every endpoint that queries the database fails.
 
 Generate the two secrets with any random string, e.g.:
 
