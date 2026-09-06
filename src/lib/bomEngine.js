@@ -21,7 +21,19 @@
  *                      used as a multiplier on top of the looked-up qty
  *                      (default 1) — e.g. a centre-open track needs 2× the
  *                      per-leaf carrier count from the schedule.
+ *   fabric_strip     — linear metres off a roll, scaled by the share of the
+ *                      roll's WIDTH the cut occupies. Only ever produced by
+ *                      fabricLineFor (see the bottom of this file) — no
+ *                      stored recipe line uses it.
+ *
+ *                      This is the IDEAL strip: one blind's own share of the
+ *                      roll, with nothing nested beside it. It's what the
+ *                      price grid wants, since a grid prices a size with no
+ *                      job around it. A real job's BOM overwrites it — see
+ *                      applyFabricNesting.
  */
+
+import { widthShare, nestPieces, orderableWidths } from './fabricEngine'
 
 export function calcQty(productComponent, widthMm, dropMm) {
   const deduction = Number(productComponent.formula_deduction) || 0
@@ -76,6 +88,22 @@ export function calcQty(productComponent, widthMm, dropMm) {
       // a centre-open track needing twice the per-leaf schedule figure.
       const multiplier = Number(productComponent.formula_buffer) || 1
       qty = qtyForWidth(productComponent.width_qty, widthMm) * multiplier
+      break
+    }
+
+    case 'fabric_strip': {
+      // Length off the roll, exactly as drop_based reads it — a negative
+      // deduction adds the drop allowance and wastage.
+      const lengthMm = dropMm - deduction
+      // ...then only the share of the roll's width this cut actually occupies.
+      // The rest of the width isn't waste: it's where the next blind goes, or
+      // an offcut back into stock.
+      const cutWidth = widthMm - (Number(productComponent.fabric_width_deduction_mm) || 0)
+      qty = (lengthMm / 1000) * widthShare(
+        cutWidth,
+        productComponent.fabric_roll_width_mm,
+        productComponent.fabric_width_allowance_mm,
+      )
       break
     }
 
@@ -316,71 +344,207 @@ export function calcCostAt(productComponents, widthMm, dropMm, optionDefs = [], 
  * category charges. Null whenever there's nothing to price yet — a track
  * window, no fabric picked, or a product with no category assigned.
  */
+/**
+ * The roll width the category rates were quoted against, used when a product
+ * predates fabric_roll_width_mm. Matches the default the migration sets, so a
+ * product nobody has opened since costs the same either way.
+ */
+export const DEFAULT_ROLL_WIDTH_MM = 3000
+
+/**
+ * The roll width to cut and nest against.
+ *
+ * The product carries a roll width because the price grid has to work before
+ * any fabric is picked — it prices a size against a hypothetical roll. But
+ * once a real fabric IS picked, the cut sheet and the order quantity are about
+ * a physical roll on a physical shelf, and the fabric knows its own width.
+ * So the fabric's own answer wins wherever it has one; the product's figure
+ * stays the fallback, and remains what the grid quotes against.
+ *
+ * A fabric orderable in several widths nests into its widest: nesting packs a
+ * whole group of cuts rather than one, and the widest roll is both what gets
+ * ordered to fit them and the reference fabricStockValue already values
+ * against.
+ */
+export function fabricRollWidthMm(component, product) {
+  const own = orderableWidths(component)
+  if (own.length > 0) return own[own.length - 1]
+  return Number(product?.fabric_roll_width_mm) || DEFAULT_ROLL_WIDTH_MM
+}
+
+/**
+ * The fabric side of a window's BOM, from a fabric already resolved.
+ *
+ * Shared by the saved window and the Customise preview so the two can't drift:
+ * when this was written out longhand in both places, the preview quietly
+ * dropped the cut allowance and the roll width and quoted a different cost
+ * than the window it was about to save.
+ */
+export function buildFabricSelection(component, colourVariant, product, category) {
+  if (!component || !category) return null
+  return {
+    component, colour_variant: colourVariant || null,
+    categoryPrice: Number(category.max_price) || 0,
+    dropAllowanceMm:    Number(product?.fabric_drop_allowance_mm) || 0,
+    dropWastageMm:      Number(product?.fabric_drop_wastage_mm) || 0,
+    widthDeductionMm:   Number(product?.fabric_width_deduction_mm) || 0,
+    widthAllowanceMm:   Number(product?.fabric_width_cut_allowance_mm) || 0,
+    rollWidthMm:        fabricRollWidthMm(component, product),
+  }
+}
+
 export function fabricSelectionFor(win, product, components = [], categories = []) {
   if (product?.product_type !== 'blind') return null
   const picked = win?.config?.fabric
   if (!picked?.component_id) return null
-  const component = components.find(c => c.id === picked.component_id)
-  if (!component) return null
-  const category = categories.find(c => c.code === product.fabric_category)
-  if (!category) return null
-  return {
-    component, colour_variant: picked.colour_variant || null,
-    categoryPrice: Number(category.max_price) || 0,
-    dropAllowanceMm:    Number(product.fabric_drop_allowance_mm) || 0,
-    dropWastageMm:      Number(product.fabric_drop_wastage_mm) || 0,
-    widthDeductionMm:   Number(product.fabric_width_deduction_mm) || 0,
-  }
+  return buildFabricSelection(
+    components.find(c => c.id === picked.component_id),
+    picked.colour_variant,
+    product,
+    categories.find(c => c.code === product.fabric_category))
 }
 
 /**
  * The synthetic fabric line itself, or null when there's nothing to add.
  *
- * Costed by LENGTH, not area. A blind can't be railroaded (see fabricEngine),
- * so every cut trims a strip the full width of the roll however narrow the
- * blind is — a 600mm blind and a 2000mm blind of the same drop burn the same
- * fabric. Pricing on the blind's own width × drop therefore undercharged
- * narrow blinds for material nobody could reuse. Since only one roll width is
- * stocked, that width is a constant and folds into the rate: fabric is quoted
- * per linear metre pulled off the roll.
+ * Costed as a STRIP of the roll: the linear metres the cut pulls off, times
+ * the share of the roll's width it occupies.
  *
- * Two separate per-product additions to the length pulled off the roll, both
- * set next to the fabric category. They're kept apart rather than summed into
- * one figure so each can be reasoned about — and argued with — on its own:
- *   dropAllowanceMm  fabric the finished blind actually needs beyond its drop
- *                    — hem, pattern repeat, wrap onto the tube.
- *   dropWastageMm    fabric lost making the cut at all — trim, squaring up,
- *                    the bit that never reaches the blind.
- * Both ride on the same drop_based formula every other line uses: a negative
- * deduction *adds* to the drop, so calcQty needs no fabric-specific case.
+ * A blind still can't be railroaded (see fabricEngine) — the drop always runs
+ * lengthwise. But the width beside a blind is not lost: the next blind is cut
+ * alongside it out of the same length, and whatever survives the last one goes
+ * back into stock as an offcut. Charging every blind for the full roll width,
+ * as this line did before, billed each of four blinds nested across a 3m roll
+ * for the whole 3m — four times over.
  *
- * `widthDeductionMm` is deliberately NOT used here — it's a cut-width spec for
- * the factory, and width no longer drives cost.
+ * Four per-product figures, all set next to the fabric category and all kept
+ * apart rather than summed, so each can be reasoned about — and argued with —
+ * on its own:
+ *   dropAllowanceMm   fabric the finished blind needs beyond its drop — hem,
+ *                     pattern repeat, wrap onto the tube.
+ *   dropWastageMm     fabric lost making the cut at all — trim, squaring up,
+ *                     the bit that never reaches the blind.
+ *   widthDeductionMm  cut-width spec: the fabric is cut this much narrower
+ *                     than the window. Now a cost driver as well as a factory
+ *                     instruction, since width decides the share.
+ *   widthAllowanceMm  the blade margin that makes side-by-side cutting
+ *                     possible — one per piece, matching how fabricEngine
+ *                     nests, so the cost and the cut chart agree exactly.
+ *
+ * `fabric_cut` rides along untouched: the finished cut dimensions, the roll
+ * they're nested into, and the label to write on the piece. Costing ignores
+ * it; the cut sheet's chart and the stock picker read it rather than
+ * re-deriving deductions they'd have to keep in step by hand.
  */
-export function fabricLineFor(fabricSelection) {
+export function fabricLineFor(fabricSelection, windowLabel = null) {
   if (!fabricSelection?.component) return null
-  const { component, colour_variant, categoryPrice, dropAllowanceMm, dropWastageMm } = fabricSelection
+  const {
+    component, colour_variant, categoryPrice,
+    dropAllowanceMm, dropWastageMm, widthDeductionMm, widthAllowanceMm, rollWidthMm,
+  } = fabricSelection
   const addedMm = (Number(dropAllowanceMm) || 0) + (Number(dropWastageMm) || 0)
   return {
     id:                 'fabric-slot',
     component_id:       component.id,
     component:          { ...component, unit: 'metres', unit_cost: categoryPrice, discount: 0 },
     colour_variant:     colour_variant || null,
-    cost_type:          'drop_based',
+    cost_type:          'fabric_strip',
     formula_deduction:  -addedMm,
     formula_buffer:     0,
     sort_order:         -1,
+    fabric_width_deduction_mm: Number(widthDeductionMm) || 0,
+    fabric_width_allowance_mm: Number(widthAllowanceMm) || 0,
+    fabric_roll_width_mm:      Number(rollWidthMm) || DEFAULT_ROLL_WIDTH_MM,
+    fabric_drop_added_mm:      addedMm,
+    window_label:              windowLabel,
   }
+}
+
+/**
+ * The cut this fabric line describes, in finished millimetres — what the
+ * cutting table measures, and what the nesting packs.
+ */
+export function fabricCutFor(pc, widthMm, dropMm) {
+  if (pc?.cost_type !== 'fabric_strip') return null
+  return {
+    label:       pc.window_label || null,
+    cutWidthMm:  Math.max(0, Math.round(Number(widthMm) - (Number(pc.fabric_width_deduction_mm) || 0))),
+    cutDropMm:   Math.max(0, Math.round(Number(dropMm) + (Number(pc.fabric_drop_added_mm) || 0))),
+    rollWidthMm: Number(pc.fabric_roll_width_mm) || DEFAULT_ROLL_WIDTH_MM,
+    widthAllowanceMm: Number(pc.fabric_width_allowance_mm) || 0,
+  }
+}
+
+/* ==========================================================================
+ * Component substitution
+ *
+ * A recipe says which base rail a product is built from. A job doesn't always
+ * agree: the shelf holds a different one, the customer asked for a heavier
+ * profile, the specced part is on back-order. Rather than fork the product,
+ * a job — or a single window inside it — can swap one component for another.
+ *
+ * A swap is stored as { [recipeComponentId]: { component_id, colour_variant } }
+ * — keyed by the component the RECIPE asks for, never by what it was last
+ * swapped to. So it survives re-resolution, can't chain into itself, and
+ * reverting is just deleting the key.
+ *
+ * Job swaps apply to every window; a window's own swap of the same part wins.
+ * The fabric line is deliberately out of scope — a blind's fabric is already
+ * a per-window choice, made in Customise, and swapping it here would give the
+ * same decision two homes.
+ * ========================================================================== */
+
+/**
+ * The swaps in force for one window: the job's, with the window's own on top,
+ * resolved against the component library into the rows the BOM will cost.
+ * A swap pointing at a component that no longer exists is dropped.
+ */
+export function substitutionsFor(job, win, allComponents = []) {
+  const merged = { ...(job?.substitutions || {}), ...(win?.substitutions || {}) }
+  const out = {}
+  Object.entries(merged).forEach(([fromId, sub]) => {
+    if (!sub || !sub.component_id) return
+    const component = allComponents.find(c => c.id === sub.component_id)
+    if (!component) return
+    out[fromId] = { component, colour_variant: sub.colour_variant || null }
+  })
+  return out
+}
+
+/**
+ * Swap components into resolved recipe lines. A line keeps its formula, bands
+ * and sort order — only the part it points at changes — and carries
+ * `substituted_from` so every screen downstream can say what it replaced.
+ */
+export function applySubstitutions(lines, subMap = null) {
+  if (!subMap || Object.keys(subMap).length === 0) return lines
+  return lines.map(pc => {
+    if (pc.cost_type === 'fabric_strip') return pc
+    const sub = subMap[pc.component_id]
+    if (!sub || sub.component.id === pc.component_id) return pc
+    return {
+      ...pc,
+      substituted_from: {
+        component_id:   pc.component_id,
+        component:      pc.component,
+        colour_variant: pc.colour_variant || null,
+      },
+      component_id:   sub.component.id,
+      component:      sub.component,
+      colour_variant: sub.colour_variant || null,
+    }
+  })
 }
 
 /**
  * Resolve then cost, in one call. Every BOM in the app goes through here so
  * a call site can't accidentally skip resolution and cost the whole recipe.
  */
-export function buildWindowBOM(productComponents, win, optionDefs = [], priceMap = null, qtyMap = null, fabricSelection = null) {
+export function buildWindowBOM(productComponents, win, optionDefs = [], priceMap = null, qtyMap = null, fabricSelection = null, subMap = null) {
   const widthMm = Number(win.width_mm), dropMm = Number(win.drop_mm)
-  const lines = resolveRecipe(productComponents, win.config, optionDefs, widthMm, dropMm)
-  const fabricLine = fabricLineFor(fabricSelection)
+  const resolved = resolveRecipe(productComponents, win.config, optionDefs, widthMm, dropMm)
+  const lines = applySubstitutions(resolved, subMap)
+  const fabricLine = fabricLineFor(fabricSelection, win.label || null)
   return calcWindowBOM(fabricLine ? [fabricLine, ...lines] : lines, widthMm, dropMm, priceMap, qtyMap)
 }
 
@@ -435,6 +599,10 @@ export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = nul
     const snapKeyQty     = priceKey(pc.component_id, pc.colour_variant)
     const frozenQty      = qtyMap && qtyMap[snapKeyQty] !== undefined ? Number(qtyMap[snapKeyQty]) : null
     const calculated_qty = frozenQty !== null ? frozenQty : calcQty(pc, widthMm, dropMm)
+    // Whether this quantity came from a confirmed job's snapshot. The fabric
+    // nesting pass has to know: a frozen line is settled and must not be
+    // re-quantified, however the roll would be laid out today.
+    const qty_frozen     = frozenQty !== null
     const base_cost      = Number(pc.component?.unit_cost) || 0
     const discount       = Number(pc.component?.discount) || 0
     const live_cost      = base_cost * (1 - discount / 100)
@@ -449,14 +617,21 @@ export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = nul
     // live from the window's own width, so it stays readable even when the
     // total qty itself is frozen from a confirmed job's snapshot.
     const width_formula  = fixedPerWidthLabel(pc, widthMm)
+    // Null on every line but the synthesised fabric one.
+    const fabric_cut     = fabricCutFor(pc, widthMm, dropMm)
     return {
       product_component_id: pc.id,
       component_id:         pc.component_id,
       component:            pc.component,
       colour_variant:       pc.colour_variant || null,
+      // The recipe's own part, when this line has been swapped away from it.
+      // Null on every unswapped line — see applySubstitutions.
+      substituted_from:     pc.substituted_from || null,
       display_pn,
       calculated_qty,
+      qty_frozen,
       width_formula,
+      fabric_cut,
       override_qty:         null,
       unit_cost_snapshot:   unit_cost,
       base_cost,
@@ -464,6 +639,114 @@ export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = nul
       get qty()       { return this.override_qty ?? this.calculated_qty },
       get line_cost() { return this.qty * this.unit_cost_snapshot },
     }
+  })
+}
+
+/* ==========================================================================
+ * Fabric nesting — from "what this blind is worth" to "what to order"
+ *
+ * Two different questions, deliberately answered differently:
+ *
+ *   THE PRICE GRID asks what one blind of a given size is worth, with no job
+ *   around it. It can't know what it will be nested beside, so it assumes the
+ *   ideal: the blind's own strip of the roll and nothing more. That's what
+ *   calcQty's fabric_strip case computes, and it stays exactly that.
+ *
+ *   THE BOM AND JOB COSTING ask what has to come off the roll to build THIS
+ *   job. That is the nesting, and it is always more than the sum of the ideal
+ *   strips — the strip beside the last blind in a band, and the run under
+ *   every blind shorter than the band holding it, are pulled off the roll
+ *   whether or not they end up in a blind.
+ *
+ * The BOM has to answer the second question, or the quantity ordered is short
+ * every time and the offcut that lands on the shelf was never paid for. So the
+ * fabric lines are re-quantified here, after the per-window BOMs are built,
+ * against the job's actual layout.
+ * ========================================================================== */
+
+/**
+ * Re-quantify every fabric line in a job against the roll layout it will
+ * actually be cut from.
+ *
+ * A band's full length is shared out across the blinds in it, in proportion to
+ * the width each occupies. So the totals add up to the metres genuinely pulled
+ * off the roll — the same figure the cut sheet's chart draws, because both go
+ * through the same `nestPieces` — while each window still carries a share that
+ * reflects how much of the band it took. A blind alone in a band bears that
+ * band's whole length, which is the honest signal: an odd size that shares
+ * with nothing is expensive, and it should look expensive.
+ *
+ * Lines frozen by a confirmed job's snapshot are left alone.
+ *
+ * Idempotent: it reads each line's `fabric_cut` (the cut dimensions, which
+ * never change) rather than its current quantity, so running it twice gives
+ * the same answer as running it once.
+ */
+export function applyFabricNesting(windowsWithBOM = []) {
+  const pieces = []
+  windowsWithBOM.forEach(win => {
+    (win.bom || []).forEach(line => {
+      if (!line.fabric_cut || line.qty_frozen) return
+      pieces.push({
+        winId:       win.id,
+        groupKey:    `${line.component_id}__${line.colour_variant?.suffix || ''}__${line.fabric_cut.rollWidthMm}__${line.fabric_cut.widthAllowanceMm}`,
+        ...line.fabric_cut,
+      })
+    })
+  })
+  if (pieces.length === 0) return windowsWithBOM
+
+  // Only blinds on the same fabric, colour, roll width and cut allowance can
+  // share a length of roll — the same grouping the cut sheet uses.
+  const groups = new Map()
+  pieces.forEach(p => {
+    if (!groups.has(p.groupKey)) groups.set(p.groupKey, [])
+    groups.get(p.groupKey).push(p)
+  })
+
+  const metresByWindow = {}
+  groups.forEach(list => {
+    nestPieces(list, list[0].rollWidthMm, list[0].widthAllowanceMm).forEach(band => {
+      // Guard the degenerate band (a cut wider than the roll) so an
+      // unbuildable size still costs something rather than dividing by zero.
+      const across = band.usedWidthMm || 1
+      band.pieces.forEach(p => {
+        metresByWindow[p.winId] =
+          (metresByWindow[p.winId] || 0) + (band.lengthMm / 1000) * (p.occupiedMm / across)
+      })
+    })
+  })
+
+  return windowsWithBOM.map(win => {
+    const metres = metresByWindow[win.id]
+    if (metres === undefined) return win
+    return {
+      ...win,
+      bom: (win.bom || []).map(line =>
+        line.fabric_cut && !line.qty_frozen
+          // Deliberately unrounded. Each window carries its exact share of its
+          // band, so the shares add back up to the metres actually pulled off
+          // the roll — which is the whole point of this pass, and something
+          // rounding each window first quietly broke (1mm per fabric, every
+          // job). Display rounds on its own; see fmtQty.
+          ? reQuantify(line, metres)
+          : line),
+    }
+  })
+}
+
+/**
+ * A copy of a BOM line at a new calculated quantity.
+ *
+ * Spreading a line would flatten its `qty` and `line_cost` getters into stale
+ * values, so the property descriptors are carried across instead and only
+ * `calculated_qty` is replaced — leaving an override the picker typed, and
+ * everything derived from it, working exactly as before.
+ */
+function reQuantify(line, calculated_qty) {
+  return Object.defineProperties({}, {
+    ...Object.getOwnPropertyDescriptors(line),
+    calculated_qty: { value: calculated_qty, enumerable: true, writable: true, configurable: true },
   })
 }
 
@@ -483,15 +766,28 @@ export function calcJobSummary(windowsWithBOM) {
           total_qty:      0,
           unit_cost:      line.unit_cost_snapshot,
           cuts:           [], // { mm, label } per cut, for bar components — label is the window it came from
+          fabricCuts:     [], // { cutWidthMm, cutDropMm, label, ... } per cut, for fabric — feeds the nesting
           widthFormulas:  [], // "1×12" style labels, one per contributing window
+          substituted_from: null, // the recipe part this row replaced, if any
+          // Windows whose lines are NOT a swap. Non-empty on a row that some
+          // windows reach by substitution and others by their own recipe —
+          // which is exactly when a job-wide revert would be a lie.
+          nativeWindows:  [],
         }
       }
       map[key].total_qty += line.qty
+      if (line.substituted_from) map[key].substituted_from ||= line.substituted_from
+      else if (!line.fabric_cut) map[key].nativeWindows.push(windowLabel)
       // Track per-window cut lengths for bar components so bin packing can work correctly
       if (line.component?.order_type === 'bar' && line.qty > 0) {
         const unit  = line.component?.unit || 'each'
         const cutMm = unit === 'metres' ? Math.round(line.qty * 1000) : Math.round(line.qty)
         map[key].cuts.push({ mm: cutMm, label: windowLabel })
+      }
+      // Fabric is nested two-dimensionally rather than packed end to end, so
+      // it carries both cut dimensions rather than a single length.
+      if (line.fabric_cut) {
+        map[key].fabricCuts.push({ ...line.fabric_cut, label: line.fabric_cut.label || windowLabel })
       }
       if (line.width_formula) map[key].widthFormulas.push(line.width_formula)
     })
@@ -545,6 +841,14 @@ export function formulaDescription(pc) {
       if (bands.length === 0) return `${prefix}qty per width — not set`
       const first = bands[0], last = bands[bands.length - 1]
       return `${prefix}${pc.width_qty[first]} up to ${first}mm … ${pc.width_qty[last]} up to ${last}mm`
+    }
+    case 'fabric_strip': {
+      const wd    = Number(pc.fabric_width_deduction_mm) || 0
+      const wa    = Number(pc.fabric_width_allowance_mm) || 0
+      const roll  = Number(pc.fabric_roll_width_mm) || DEFAULT_ROLL_WIDTH_MM
+      const added = Number(pc.fabric_drop_added_mm) || 0
+      const w     = `W${wd ? ` − ${wd}` : ''}${wa ? ` + ${wa}` : ''}`
+      return `(D${added ? ` + ${added}` : ''})mm × (${w}) / ${roll.toLocaleString()}mm roll`
     }
     default: return ''
   }

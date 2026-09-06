@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local job data snapshots — real customer data, keep out of the repo
+backups/
+
+.vercel

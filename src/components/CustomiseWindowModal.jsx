@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { XIcon } from './Icons'
-import { resolveAnswers, isOptionVisible, missingAnswers, resolveRecipe, calcWindowBOM, fabricLineFor, fmt } from '../lib/bomEngine'
+import { resolveAnswers, isOptionVisible, missingAnswers, resolveRecipe, applySubstitutions, calcWindowBOM, fabricLineFor, buildFabricSelection, fmt } from '../lib/bomEngine'
 import { fabricsInCategory } from '../lib/fabricEngine'
 
 /**
@@ -16,7 +16,7 @@ import { fabricsInCategory } from '../lib/fabricEngine'
  */
 export default function CustomiseWindowModal({
   open, product, productComponents = [], optionDefs = [],
-  allComponents = [], categories = [],
+  allComponents = [], categories = [], subMap = null,
   widthMm, dropMm, config, onClose, onSave, saveLabel = 'Add window',
 }) {
   const [answers, setAnswers]           = useState({})
@@ -37,14 +37,8 @@ export default function CustomiseWindowModal({
   const selectedFabric = allComponents.find(c => c.id === fabricAnswer.component_id)
   const fabricColours  = selectedFabric?.colour_variants || []
 
-  const fabricSelection = (isBlind && selectedFabric && category)
-    ? {
-        component: selectedFabric, colour_variant: fabricAnswer.colour_variant,
-        categoryPrice: Number(category.max_price) || 0,
-        dropAllowanceMm: Number(product.fabric_drop_allowance_mm) || 0,
-        dropWastageMm: Number(product.fabric_drop_wastage_mm) || 0,
-        widthDeductionMm: Number(product.fabric_width_deduction_mm) || 0,
-      }
+  const fabricSelection = isBlind
+    ? buildFabricSelection(selectedFabric, fabricAnswer.colour_variant, product, category)
     : null
 
   const draft = useMemo(() => ({ options: answers, fabric: fabricAnswer }), [answers, fabricAnswer])
@@ -58,11 +52,14 @@ export default function CustomiseWindowModal({
   const fabricUnanswered = isBlind && !!category && !fabricAnswer.component_id
   const allMissing = fabricUnanswered ? [...missing, 'Fabric'] : missing
 
+  // Any component swap already in force is applied here too, so the cost this
+  // modal quotes is the cost the window page will show once it's saved.
   const bom = useMemo(() => {
-    const lines = resolveRecipe(productComponents, draft, optionDefs, Number(widthMm), Number(dropMm))
+    const resolved = resolveRecipe(productComponents, draft, optionDefs, Number(widthMm), Number(dropMm))
+    const lines = applySubstitutions(resolved, subMap)
     const fabricLine = fabricLineFor(fabricSelection)
     return calcWindowBOM(fabricLine ? [fabricLine, ...lines] : lines, Number(widthMm), Number(dropMm))
-  }, [productComponents, draft, optionDefs, widthMm, dropMm, fabricSelection])
+  }, [productComponents, draft, optionDefs, widthMm, dropMm, fabricSelection, subMap])
 
   const cost = bom.reduce((s, l) => s + l.line_cost, 0)
 

@@ -41,8 +41,9 @@ export default function FabricCategoriesAdmin({ categories, onBack, onSave, savi
             is classified into the first category (lowest ceiling first) whose ceiling covers its
             real cost — a fabric pricier than every ceiling lands in Category F. A blind assigned
             to a category is quoted at that category's rate on the BOM and cost sheet, whichever
-            fabric within it is actually picked. Blinds are costed by length, not area: a cut
-            takes the roll's full width however narrow the blind is.
+            fabric within it is actually picked. A blind is charged for the share of the roll's
+            width its cut occupies, not the whole width — blinds are nested side by side across
+            the roll. Set the roll width these rates are quoted against on each blind product.
           </div>
 
           <div className="card">

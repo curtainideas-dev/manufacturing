@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { ChevronLeftIcon, PlusIcon, TrashIcon, XIcon } from '../components/Icons'
 import ProductComponentModal from '../components/ProductComponentModal'
-import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, fabricLineFor, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel } from '../lib/bomEngine'
+import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, fabricLineFor, DEFAULT_ROLL_WIDTH_MM, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel } from '../lib/bomEngine'
 
 const COST_TYPE_LABELS = {
   fixed: 'Fixed qty', width_based: 'Width-based',
@@ -67,8 +67,17 @@ export default function ProductDetail({
         dropAllowanceMm: Number(product.fabric_drop_allowance_mm) || 0,
         dropWastageMm: Number(product.fabric_drop_wastage_mm) || 0,
         widthDeductionMm: Number(product.fabric_width_deduction_mm) || 0,
+        widthAllowanceMm: Number(product.fabric_width_cut_allowance_mm) || 0,
+        rollWidthMm: Number(product.fabric_roll_width_mm) || DEFAULT_ROLL_WIDTH_MM,
       })
-    : null, [isBlind, fabricCategory])
+    : null, [
+      isBlind, fabricCategory,
+      // Every figure below is a cost driver now that fabric is costed as a
+      // strip of the roll, so the grid has to rebuild when any of them moves.
+      product.fabric_drop_allowance_mm, product.fabric_drop_wastage_mm,
+      product.fabric_width_deduction_mm, product.fabric_width_cut_allowance_mm,
+      product.fabric_roll_width_mm,
+    ])
 
   const pricedComponents = categoryFabricLine ? [categoryFabricLine, ...productComponents] : productComponents
 
@@ -223,11 +232,25 @@ export default function ProductDetail({
                 </div>
               )}
               <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
-                Priced by length off the roll, not area — a cut takes the roll's full width
-                however narrow the blind is. Folded into the grid below on top of the hardware
-                recipe; the actual fabric is picked per window.
+                Priced per metre off the roll, charged on the share of the roll's <em>width</em>
+                {' '}the cut occupies. A blind can't be railroaded, but the width beside it isn't
+                wasted — the next blind is cut alongside it, so a 750mm blind costs a quarter of
+                what a 3000mm one does. Folded into the grid below on top of the hardware recipe;
+                the actual fabric is picked per window.
               </div>
               <div className="divider" style={{ margin: '12px 0' }} />
+              <div className="field">
+                <label className="field-label">Roll width (mm)</label>
+                <input className="field-input" type="number" step="1" min="1"
+                  value={product.fabric_roll_width_mm ?? DEFAULT_ROLL_WIDTH_MM}
+                  onChange={e => onUpdateProduct({ fabric_roll_width_mm: Number(e.target.value) || DEFAULT_ROLL_WIDTH_MM })}
+                  style={{ maxWidth: 140 }} />
+                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
+                  The roll width the category rate above is quoted against — the denominator of
+                  the share, and the width the cut chart nests into. Category rates on file were
+                  set against {DEFAULT_ROLL_WIDTH_MM.toLocaleString()}mm.
+                </div>
+              </div>
               <div className="field">
                 <label className="field-label">Width deduction (mm)</label>
                 <input className="field-input" type="number" step="1" min="0"
@@ -236,8 +259,20 @@ export default function ProductDetail({
                   style={{ maxWidth: 140 }} />
                 <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
                   Cut-width spec — the fabric is cut this much narrower than the window's width.
-                  Doesn't change the cost, since fabric is charged by length off a fixed-width
-                  roll.
+                  Now a cost driver as well as a factory instruction, since the cut width decides
+                  how much of the roll this blind is charged for.
+                </div>
+              </div>
+              <div className="field">
+                <label className="field-label">Width cut allowance (mm)</label>
+                <input className="field-input" type="number" step="1" min="0"
+                  value={product.fabric_width_cut_allowance_mm ?? 0}
+                  onChange={e => onUpdateProduct({ fabric_width_cut_allowance_mm: Number(e.target.value) || 0 })}
+                  style={{ maxWidth: 140 }} />
+                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
+                  The margin that makes side-by-side cutting possible — the blade needs somewhere
+                  to go and both edges need squaring. Counted once per blind, including the one
+                  at the roll's edge. Leave it at 0 only if blinds really are cut edge to edge.
                 </div>
               </div>
               <div className="field">
@@ -263,18 +298,47 @@ export default function ProductDetail({
                   tuned on its own.
                 </div>
               </div>
-              {(Number(product.fabric_drop_allowance_mm) || Number(product.fabric_drop_wastage_mm)) ? (
-                <div style={{
-                  marginTop: 10, padding: '8px 10px', background: 'var(--warm-100)',
-                  borderRadius: 'var(--radius-sm)', fontSize: 11.5, color: 'var(--warm-300)',
-                }}>
-                  Every window is costed on its drop{' '}
-                  <strong style={{ color: 'var(--ink)' }}>
-                    + {(Number(product.fabric_drop_allowance_mm) || 0) + (Number(product.fabric_drop_wastage_mm) || 0)}mm
-                  </strong>
-                  {' '}of fabric. Neither figure changes the window's recorded drop.
-                </div>
-              ) : null}
+              {/* A worked example beats four abstract figures — this is the
+                  arithmetic every window on this product goes through, on a
+                  size someone can picture. */}
+              {(() => {
+                const roll    = Number(product.fabric_roll_width_mm) || DEFAULT_ROLL_WIDTH_MM
+                const wDed    = Number(product.fabric_width_deduction_mm) || 0
+                const wAllow  = Number(product.fabric_width_cut_allowance_mm) || 0
+                const dAdd    = (Number(product.fabric_drop_allowance_mm) || 0) + (Number(product.fabric_drop_wastage_mm) || 0)
+                const exW = 1500, exD = 2000
+                const cutW = exW - wDed, cutD = exD + dAdd
+                const share = roll > 0 ? Math.min(1, (cutW + wAllow) / roll) : 0
+                const metres = (cutD / 1000) * share
+                const perBand = roll > 0 && (cutW + wAllow) > 0 ? Math.floor(roll / (cutW + wAllow)) : 0
+                return (
+                  <div style={{
+                    marginTop: 10, padding: '10px 12px', background: 'var(--warm-100)',
+                    borderRadius: 'var(--radius-sm)', fontSize: 11.5, color: 'var(--warm-300)', lineHeight: 1.6,
+                  }}>
+                    <div style={{ fontWeight: 700, color: 'var(--ink)', marginBottom: 4 }}>
+                      A {exW.toLocaleString()} × {exD.toLocaleString()} window on this product
+                    </div>
+                    cuts at <strong style={{ color: 'var(--ink)' }}>{cutW.toLocaleString()} × {cutD.toLocaleString()}mm</strong>,
+                    occupies <strong style={{ color: 'var(--ink)' }}>{(cutW + wAllow).toLocaleString()}mm</strong> of
+                    the {roll.toLocaleString()}mm roll ({(share * 100).toFixed(0)}%), and is costed at{' '}
+                    <strong style={{ color: 'var(--ink)' }}>{metres.toFixed(3)}m</strong>
+                    {fabricCategory && ` = $${(metres * (Number(fabricCategory.max_price) || 0)).toFixed(2)}`}.
+                    {perBand > 1 && <> {perBand} of them fit side by side on one length off the roll.</>}
+                    {perBand === 0 && <> <span style={{ color: 'var(--danger)' }}>It won't fit this roll width.</span></>}
+                    <div style={{ marginTop: 6 }}>
+                      That's the price grid's figure — one blind's own strip, nothing nested
+                      beside it. A real job's BOM is costed on what actually comes off the roll
+                      once its blinds are nested together, which is more: the strip past the last
+                      blind in a band, and the run under any blind shorter than the band, get
+                      pulled off either way. The BOM matches the cut sheet; this doesn't.
+                    </div>
+                    <div style={{ marginTop: 4 }}>
+                      None of these figures change the window's recorded width or drop.
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
           )}
 

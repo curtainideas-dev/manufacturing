@@ -1,22 +1,39 @@
 import { useState, useMemo } from 'react'
 import { ChevronLeftIcon, TrashIcon } from '../components/Icons'
-import { buildWindowBOM, missingAnswers, resolveAnswers, fabricSelectionFor, fmt, fmtQty } from '../lib/bomEngine'
+import { buildWindowBOM, missingAnswers, resolveAnswers, fabricSelectionFor, substitutionsFor, fmt, fmtQty } from '../lib/bomEngine'
 import CustomiseWindowModal from '../components/CustomiseWindowModal'
+import SwapComponentModal from '../components/SwapComponentModal'
 
 export default function WindowDetail({
-  window: win, windowIndex, totalWindows, product, productComponents, optionDefs = [],
-  allComponents = [], fabricCategories = [],
+  window: win, windowIndex, totalWindows, job, product, productComponents, optionDefs = [],
+  allComponents = [], fabricCategories = [], stockMap = {}, nestedFabricQty,
   onBack, onUpdate, onDelete, readOnly,
 }) {
   const [overrides, setOverrides] = useState(win.bom_overrides || {})
+  const [swapLine, setSwapLine]   = useState(null)
 
   // Recalculate BOM whenever dimensions or the window's answers change —
   // both feed recipe resolution, not just the quantity formulas.
-  const bom = useMemo(() =>
-    buildWindowBOM(productComponents, win, optionDefs, null, null,
-      fabricSelectionFor(win, product, allComponents, fabricCategories)),
-    [productComponents, optionDefs, win, product, allComponents, fabricCategories]
-  )
+  //
+  // The fabric quantity is the exception: how much roll this blind takes
+  // depends on what gets cut beside it, which only the whole job knows. The
+  // job-nested figure comes in as a prop rather than being recomputed here,
+  // so this page and the job BOM can't disagree.
+  const subMap = useMemo(
+    () => substitutionsFor(job, win, allComponents),
+    [job, win, allComponents])
+
+  const bom = useMemo(() => {
+    const lines = buildWindowBOM(productComponents, win, optionDefs, null, null,
+      fabricSelectionFor(win, product, allComponents, fabricCategories), subMap)
+    if (nestedFabricQty === undefined) return lines
+    return lines.map(line => line.fabric_cut
+      ? Object.defineProperties({}, {
+          ...Object.getOwnPropertyDescriptors(line),
+          calculated_qty: { value: nestedFabricQty, enumerable: true, writable: true, configurable: true },
+        })
+      : line)
+  }, [productComponents, optionDefs, win, product, allComponents, fabricCategories, subMap, nestedFabricQty])
 
   const bomWithOverrides = bom.map(line => {
     const ov = overrides[line.component_id]
@@ -61,6 +78,30 @@ export default function WindowDetail({
     setOverrides(next)
     onUpdate({ bom_overrides: next })
   }
+
+  const winSubs = win.substitutions || {}
+
+  // A swap here only ever covers this window. Keyed by the part the recipe
+  // asks for, so it sits on top of any job-wide swap of the same part
+  // without either one having to know about the other.
+  const handleSwap = ({ from_component_id, component_id, colour_variant }) => {
+    onUpdate({ substitutions: { ...winSubs, [from_component_id]: { component_id, colour_variant } } })
+    setSwapLine(null)
+  }
+
+  // Back to whatever applies without this window's own say — the job's swap
+  // if there is one, otherwise the recipe.
+  const clearSwap = (fromComponentId) => {
+    const next = { ...winSubs }
+    delete next[fromComponentId]
+    onUpdate({ substitutions: next })
+  }
+
+  // Two lines pointing at the same component would merge in the job summary
+  // and collide in the qty snapshot, so what's already here isn't offered.
+  const swapExcludeIds = useMemo(
+    () => bom.filter(l => l.component_id !== swapLine?.component_id).map(l => l.component_id),
+    [bom, swapLine])
 
   return (
     <>
@@ -190,16 +231,35 @@ export default function WindowDetail({
 
               {bomWithOverrides.map(line => {
                 const isOverridden = line.override_qty !== null
+                // The recipe part this line stands for — the key every swap
+                // is filed under, whether or not one is in force yet.
+                const recipeId = line.substituted_from?.component_id || line.component_id
+                const ownSwap  = !!winSubs[recipeId]
+                // Fabric is chosen in Customise, not swapped here.
+                const canSwap  = !readOnly && !line.fabric_cut
                 return (
                   <div key={line.component_id} style={{ padding: '10px 16px', borderBottom: '1px solid var(--warm-100)' }}>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 75px', alignItems: 'center', gap: 8 }}>
                       <div>
-                        <div style={{ fontWeight: 600, fontSize: 14 }}>{line.component?.name}</div>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>
+                          {line.component?.name}
+                          {line.substituted_from && (
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, marginLeft: 6, padding: '1px 6px',
+                              borderRadius: 4, background: 'var(--blue-bg)', color: 'var(--blue)',
+                            }}>{ownSwap ? 'swapped' : 'job swap'}</span>
+                          )}
+                        </div>
                         <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
                           {line.component?.unit}
                           {line.component?.supplier_pn ? ` · ${line.component.supplier_pn}` : ''}
                           {line.component?.supplier ? ` · ${line.component.supplier}` : ''}
                         </div>
+                        {line.substituted_from && (
+                          <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
+                            Recipe: {line.substituted_from.component?.name}
+                          </div>
+                        )}
                       </div>
 
                       {/* Editable qty — orange when overridden so assembler knows it's manual */}
@@ -237,6 +297,21 @@ export default function WindowDetail({
                         </button>
                       </div>
                     )}
+
+                    {canSwap && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 5 }}>
+                        <button onClick={() => setSwapLine(line)}
+                          style={{ fontSize: 11, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, padding: 0 }}>
+                          ⇄ {line.substituted_from ? 'Change swap' : 'Swap component'}
+                        </button>
+                        {ownSwap && (
+                          <button onClick={() => clearSwap(recipeId)}
+                            style={{ fontSize: 11, color: 'var(--warm-300)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, padding: 0 }}>
+                            Revert
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -269,12 +344,24 @@ export default function WindowDetail({
         optionDefs={optionDefs}
         allComponents={allComponents}
         categories={fabricCategories}
+        subMap={subMap}
         widthMm={win.width_mm}
         dropMm={win.drop_mm}
         config={win.config}
         onClose={() => setCustomiseOpen(false)}
         onSave={(config) => { onUpdate({ config }); setCustomiseOpen(false) }}
         saveLabel="Save answers"
+      />
+
+      <SwapComponentModal
+        open={!!swapLine}
+        scope="window"
+        line={swapLine}
+        components={allComponents}
+        stockMap={stockMap}
+        excludeIds={swapExcludeIds}
+        onClose={() => setSwapLine(null)}
+        onSave={handleSwap}
       />
     </>
   )
