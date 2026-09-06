@@ -8,12 +8,13 @@
  */
 
 import { isValidWebhook } from '../_lib/guard.js'
-import { supabase } from '../_lib/supabase.js'
+import { supabase, configError } from '../_lib/supabase.js'
 import { renderEmail, sendMail, formatDate } from '../_lib/mailer.js'
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method not allowed' })
   if (!isValidWebhook(req)) return res.status(401).json({ error: 'unauthorised' })
+  if (configError) return res.status(500).json({ error: configError })
 
   const job = req.body?.record
   const old = req.body?.old_record

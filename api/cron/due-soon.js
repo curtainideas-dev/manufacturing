@@ -7,7 +7,7 @@
  */
 
 import { isValidCron } from '../_lib/guard.js'
-import { supabase } from '../_lib/supabase.js'
+import { supabase, configError } from '../_lib/supabase.js'
 import { renderEmail, sendMail, formatDate, todayISO, addDays } from '../_lib/mailer.js'
 
 const HORIZON_DAYS = Number(process.env.NOTIFY_DUE_DAYS) || 7
@@ -16,6 +16,7 @@ const LOOKBACK_DAYS = 60
 
 export default async function handler(req, res) {
   if (!isValidCron(req)) return res.status(401).json({ error: 'unauthorised' })
+  if (configError) return res.status(500).json({ error: configError })
 
   const today   = todayISO()
   const horizon = addDays(today, HORIZON_DAYS)

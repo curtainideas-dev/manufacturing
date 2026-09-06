@@ -11,11 +11,12 @@
  */
 
 import { isValidCron } from '../_lib/guard.js'
-import { supabase } from '../_lib/supabase.js'
+import { supabase, configError } from '../_lib/supabase.js'
 import { renderEmail, sendMail } from '../_lib/mailer.js'
 
 export default async function handler(req, res) {
   if (!isValidCron(req)) return res.status(401).json({ error: 'unauthorised' })
+  if (configError) return res.status(500).json({ error: configError })
 
   const [stockRes, compRes, suppRes] = await Promise.all([
     supabase.from('stock').select('*'),
