@@ -8,13 +8,16 @@
  * The figures here are FINAL CUT dimensions, already through every deduction
  * and allowance, so nobody has to redo that arithmetic by hand:
  *
- *   cut length   the bar line's own quantity — window width less whatever
- *                deduction its recipe line carries (a tube is cut shorter
- *                than the window it goes in).
  *   cut width    window width less the product's fabric width deduction.
  *   cut drop     window drop PLUS the drop allowance and drop wastage
  *                allowance — the length actually pulled off the roll, which
  *                is longer than the finished blind.
+ *
+ * Beside them ride the two answers that decide how the blind is assembled
+ * rather than how big it is — which way the fabric rolls off the tube, and
+ * which end the control hangs from. Both are per-window options rather than
+ * anything derivable from the recipe, and getting either the wrong way round
+ * is a remake, so they print alongside the dimensions.
  *
  * Behind the table come the CUT CHARTS — one per fabric, colour and roll
  * width, showing how the job's blinds nest side by side across the roll. A
@@ -30,6 +33,7 @@
 
 import { printPDF } from './printPDF'
 import { nestPieces, nestSummary } from './fabricEngine'
+import { resolveAnswers } from './bomEngine'
 
 const ACCENT_DARK = [28, 46, 15]
 const WARM_100    = [241, 245, 249]
@@ -49,20 +53,67 @@ const loadJsPDF = () => new Promise((resolve, reject) => {
 
 const DASH = '—'
 
-/** A bar line's cut length in mm, however its recipe measures it. */
-const cutLengthMm = (line) => {
-  const unit = line.component?.unit || 'each'
-  const qty  = Number(line.qty) || 0
-  return unit === 'metres' ? Math.round(qty * 1000) : Math.round(qty)
+/* --------------------------------------------------------------------------
+ * Assembly options
+ *
+ * Roll direction and control side are per-product OPTIONS, set up in the
+ * options admin rather than declared in code, so there's no column to read
+ * them off — only whatever the option was named when it was created. Today
+ * a blind carries `roll_direction` (Overroll / Underroll) and `control_side`
+ * (Left / Right), and those exact codes are tried first.
+ *
+ * The name pattern behind them is a fallback, not a guess to be relied on:
+ * it catches the same question renamed or set up again on a future product
+ * type ("Roll", "Under/Over roll", "Control"), so the column doesn't quietly
+ * go blank the day someone adds a second blind type.
+ *
+ * Control deliberately excludes "control type", "control colour" and the
+ * like — different questions sharing the word, and a chain colour printed in
+ * the side column would be worse than a dash. A track's "Operation" is not
+ * matched either: it answers how the track is drawn, not which end from.
+ * ------------------------------------------------------------------------ */
+const ROLL_CODE    = 'roll_direction'
+const CONTROL_CODE = 'control_side'
+
+const ROLL_PATTERN    = /roll/i
+const CONTROL_PATTERN = /control|chain\s*side|operation\s*side/i
+const CONTROL_EXCLUDE = /colou?r|type|length|drop/i
+
+const matchesOption = (opt, pattern, exclude = null) => {
+  const text = `${opt?.name || ''} ${opt?.code || ''}`
+  if (!pattern.test(text)) return false
+  return !(exclude && exclude.test(text))
+}
+
+/** The known code if it's there, else the first option the name pattern fits. */
+const findOption = (optionDefs, code, pattern, exclude = null) =>
+  (optionDefs || []).find(o => o.code === code)
+  || (optionDefs || []).find(o => matchesOption(o, pattern, exclude))
+
+/**
+ * A matched option's answer, rendered as the choice's own label ("Underroll",
+ * not "underroll"). Runs the answers through resolveAnswers so an option
+ * decided for the window by another option's forced_values reads the same as
+ * one picked by hand.
+ */
+function optionAnswer(win, optionDefs, code, pattern, exclude = null) {
+  const opt = findOption(optionDefs, code, pattern, exclude)
+  if (!opt) return null
+  const value = resolveAnswers(optionDefs, win.config)[opt.code]
+  if (value === undefined || value === null || value === '') return null
+  const choice = (opt.choices || []).find(c => String(c.value) === String(value))
+  return choice?.label ?? String(value)
 }
 
 /**
  * The cut-sheet row for one window. Exported separately from the rendering so
  * the numbers can be checked without generating a PDF.
+ *
+ * `optionDefs` are the option definitions for this window's product — the
+ * same list App.jsx's optionDefsFor hands the BOM builder.
  */
-export function cutSheetRow(win, products = []) {
-  const product = products.find(p => p.id === win.product_id)
-  const bom     = win.bom || []
+export function cutSheetRow(win, optionDefs = []) {
+  const bom = win.bom || []
 
   // Tracks and tubes — the things that get sawn. Usually one; joined rather
   // than split across rows so a window stays one line on the sheet.
@@ -82,9 +133,9 @@ export function cutSheetRow(win, products = []) {
 
   return {
     window:      win.label || DASH,
-    product:     product?.name || DASH,
     tube:        bars.length ? bars.map(l => l.component?.name || DASH).join(' / ') : DASH,
-    cutLength:   bars.length ? bars.map(cutLengthMm).map(n => n.toLocaleString()).join(' / ') : DASH,
+    roll:        optionAnswer(win, optionDefs, ROLL_CODE, ROLL_PATTERN) || DASH,
+    control:     optionAnswer(win, optionDefs, CONTROL_CODE, CONTROL_PATTERN, CONTROL_EXCLUDE) || DASH,
     fabric:      fabric
       ? `${fabric.component?.name || DASH}${fabric.colour_variant?.name ? ` · ${fabric.colour_variant.name}` : ''}`
       : DASH,
@@ -299,14 +350,15 @@ export async function copyFabricSummary(windowsWithBOM = [], suppliers = [], job
   }
 }
 
-// x, width and alignment per column. Widths are tuned so the two things that
-// actually get measured — cut length and cut drop — never wrap or clip.
+// x, width and alignment per column. Widths are tuned so the things that get
+// acted on — the two cut dimensions, and the two assembly answers — never
+// wrap or clip; the fabric name is the one given slack to be truncated.
 const COLS = [
-  { key: 'window',      title: 'Window',        x: 12,  w: 40 },
-  { key: 'product',     title: 'Product',       x: 52,  w: 28 },
-  { key: 'tube',        title: 'Track / Tube',  x: 80,  w: 42 },
-  { key: 'cutLength',   title: 'Cut length',    x: 122, w: 26, align: 'right' },
-  { key: 'fabric',      title: 'Fabric',        x: 148, w: 55 },
+  { key: 'window',      title: 'Window',        x: 12,  w: 38 },
+  { key: 'tube',        title: 'Track / Tube',  x: 50,  w: 42 },
+  { key: 'fabric',      title: 'Fabric',        x: 92,  w: 61 },
+  { key: 'roll',        title: 'Roll',          x: 153, w: 24 },
+  { key: 'control',     title: 'Control side',  x: 177, w: 26 },
   { key: 'cutWidth',    title: 'Cut width',     x: 203, w: 26, align: 'right' },
   { key: 'cutDrop',     title: 'Cut drop',      x: 229, w: 26, align: 'right' },
   { key: 'orderedSize', title: 'Ordered W × D', x: 255, w: 30, align: 'right' },
@@ -316,8 +368,12 @@ const COLS = [
  * Build the document without sending it anywhere. Split out from the export
  * so the rendered sheet can be inspected — or previewed — without a print
  * dialog being the only way to see it.
+ *
+ * `optionDefsFor` is App.jsx's product-id → option definitions lookup, the
+ * same one the BOM builder gets; the sheet needs it to turn a window's stored
+ * option answers into the roll and control-side labels a maker reads.
  */
-export async function buildCutSheetDoc(job, windowsWithBOM = [], products = [], suppliers = []) {
+export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = []) {
   const jsPDF = await loadJsPDF()
   const doc   = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
 
@@ -384,15 +440,17 @@ export async function buildCutSheetDoc(job, windowsWithBOM = [], products = [], 
       drawTableHeader()
     }
 
-    const r = cutSheetRow(win, products)
+    const r = cutSheetRow(win, optionDefsFor(win.product_id))
 
     setFill(i % 2 === 0 ? WARM_100 : WHITE)
     doc.rect(MX, y, CW, ROW_H, 'F')
 
     COLS.forEach(c => {
-      // The measured figures carry the weight — window name and the two cut
-      // dimensions bold, the rest supporting.
-      const strong = c.key === 'window' || c.key === 'cutLength' || c.key === 'cutDrop' || c.key === 'cutWidth'
+      // What gets acted on carries the weight — the window name, the two cut
+      // dimensions, and the two answers that decide the build; the rest is
+      // supporting.
+      const strong = c.key === 'window' || c.key === 'cutDrop' || c.key === 'cutWidth'
+        || c.key === 'roll' || c.key === 'control'
       setColor(c.key === 'orderedSize' ? WARM_300 : INK)
       doc.setFontSize(strong ? 9 : 8)
       doc.setFont('helvetica', strong ? 'bold' : 'normal')
@@ -410,7 +468,8 @@ export async function buildCutSheetDoc(job, windowsWithBOM = [], products = [], 
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7)
   setColor(WARM_300)
   doc.text(
-    'Cut length, cut width and cut drop are final — every deduction and allowance is already applied.',
+    'Cut width and cut drop are final — every deduction and allowance is already applied. '
+    + 'Roll and control side are as ordered; a dash means the option was never answered, not that it has no answer.',
     MX, y + 5,
   )
 
@@ -656,8 +715,8 @@ export function cutSheetFilename(job) {
   return `${orderNo}_${customerLastName(job?.customer_name)}_Cut Sheet.pdf`
 }
 
-export async function exportCutSheetPDF(job, windowsWithBOM = [], products = [], suppliers = []) {
-  const doc = await buildCutSheetDoc(job, windowsWithBOM, products, suppliers)
+export async function exportCutSheetPDF(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = []) {
+  const doc = await buildCutSheetDoc(job, windowsWithBOM, optionDefsFor, suppliers)
   printPDF(doc, cutSheetFilename(job))
   return { rowCount: windowsWithBOM.length }
 }

@@ -107,7 +107,7 @@ export default function JobDetail({
   const handleCutSheet = async () => {
     setCutting(true)
     try {
-      await exportCutSheetPDF(job, windowsWithBOM, products, suppliers)
+      await exportCutSheetPDF(job, windowsWithBOM, optionDefsFor, suppliers)
     } finally {
       setCutting(false)
     }
