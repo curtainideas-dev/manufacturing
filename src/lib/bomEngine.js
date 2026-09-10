@@ -628,8 +628,15 @@ export function groupRecipeLines(productComponents = []) {
  * shape. The base rail's colour follows the fabric, and only some suppliers
  * make some colours. The winder is whichever brand is actually on the shelf
  * this week. So a recipe line can be tagged with a `job_role` — the name the
- * question is asked under — and a short curated `job_alternatives` list, and
- * it becomes a question put to whoever enters the job, alongside the fabric.
+ * question is asked under — and it becomes a question put to whoever enters
+ * the job, alongside the fabric.
+ *
+ * What it OFFERS is not curated per line. The answers are every component
+ * sharing the recipe part's kind, because that is what a kind already means:
+ * a winder's alternatives are the other winders. Curating a list per recipe
+ * line said the same thing again in a second place, and the two could drift —
+ * add a winder to the library and it would be missing from every product until
+ * someone remembered to tick it. Naming the kind once is the whole job.
  *
  * The ANSWER is not a new kind of record. It is written into the same
  * `substitutions` map a hand-made swap uses, keyed the same way, so the two
@@ -664,9 +671,14 @@ export function jobRoleSlots(resolvedLines = [], subMap = null, allComponents = 
     const recipeComponent = pc.component || byId.get(pc.component_id) || null
     if (!recipeComponent) return
 
-    const alternatives = (pc.job_alternatives || [])
-      .map(id => byId.get(id))
-      .filter(c => c && c.id !== pc.component_id)
+    // Every other part of the same kind. A recipe part with no kind offers
+    // nothing but its own colours, which is honest — nothing in the library
+    // claims to be the same sort of thing as it.
+    const alternatives = recipeComponent.kind
+      ? allComponents
+          .filter(c => c.kind === recipeComponent.kind && c.id !== pc.component_id)
+          .sort((a, b) => a.name.localeCompare(b.name))
+      : []
 
     const sub    = subMap && subMap[pc.component_id]
     const chosen = sub

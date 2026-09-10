@@ -32,7 +32,6 @@ const DEFAULT = {
   drop_limit: null,
   drop_limit_mode: 'above',
   job_role: null,
-  job_alternatives: [],
 }
 
 // Roles that come up constantly. Only a seed for the input below — anything
@@ -54,8 +53,6 @@ export default function ProductComponentModal({
   const [editingSchedule, setEditingSchedule] = useState(null) // { id, name, qty_map } | null
   const [scheduleSaving, setScheduleSaving]   = useState(false)
 
-  // Search box over the curated alternatives list
-  const [altSearch, setAltSearch] = useState('')
 
   useEffect(() => {
     if (open) {
@@ -63,7 +60,6 @@ export default function ProductComponentModal({
         ? {
             ...DEFAULT, ...productComponent,
             width_schedule_id: productComponent.width_schedule_id || '',
-            job_alternatives:  productComponent.job_alternatives || [],
           }
         : DEFAULT
       setForm(initial)
@@ -72,7 +68,6 @@ export default function ProductComponentModal({
       setShowUnsaved(false)
       setSelectedSupplierId(productComponent?.component?.supplier_id || '')
       setEditingSchedule(null)
-      setAltSearch('')
     }
   }, [open, productComponent])
 
@@ -157,33 +152,18 @@ export default function ProductComponentModal({
   const colourVariants  = displayComp?.colour_variants || []
   const hasColours      = colourVariants.length > 0
 
-  /* ---- Curated alternatives for a job role -------------------------------
-   * Defaults to the same kind of part as the line itself — a base rail is
-   * replaced by another bar, not by a labour line — because that is nearly
-   * always the intent, and an unfiltered library is too long to pick from.
-   * Anything already ticked stays visible whatever the search says, so a
-   * chosen alternative can never be silently un-pickable.
+  /* ---- What the job question will offer ----------------------------------
+   * Every other component of this part's kind. Read straight from the library
+   * rather than stored per line, so adding a winder makes it an answer
+   * everywhere at once instead of nowhere until someone ticks it.
    * --------------------------------------------------------------------- */
-  const altChoices = (() => {
-    const q    = altSearch.trim().toLowerCase()
-    const kind = displayComp?.order_type || 'pack'
-    return allComponents
-      .filter(c => c.id !== form.component_id)
-      .filter(c => form.job_alternatives.includes(c.id) || (c.order_type || 'pack') === kind)
-      .filter(c => form.job_alternatives.includes(c.id) || !q
-        || c.name.toLowerCase().includes(q)
-        || (c.supplier_pn || '').toLowerCase().includes(q))
-      .sort((a, b) => {
-        const pick = form.job_alternatives
-        const d = (pick.includes(b.id) ? 1 : 0) - (pick.includes(a.id) ? 1 : 0)
-        return d || a.name.localeCompare(b.name)
-      })
-  })()
-
-  const toggleAlternative = (id) => set('job_alternatives',
-    form.job_alternatives.includes(id)
-      ? form.job_alternatives.filter(x => x !== id)
-      : [...form.job_alternatives, id])
+  const altKind  = displayComp?.kind || null
+  const siblings = altKind
+    ? allComponents
+        .filter(c => c.kind === altKind && c.id !== displayComp?.id)
+        .sort((a, b) => a.name.localeCompare(b.name))
+    : []
+  const siblingCount = siblings.length + 1   // the recipe's own part counts
 
   // Build live formula preview using the shared helper
   const previewPc = { ...form, component: displayComp }
@@ -650,66 +630,44 @@ export default function ProductComponentModal({
                 </div>
               </div>
 
+              {/* What the question offers is not curated here. The answers are
+                  every component sharing this part's kind — see jobRoleSlots.
+                  Saying it again per recipe line would be the same fact in two
+                  places, free to drift the moment a new winder is added. */}
               {form.job_role && (
                 <div className="field" style={{ marginBottom: 12 }}>
-                  <label className="field-label">
-                    Alternatives offered
-                    {altChoices.length > 0 && (
-                      <span style={{ color: 'var(--warm-300)', fontWeight: 400, marginLeft: 6 }}>
-                        {form.job_alternatives.length} picked
-                      </span>
-                    )}
-                  </label>
-
-                  <input className="field-input" value={altSearch}
-                    onChange={e => setAltSearch(e.target.value)}
-                    placeholder="Search components…"
-                    style={{ fontSize: 13, marginBottom: 8 }} />
-
-                  <div style={{
-                    border: '1px solid var(--warm-200)', borderRadius: 'var(--radius-sm)',
-                    maxHeight: 190, overflowY: 'auto', background: '#fff',
-                  }}>
-                    {altChoices.length === 0 ? (
-                      <div style={{ padding: '16px 14px', textAlign: 'center', fontSize: 12.5, color: 'var(--warm-300)' }}>
-                        No other components match.
-                      </div>
-                    ) : altChoices.map(c => {
-                      const on = form.job_alternatives.includes(c.id)
-                      return (
-                        <button key={c.id} type="button" onClick={() => toggleAlternative(c.id)}
-                          style={{
-                            width: '100%', textAlign: 'left', cursor: 'pointer',
-                            padding: '8px 12px', border: 'none',
-                            borderBottom: '1px solid var(--warm-100)',
-                            background: on ? 'var(--accent-bg)' : '#fff',
-                            display: 'flex', alignItems: 'center', gap: 10,
-                          }}>
-                          <div style={{
-                            width: 18, height: 18, borderRadius: 5, flexShrink: 0,
-                            border: `2px solid ${on ? 'var(--accent)' : 'var(--warm-200)'}`,
-                            background: on ? 'var(--accent)' : '#fff',
-                          }} />
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 13, fontWeight: on ? 700 : 600, color: on ? 'var(--accent-dark)' : 'var(--ink)' }}>
-                              {c.name}
-                            </div>
-                            <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 1 }}>
-                              {c.unit}
-                              {c.supplier_pn ? ` · ${c.supplier_pn}` : ''}
-                              {(c.colour_variants || []).length > 0 ? ` · ${c.colour_variants.length} colours` : ''}
-                            </div>
+                  {altKind ? (
+                    <div style={{
+                      background: 'var(--accent-bg)', borderRadius: 'var(--radius-sm)',
+                      padding: '10px 12px', fontSize: 12.5, lineHeight: 1.5,
+                    }}>
+                      {siblings.length > 0 ? (
+                        <>
+                          Offers all <strong>{siblingCount} {altKind}</strong> components in the
+                          library. <strong>{displayComp?.name}</strong> stays the default.
+                          <div style={{ color: 'var(--warm-300)', marginTop: 5 }}>
+                            or: {siblings.map(c => c.name).join(' · ')}
                           </div>
-                        </button>
-                      )
-                    })}
-                  </div>
-
-                  <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
-                    {displayComp?.name || 'The recipe’s own part'} is always offered first
-                    and is the default — no need to list it. Picking none is fine: the part stays
-                    fixed and only its colour is the job's to choose.
-                  </div>
+                        </>
+                      ) : (
+                        <>
+                          <strong>{displayComp?.name}</strong> is the only {altKind} in the library,
+                          so the question offers its colours only. Add another {altKind} and it
+                          becomes an answer here automatically.
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{
+                      background: 'var(--warning-bg)', borderLeft: '3px solid var(--warning)',
+                      borderRadius: 'var(--radius-sm)', padding: '10px 12px',
+                      fontSize: 12, color: 'var(--warning)', lineHeight: 1.5,
+                    }}>
+                      {displayComp?.name || 'This part'} has no <strong>Kind</strong>, so the question
+                      will offer only its own colours. Give it a kind in the component library —
+                      Winder, Base Rail — and every other part of that kind becomes an answer.
+                    </div>
+                  )}
                 </div>
               )}
 

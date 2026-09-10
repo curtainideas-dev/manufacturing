@@ -584,7 +584,6 @@ export default function App() {
       drop_limit:        formData.drop_limit && Object.keys(formData.drop_limit).length ? formData.drop_limit : null,
       drop_limit_mode:   formData.drop_limit_mode || 'above',
       job_role:          formData.job_role || null,
-      job_alternatives:  formData.job_alternatives || [],
       group_by_kind:     !!formData.group_by_kind,
       sort_order:        sortOrder,
     })
@@ -613,7 +612,6 @@ export default function App() {
       drop_limit:        formData.drop_limit && Object.keys(formData.drop_limit).length ? formData.drop_limit : null,
       drop_limit_mode:   formData.drop_limit_mode || 'above',
       job_role:          formData.job_role || null,
-      job_alternatives:  formData.job_alternatives || [],
       group_by_kind:     !!formData.group_by_kind,
     }).eq('id', id)
     showToast('Updated ✓', 'success')
