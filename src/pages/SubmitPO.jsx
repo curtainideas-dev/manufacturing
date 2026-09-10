@@ -34,6 +34,23 @@ const ORDER_TYPES = [
   { val: 'blind', label: 'Blinds', emoji: '🪟' },
 ]
 
+/**
+ * Today, as the yyyy-mm-dd an <input type="date"> wants.
+ *
+ * Built from the LOCAL date parts, never toISOString(), which is UTC — in
+ * Australia that reads as yesterday until mid-morning, so a PO submitted at
+ * 8am would arrive dated the day before.
+ */
+const todayISO = () => {
+  const d = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+// A fresh blank form. Job date starts on today, since that is what it almost
+// always is and it stays editable for the times it isn't.
+const newForm = () => ({ ...EMPTY, date_invoice: todayISO() })
+
 // Where the PDF lands in the bucket. Module scope because it is genuinely
 // impure — a clock read and a random suffix, so two people submitting the same
 // filename at once can't collide — and impure calls don't belong anywhere the
@@ -54,7 +71,7 @@ const REQUIRED = [
 
 export default function SubmitPO() {
   const [file, setFile]             = useState(null)
-  const [form, setForm]             = useState(EMPTY)
+  const [form, setForm]             = useState(newForm)
   const [submitting, setSubmitting] = useState(false)
   const [tried, setTried]           = useState(false)
   const [done, setDone]             = useState(false)
@@ -128,7 +145,9 @@ export default function SubmitPO() {
   }
 
   const reset = () => {
-    setFile(null); setForm(EMPTY); setDone(false); setTried(false)
+    // A new date, not the one this form loaded with — the tab may have been
+    // open since yesterday.
+    setFile(null); setForm(newForm()); setDone(false); setTried(false)
   }
 
   // ---- Success screen ----
