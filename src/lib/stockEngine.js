@@ -224,3 +224,99 @@ export function fabricStockValue(component, pieces = []) {
     return total + (l / 1000) * rate * Math.min(1, w / reference)
   }, 0)
 }
+
+/* ==========================================================================
+ * Undoing a deduction
+ *
+ * Deleting a job that had stock deducted used to leave the stock deducted.
+ * Putting it back means undoing three different things, because a deduction
+ * does three different things depending on what kind of part it is:
+ *
+ *   a counted quantity   pack parts come off stock.qty_on_hand. The movement
+ *                        now records exactly what it took (qty_on_hand_delta),
+ *                        so returning it is adding that back. A movement from
+ *                        before that column existed has null there for bars
+ *                        and fabric, and null means "unknown", not zero — such
+ *                        a line is reported as needing a hand rather than
+ *                        quietly returning nothing.
+ *
+ *   consumed pieces      bars and rolls are individual rows in stock_bars,
+ *                        marked used and stamped with the job. Returning them
+ *                        is a status change, and it is exact.
+ *
+ *   created offcuts      what survived the cut went back as new available
+ *                        pieces. Those have to come OUT again, or a deleted
+ *                        job leaves stock behind. They are told apart from
+ *                        consumed pieces by status: used = taken by the job,
+ *                        available = made by it.
+ *
+ * Pure: it decides what should happen and nothing else, so the arithmetic can
+ * be checked without a database.
+ * ========================================================================== */
+
+/**
+ * What returning a job's stock would do.
+ *
+ * movements  the job's deduct rows
+ * jobBars    the stock_bars rows carrying its job_id
+ * components the library, for naming the lines
+ */
+export function planStockRestore({ movements = [], jobBars = [], components = [] } = {}) {
+  const byId = new Map(components.map(c => [c.id, c]))
+
+  const lines = [], unreturnable = []
+
+  movements.forEach(m => {
+    if (m.movement_type !== 'deduct') return
+    const component = byId.get(m.component_id) || null
+    const delta = m.qty_on_hand_delta
+
+    // Never recorded — only true of deductions taken before the column
+    // existed. Returning movement.qty instead would credit millimetres as
+    // whole bars, so it is surfaced rather than guessed at.
+    if (delta === null || delta === undefined) {
+      unreturnable.push({
+        movement_id: m.id,
+        component,
+        colour_variant: m.colour_variant || null,
+        qty: Number(m.qty) || 0,
+        reason: 'Deducted before restore tracking existed, so what it took off stock was never recorded.',
+      })
+      return
+    }
+
+    // 0 is a real answer, not a missing one: fabric never touches the count,
+    // and a bar cut entirely from offcuts takes no whole bar. Nothing to add
+    // back, and nothing wrong.
+    const back = -Number(delta)
+    if (!back) return
+
+    lines.push({
+      component,
+      component_id: m.component_id,
+      colour_variant: m.colour_variant || null,
+      qty: back,
+    })
+  })
+
+  // One line per component+colour, since several windows deduct the same part.
+  const merged = new Map()
+  lines.forEach(q => {
+    const k = stockKey(q.component_id, q.colour_variant)
+    if (!merged.has(k)) merged.set(k, { ...q, qty: 0 })
+    merged.get(k).qty += q.qty
+  })
+
+  const quantities = [...merged.values()]
+  const pieces  = jobBars.filter(b => b.status === 'used')
+  const offcuts = jobBars.filter(b => b.status !== 'used')
+
+  return {
+    quantities,
+    pieces,
+    offcuts,
+    unreturnable,
+    isEmpty: quantities.length === 0 && pieces.length === 0
+      && offcuts.length === 0 && unreturnable.length === 0,
+  }
+}

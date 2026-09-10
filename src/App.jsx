@@ -10,6 +10,7 @@ import AdminHome              from './pages/AdminHome'
 import FabricCategoriesAdmin  from './pages/FabricCategoriesAdmin'
 import ComponentKindsAdmin     from './pages/ComponentKindsAdmin'
 import DeletedRecordsAdmin     from './pages/DeletedRecordsAdmin'
+import DeleteJobModal          from './components/DeleteJobModal'
 import JobList           from './pages/JobList'
 import JobDetail         from './pages/JobDetail'
 import WindowDetail      from './pages/WindowDetail'
@@ -29,7 +30,7 @@ import PurchaseOrderModal    from './components/PurchaseOrderModal'
 import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
-import { buildStockMap, stockKey, checkLowStock, getStock } from './lib/stockEngine'
+import { buildStockMap, stockKey, checkLowStock, getStock, planStockRestore } from './lib/stockEngine'
 import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting } from './lib/bomEngine'
 import { orderUnitInfo } from './lib/poEngine'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
@@ -72,6 +73,8 @@ export default function App() {
   // null until we know — distinguishes "no deletes yet" from "table not created"
   const [deletedRecords, setDeletedRecords]   = useState(null)
   const [restoringId, setRestoringId]         = useState(null)
+  const [deleteJobPlan, setDeleteJobPlan]     = useState(null)  // { job, plan } | null
+  const [deletingJob, setDeletingJob]         = useState(false)
 
   const [compModalOpen, setCompModalOpen]         = useState(false)
   const [editingComp, setEditingComp]             = useState(null)
@@ -846,22 +849,104 @@ export default function App() {
     await supabase.from('mfg_jobs').update(updates).eq('id', currentJob.id)
   }
 
-  const handleJobDelete = async () => {
-    const wasInProgress = currentJob.status === 'in_progress'
-    const msg = wasInProgress
-      ? 'Delete this in-progress job and all its windows?\n\nAny stock already deducted for it will NOT be returned.'
-      : 'Delete this job and all its windows?'
-    if (!window.confirm(msg)) return
+  /**
+   * Deleting a job is two questions, so it is two steps.
+   *
+   * The first is what happens to any stock already deducted. That used to be
+   * decided for the user — the confirm said the stock would NOT come back —
+   * but a job cancelled before cutting should return its parts to the shelf
+   * and a job deleted after fitting should not, and only the person deleting
+   * it knows which. So the plan is worked out first and put to them.
+   */
+  const handleJobDeleteRequest = async () => {
     const jobId = currentJob.id
-    // Clear rows that reference this job so the delete can't fail on a foreign key.
-    // (Deducted stock quantities are intentionally left as-is.)
-    await supabase.from('stock_movements').delete().eq('job_id', jobId)
-    await supabase.from('stock_bars').update({ job_id: null }).eq('job_id', jobId)
-    const { error } = await supabase.from('mfg_jobs').delete().eq('id', jobId)
-    if (error) { showToast('Delete failed', 'error'); return }
-    setJobs(prev => prev.filter(j => j.id !== jobId))
-    setCurrentJob(null)
-    showToast('Job deleted')
+    const [{ data: movements }, { data: jobBars }] = await Promise.all([
+      supabase.from('stock_movements').select('*').eq('job_id', jobId).eq('movement_type', 'deduct'),
+      supabase.from('stock_bars').select('*').eq('job_id', jobId),
+    ])
+    setDeleteJobPlan({
+      job:  currentJob,
+      plan: planStockRestore({
+        movements:  movements || [],
+        jobBars:    jobBars || [],
+        components,
+      }),
+    })
+  }
+
+  /**
+   * Put the stock back, then delete.
+   *
+   * Order matters: the movements and bar rows are what say WHAT to return, and
+   * the delete clears them, so returning has to finish first. If any part of
+   * the return fails the delete is abandoned — a half-returned job that no
+   * longer exists is the one outcome with no way back.
+   */
+  const handleJobDeleteConfirm = async ({ restoreStock }) => {
+    const job  = deleteJobPlan?.job
+    const plan = deleteJobPlan?.plan
+    if (!job) return
+    const jobId = job.id
+    setDeletingJob(true)
+
+    try {
+      if (restoreStock && plan) {
+        const failures = []
+
+        // Counted quantities, read off the recorded deltas.
+        for (const line of plan.quantities) {
+          const row = stockMap[stockKey(line.component_id, line.colour_variant)]
+          if (!row?.id) {
+            failures.push(`${line.component?.name || 'a part'} has no stock row`)
+            continue
+          }
+          const { error } = await supabase.from('stock')
+            .update({ qty_on_hand: (Number(row.qty_on_hand) || 0) + line.qty })
+            .eq('id', row.id)
+          if (error) failures.push(`${line.component?.name || 'a part'}: ${error.message}`)
+        }
+
+        // Bars and rolls the job consumed become available again.
+        if (plan.pieces.length) {
+          const { error } = await supabase.from('stock_bars')
+            .update({ status: 'available', job_id: null })
+            .in('id', plan.pieces.map(b => b.id))
+          if (error) failures.push(`bars and rolls: ${error.message}`)
+        }
+
+        // Offcuts the job created come back out, or deleting it would leave
+        // stock behind that was never there before.
+        if (plan.offcuts.length) {
+          const { error } = await supabase.from('stock_bars')
+            .delete().in('id', plan.offcuts.map(b => b.id))
+          if (error) failures.push(`offcuts: ${error.message}`)
+        }
+
+        if (failures.length) {
+          showToast(`Stock not fully returned — job NOT deleted. ${failures[0]}`, 'error')
+          return
+        }
+
+        const movedBack = plan.quantities.length + plan.pieces.length
+        if (movedBack) showToast(`Returned ${movedBack} stock line${movedBack !== 1 ? 's' : ''}`, 'success')
+      }
+
+      // Clear rows that reference this job so the delete can't fail on a
+      // foreign key. Anything not returned above is deliberately left as-is.
+      await supabase.from('stock_movements').delete().eq('job_id', jobId)
+      await supabase.from('stock_bars').update({ job_id: null }).eq('job_id', jobId)
+
+      const { error } = await supabase.from('mfg_jobs').delete().eq('id', jobId)
+      if (error) { showToast('Delete failed', 'error'); return }
+
+      setJobs(prev => prev.filter(j => j.id !== jobId))
+      setCurrentJob(null)
+      setDeleteJobPlan(null)
+      showToast(restoreStock ? 'Job deleted, stock returned ✓' : 'Job deleted')
+      await loadAll()
+    } finally {
+      setDeletingJob(false)
+    }
   }
 
   // Compute the price snapshot + locked total for a job from current recipes
@@ -1179,20 +1264,26 @@ export default function App() {
       const key   = stockKey(d.component.id, d.colour_variant)
       const stock = stockMap[key]
 
-      // Record movement
-      movements.push({
+      // Record movement. qty is the BOM quantity; qty_on_hand_delta is what
+      // actually left the stock ROW, which is a different number for bars
+      // (whole bars, not millimetres) and fabric (nothing at all). Without it
+      // a deduction cannot be reversed — see planStockRestore.
+      const movement = {
         component_id:   d.component.id,
         colour_variant: d.colour_variant || null,
         job_id:         currentJob.id,
         movement_type:  'deduct',
         qty:            -d.qty,
-      })
+        qty_on_hand_delta: 0,
+      }
+      movements.push(movement)
 
       // Update pack stock qty. Bars and fabric are held as individual pieces
       // in stock_bars, not as a count on the stock row — decrementing a metre
       // figure off qty_on_hand would be meaningless for either.
       if (stock?.id && !['bar', 'fabric'].includes(d.component.order_type)) {
         stockUpdates.push({ id: stock.id, qty: (stock.qty_on_hand || 0) - d.qty })
+        movement.qty_on_hand_delta = -d.qty
       }
 
       // Fabric — a roll is consumed whole and whatever survives the nesting
@@ -1211,6 +1302,9 @@ export default function App() {
               length_mm:      Math.round(oc.length_mm),
               roll_width_mm:  Math.round(oc.roll_width_mm),
               status:         'available',
+              // Stamped so that deleting the job can take back what it made.
+              // Available + this job = created here; used + this job = taken.
+              job_id:         currentJob.id,
             })
           }
         }
@@ -1234,11 +1328,13 @@ export default function App() {
               label:          bar.offcut.label,
               length_mm:      Math.round(bar.offcut.length_mm),
               status:         'available',
+              job_id:         currentJob.id,
             })
           }
         }
         if (fullBarsUsed > 0 && s?.id) {
           stockUpdates.push({ id: s.id, qty: (s.qty_on_hand || 0) - fullBarsUsed })
+          movement.qty_on_hand_delta = -fullBarsUsed
         }
       }
     }
@@ -1473,7 +1569,7 @@ export default function App() {
           stockMap={stockMap}
           onBack={() => setCurrentJob(null)}
           onUpdate={handleJobUpdate}
-          onDelete={handleJobDelete}
+          onDelete={handleJobDeleteRequest}
           onAddWindow={() => setAddWindowOpen(true)}
           onOpenWindow={(win, idx) => setCurrentWindow({ win, idx })}
           onDuplicateWindow={handleWindowDuplicate}
@@ -1720,6 +1816,15 @@ export default function App() {
         onSave={handleSupplierSave}
         onDelete={handleSupplierDelete}
         saving={supplierSaving}
+      />
+
+      <DeleteJobModal
+        open={!!deleteJobPlan}
+        job={deleteJobPlan?.job}
+        plan={deleteJobPlan?.plan}
+        deleting={deletingJob}
+        onClose={() => setDeleteJobPlan(null)}
+        onConfirm={handleJobDeleteConfirm}
       />
 
       <AddWindowModal
