@@ -1,4 +1,4 @@
-import { ChevronRightIcon } from '../components/Icons'
+import { ChevronLeftIcon, ChevronRightIcon } from '../components/Icons'
 
 const SECTIONS = [
   { key: 'options',           emoji: '🎛️', name: 'Options',
@@ -24,7 +24,10 @@ export default function AdminHome({
   return (
     <>
       <div className="header">
-        <div className="header-title">Admin</div>
+        <a href="/" className="header-back" style={{ textDecoration: 'none' }}>
+          <ChevronLeftIcon size={18} /> Home
+        </a>
+        <div className="header-title" style={{ fontSize: 15 }}>Admin</div>
       </div>
 
       <div className="scroll-area">
