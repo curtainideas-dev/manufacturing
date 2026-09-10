@@ -545,6 +545,55 @@ export function applySubstitutions(lines, subMap = null) {
   })
 }
 
+/**
+ * Collapse a product's recipe into the entries a person reads it as.
+ *
+ * A recipe is stored one line per (part × the answer that supplies it), which
+ * is the right shape to resolve against but the wrong shape to read: one
+ * carrier answered three ways is three rows, and the two tubes that swap over
+ * at 2200mm can sit a dozen rows apart with nothing saying they are the same
+ * decision.
+ *
+ * Two things collapse, in this order:
+ *
+ *   an alternatives group   every line sharing a group_key, whatever parts
+ *                           they name — this is the decision, and exactly one
+ *                           of its lines survives resolution.
+ *
+ *   one part, many answers  otherwise, every line built from the same
+ *                           component. Not a group in the engine's sense —
+ *                           these lines don't compete, they are simply the
+ *                           same part reached different ways — but it is one
+ *                           thing to a reader, and reads as one row.
+ *
+ * Ordering is by where a group FIRST appears in the recipe, so collapsing
+ * never shuffles a list someone has already learned the shape of.
+ *
+ * Pure and exported so the grouping can be checked without a browser.
+ */
+export function groupRecipeLines(productComponents = []) {
+  const groups = new Map()
+
+  productComponents.forEach(pc => {
+    const key = pc.group_key ? `g:${pc.group_key}` : `c:${pc.component_id}`
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        label:        pc.group_key || pc.component?.name || '—',
+        // A tagged group is a real choice the engine makes; a same-part group
+        // is only a reading convenience. Worth telling apart on screen.
+        isAlternatives: !!pc.group_key,
+        lines:        [],
+      })
+    }
+    groups.get(key).lines.push(pc)
+  })
+
+  return [...groups.values()]
+    .map(g => ({ ...g, sort_order: Math.min(...g.lines.map(l => Number(l.sort_order) || 0)) }))
+    .sort((a, b) => a.sort_order - b.sort_order)
+}
+
 /* ==========================================================================
  * Job role slots — the parts a job is ASKED about
  *
