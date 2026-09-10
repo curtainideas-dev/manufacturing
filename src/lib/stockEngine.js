@@ -351,7 +351,65 @@ export function planStockRestore({ movements = [], jobBars = [], components = []
  *
  * A part with none of the three is left out entirely.
  */
-export function stockPositions(entries = [], stockMap = {}) {
+/**
+ * What is on the shelf, in the SAME unit the BOM asks for.
+ *
+ * The stock row does not hold one unit across the board:
+ *
+ *   pack     qty_on_hand is a count in the component's own unit, which is
+ *            already what the BOM counts. Nothing to convert.
+ *   bar      qty_on_hand is a count of FULL BARS, and every offcut is its own
+ *            row in stock_bars with a length. The BOM asks for length. Ten bars
+ *            of a 5.4m tube is 54 metres, not 10 — comparing the two directly
+ *            understated bar stock by the bar length, five- or six-fold.
+ *   fabric   qty_on_hand is unused; every roll is a stock_bars piece.
+ *
+ * Mirrors calcQty's own rule for the BOM side — metres when the component's
+ * unit is 'metres', millimetres otherwise — so both sides of the comparison
+ * are always in the same unit by construction, not by coincidence. Fabric is
+ * always metres, as fabric_strip is.
+ *
+ * The minimum is converted the same way, since for a bar it is also counted
+ * in bars.
+ *
+ * Offcuts are counted at full length. That flatters them slightly — a 1.5m
+ * offcut cannot supply a 1.8m cut — so the breakdown is returned alongside the
+ * total and the page shows it, rather than presenting one number as certain.
+ */
+export function onHandInBomUnits(component, stock = null, pieces = []) {
+  const type    = component?.order_type || 'pack'
+  const qty     = Number(stock?.qty_on_hand) || 0
+  const minimum = Number(stock?.qty_minimum) || 0
+  const pieceMm = pieces.reduce((t, p) => t + (Number(p.length_mm) || 0), 0)
+
+  if (type === 'bar') {
+    const barMm  = Number(component?.bar_length_mm) || 6000
+    const toUnit = (mm) => (component?.unit === 'metres' ? mm / 1000 : mm)
+    return {
+      onHand:   toUnit(qty * barMm + pieceMm),
+      minimum:  toUnit(minimum * barMm),
+      fullBars: qty,
+      barMm,
+      pieces:   pieces.length,
+      piecesIn: toUnit(pieceMm),
+    }
+  }
+  if (type === 'fabric') {
+    return { onHand: pieceMm / 1000, minimum: 0, pieces: pieces.length, piecesIn: pieceMm / 1000 }
+  }
+  return { onHand: qty, minimum }
+}
+
+export function stockPositions(entries = [], stockMap = {}, stockBars = []) {
+  // Loose pieces — offcuts and rolls — by the same key as the stock map.
+  const piecesByKey = new Map()
+  stockBars.forEach(b => {
+    if (b.status && b.status !== 'available') return
+    const k = stockKey(b.component_id, b.colour_variant)
+    if (!piecesByKey.has(k)) piecesByKey.set(k, [])
+    piecesByKey.get(k).push(b)
+  })
+
   // One pass to total demand, so every job is measured against the same shelf.
   const demand = new Map()
   entries.forEach(({ summary = [] }) => {
@@ -376,12 +434,15 @@ export function stockPositions(entries = [], stockMap = {}) {
     })
     ;[...own.values()].forEach(row => {
       const k = stockKey(row.component.id, row.colour_variant)
-      const stock = stockMap[k]
-      // Nothing tracked for this part — silence beats a made-up shortfall.
-      if (!stock) return
+      const stock  = stockMap[k]
+      const pieces = piecesByKey.get(k) || []
+      // Nothing tracked for this part — silence beats a made-up shortfall. A
+      // bar or roll with loose pieces but no stock row IS tracked, though.
+      if (!stock && pieces.length === 0) return
 
-      const onHand      = Number(stock.qty_on_hand) || 0
-      const minimum     = Number(stock.qty_minimum) || 0
+      const held        = onHandInBomUnits(row.component, stock, pieces)
+      const onHand      = held.onHand
+      const minimum     = held.minimum
       const jobQty      = Number(row.total_qty) || 0
       const totalDemand = demand.get(k) || 0
       const otherQty    = Math.max(0, totalDemand - jobQty)
@@ -395,7 +456,17 @@ export function stockPositions(entries = [], stockMap = {}) {
       lines.push({
         component:      row.component,
         colour_variant: row.colour_variant || null,
-        unit:           row.component?.unit || '',
+        // Fabric is costed in metres whatever its unit says; bars in metres
+        // or millimetres per calcQty. Report the unit the numbers are in.
+        unit: row.component?.order_type === 'fabric' ? 'metres'
+          : row.component?.order_type === 'bar' && row.component?.unit !== 'metres' ? 'mm'
+          : (row.component?.unit || ''),
+        // How the stock figure is made up, for a bar or roll — so "54 metres"
+        // can be read as "10 full bars" rather than taken on trust.
+        fullBars:   held.fullBars ?? null,
+        barMm:      held.barMm ?? null,
+        pieces:     held.pieces ?? 0,
+        piecesIn:   held.piecesIn ?? 0,
         jobQty,
         onHand,
         minimum,
