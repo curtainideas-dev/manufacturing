@@ -669,9 +669,10 @@ export function groupRecipeLines(productComponents = []) {
  * Some parts get changed often enough that waiting to notice is the wrong
  * shape. The base rail's colour follows the fabric, and only some suppliers
  * make some colours. The winder is whichever brand is actually on the shelf
- * this week. So a recipe line can be tagged with a `job_role` — the name the
- * question is asked under — and it becomes a question put to whoever enters
- * the job, alongside the fabric.
+ * this week. So a KIND can be marked `ask_on_job`, and every recipe line built
+ * from a part of that kind becomes a question put to whoever enters the job,
+ * alongside the fabric. The kind's name is the question and its members are
+ * the answers — there is no second place to keep in step.
  *
  * What it OFFERS is not curated per line. The answers are every component
  * sharing the recipe part's kind, because that is what a kind already means:
@@ -697,13 +698,18 @@ export function groupRecipeLines(productComponents = []) {
  * it is both the default and the way back. Alternatives that have since been
  * deleted from the library drop out silently rather than showing as blanks.
  */
-export function jobRoleSlots(resolvedLines = [], subMap = null, allComponents = []) {
+export function jobRoleSlots(resolvedLines = [], subMap = null, allComponents = [], kinds = []) {
   const byId = new Map(allComponents.map(c => [c.id, c]))
+  // The kinds the job gets a say in. A Set of names, because the kind's name
+  // is both the question and the tie to its members.
+  const asked = new Set(kinds.filter(k => k?.ask_on_job).map(k => k.name))
   const seen = new Set()
   const slots = []
 
   resolvedLines.forEach(pc => {
-    if (!pc.job_role || pc.cost_type === 'fabric_strip') return
+    if (pc.cost_type === 'fabric_strip') return
+    const kind = pc.component?.kind || byId.get(pc.component_id)?.kind || null
+    if (!kind || !asked.has(kind)) return
     // Two resolved lines built from the same component share one answer —
     // substitutions are keyed by component id, so a second slot would be the
     // same question twice with one shared answer.
@@ -713,14 +719,11 @@ export function jobRoleSlots(resolvedLines = [], subMap = null, allComponents = 
     const recipeComponent = pc.component || byId.get(pc.component_id) || null
     if (!recipeComponent) return
 
-    // Every other part of the same kind. A recipe part with no kind offers
-    // nothing but its own colours, which is honest — nothing in the library
-    // claims to be the same sort of thing as it.
-    const alternatives = recipeComponent.kind
-      ? allComponents
-          .filter(c => c.kind === recipeComponent.kind && c.id !== pc.component_id)
-          .sort((a, b) => a.name.localeCompare(b.name))
-      : []
+    // The rest of the kind. Read from the library, so a part added later is an
+    // answer everywhere at once.
+    const alternatives = allComponents
+      .filter(c => c.kind === kind && c.id !== pc.component_id)
+      .sort((a, b) => a.name.localeCompare(b.name))
 
     const sub    = subMap && subMap[pc.component_id]
     const chosen = sub
@@ -730,7 +733,8 @@ export function jobRoleSlots(resolvedLines = [], subMap = null, allComponents = 
     slots.push({
       // What an answer is filed under, and what deleting reverts.
       key:    pc.component_id,
-      role:   pc.job_role,
+      // The kind IS the question — there is no separate name to keep in step.
+      role:   kind,
       recipe: { component: recipeComponent, colour_variant: pc.colour_variant || null },
       // Recipe part first — it is the default, not just another option.
       choices: [recipeComponent, ...alternatives],

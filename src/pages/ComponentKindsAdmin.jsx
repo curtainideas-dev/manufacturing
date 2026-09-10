@@ -137,6 +137,31 @@ export default function ComponentKindsAdmin({
                       </button>
                     </div>
 
+                    {/* Whether the job gets a say in this part. A fact about
+                        the kind, not about any one recipe — winders are chosen
+                        by what is on the shelf, and that is true wherever a
+                        winder is used. */}
+                    <label style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer',
+                      marginTop: 9, padding: '8px 10px', borderRadius: 'var(--radius-sm)',
+                      border: `1.5px solid ${kind.ask_on_job ? 'var(--accent)' : 'var(--warm-200)'}`,
+                      background: kind.ask_on_job ? 'var(--accent-bg)' : '#fff',
+                    }}>
+                      <input type="checkbox" checked={!!kind.ask_on_job}
+                        onChange={e => onSave({ ...kind, ask_on_job: e.target.checked })}
+                        style={{ marginTop: 2 }} />
+                      <span>
+                        <span style={{ fontSize: 12.5, fontWeight: 600 }}>
+                          Ask about the {kind.name} when a window is added
+                        </span>
+                        <span style={{ display: 'block', fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
+                          {used > 0
+                            ? `Offers the ${used} ${kind.name} component${used !== 1 ? 's' : ''} and their colours, on every product that uses one.`
+                            : `Nothing carries this kind yet, so nothing would be asked.`}
+                        </span>
+                      </span>
+                    </label>
+
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 11.5, color: 'var(--warm-300)' }}>
                         Usually bought as
@@ -165,6 +190,8 @@ export default function ComponentKindsAdmin({
           <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginTop: 12, lineHeight: 1.5 }}>
             Renaming a kind carries every component using it across, so nothing is orphaned.
             A kind still in use can’t be deleted — clear it off those components first.
+            A kind that is asked about is asked on every product that uses one — there is no
+            per-product opt-out, which is what keeps it predictable.
           </div>
         </div>
       </div>

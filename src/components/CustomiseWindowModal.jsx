@@ -16,7 +16,7 @@ import { getStock } from '../lib/stockEngine'
  * product's pricing category (see supabase_fabric_pricing.sql).
  *
  * Last come the parts the recipe is willing to be argued with about: any line
- * tagged with a job_role (see supabase_job_role_slots.sql) is put as its own
+ * whose KIND is marked ask_on_job (see supabase_kind_ask_on_job.sql) is its own
  * question — base rail, winder, bracket — offering the recipe's own part plus
  * whatever alternatives were curated for it. They sit BELOW the fabric on
  * purpose: which base rail colours exist at all depends on who makes the
@@ -30,7 +30,7 @@ import { getStock } from '../lib/stockEngine'
 export default function CustomiseWindowModal({
   open, product, productComponents = [], optionDefs = [],
   allComponents = [], categories = [], subMap = null,
-  substitutions = null, stockMap = {}, suppliers = [],
+  substitutions = null, stockMap = {}, suppliers = [], kinds = [],
   widthMm, dropMm, config, onClose, onSave, saveLabel = 'Add window',
 }) {
   const [answers, setAnswers]           = useState({})
@@ -101,10 +101,10 @@ export default function CustomiseWindowModal({
     const lines      = applySubstitutions(resolved, merged)
     const fabricLine = fabricLineFor(fabricSelection)
     return {
-      slots: jobRoleSlots(resolved, merged, allComponents),
+      slots: jobRoleSlots(resolved, merged, allComponents, kinds),
       bom:   calcWindowBOM(fabricLine ? [fabricLine, ...lines] : lines, Number(widthMm), Number(dropMm)),
     }
-  }, [resolved, subMap, winSubs, allComponents, widthMm, dropMm, fabricSelection])
+  }, [resolved, subMap, winSubs, allComponents, kinds, widthMm, dropMm, fabricSelection])
 
   const cost = bom.reduce((s, l) => s + l.line_cost, 0)
 

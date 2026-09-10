@@ -16,14 +16,14 @@ const COST_TYPE_LABELS = {
  * `withGroup` is off inside a collapsed group, where the header already names
  * the group and repeating it on every line is noise.
  */
-function conditionBadges(pc, optionDefs = [], withGroup = true) {
+function conditionBadges(pc, optionDefs = [], withGroup = true, askedKinds = new Set()) {
   const badges = []
   const choice = pc.option_choice_id && optionDefs
     .flatMap(o => (o.choices || []).map(c => ({ o, c })))
     .find(x => x.c.id === pc.option_choice_id)
   if (choice) badges.push({ t: `${choice.o.name}: ${choice.c.label}`, bg: 'var(--accent-bg)', fg: 'var(--accent-dark)' })
   if (withGroup && pc.component?.kind) badges.push({ t: pc.component.kind, bg: 'var(--blue-bg)', fg: 'var(--blue)' })
-  if (pc.job_role) badges.push({ t: `asks: ${pc.job_role}`, bg: 'var(--success-bg)', fg: 'var(--success)' })
+  if (askedKinds.has(pc.component?.kind)) badges.push({ t: `asks: ${pc.component.kind}`, bg: 'var(--success-bg)', fg: 'var(--success)' })
   const w = [pc.active_min_width, pc.active_max_width]
   const d = [pc.active_min_drop, pc.active_max_drop]
   if (w[0] != null || w[1] != null) badges.push({ t: `W ${w[0] ?? '0'}–${w[1] ?? '∞'}`, bg: 'var(--warning-bg)', fg: 'var(--warning)' })
@@ -71,7 +71,7 @@ function PriceCell({ pc }) {
 
 
 export default function ProductDetail({
-  product, productComponents, allComponents, suppliers = [], optionDefs = [],
+  product, productComponents, allComponents, suppliers = [], optionDefs = [], kinds = [],
   widthSchedules = [], onSaveSchedule, onDeleteSchedule, fabricCategories = [],
   onBack, onUpdateProduct, onAddComponent, onUpdateComponent,
   onRemoveComponent, onDuplicate, onDeleteProduct, saving,
@@ -113,6 +113,11 @@ export default function ProductDetail({
 
   // Grids assume each option's default answer, since a price grid has to pick
   // one build to price. What it assumed is shown above the table.
+  // Kinds the job is asked about, so a recipe line can say so.
+  const askedKinds = useMemo(
+    () => new Set(kinds.filter(k => k?.ask_on_job).map(k => k.name)),
+    [kinds])
+
   // The recipe as entries rather than raw lines — see groupRecipeLines.
   const recipeGroups = useMemo(() => groupRecipeLines(productComponents), [productComponents])
 
@@ -455,7 +460,7 @@ export default function ProductDetail({
                         {first.colour_variant ? ` · ${first.colour_variant.name}` : ''}
                         {first.component?.supplier ? ` · ${first.component.supplier}` : ''}
                       </div>
-                      <BadgeRow items={conditionBadges(first, optionDefs)} />
+                      <BadgeRow items={conditionBadges(first, optionDefs, true, askedKinds)} />
                     </div>
                     <div className="component-right">
                       <PriceCell pc={first} />
@@ -508,7 +513,7 @@ export default function ProductDetail({
                           the whole point of collapsing: the group stays legible
                           without being opened. */}
                       <BadgeRow items={group.lines.map(l =>
-                        conditionBadges(l, optionDefs, false)[0] || ALWAYS)} />
+                        conditionBadges(l, optionDefs, false, askedKinds)[0] || ALWAYS)} />
 
                       {(overlapsByKind[group.label] || []).length > 0 && (
                         <div style={{
@@ -544,7 +549,7 @@ export default function ProductDetail({
                   </div>
 
                   {open && group.lines.map(pc => {
-                    const badges = conditionBadges(pc, optionDefs, false)
+                    const badges = conditionBadges(pc, optionDefs, false, askedKinds)
                     return (
                       <div key={pc.id} className="component-item"
                         onClick={() => setEditingPc(pc)}

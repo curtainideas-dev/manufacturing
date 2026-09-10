@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { XIcon, TrashIcon, PlusIcon } from './Icons'
+import { XIcon, TrashIcon, PlusIcon, CheckIcon } from './Icons'
 import { categoryForPrice } from '../lib/fabricEngine'
 
 const UNITS = ['each', 'metres', 'mm', 'm²', 'hours']
@@ -188,19 +188,53 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
               Kind
               <span style={{ color: 'var(--warm-300)', fontWeight: 400, marginLeft: 6 }}>optional</span>
             </label>
-            <select className="field-input" value={form.kind || ''}
-              onChange={e => handleKindChange(e.target.value || null)}>
-              <option value="">— No kind —</option>
-              {kinds.map(k => (
-                <option key={k.name} value={k.name}>{k.name}</option>
-              ))}
-            </select>
-            <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4 }}>
-              What this part is, whoever uses it. Parts sharing a kind can be offered
-              as alternatives to each other in a recipe — but a kind on its own groups
-              nothing, so naming it here is always safe.
-              {kinds.length === 0
-                ? ' No kinds defined yet — add them under Admin → Component Kinds.'
+            {/* Tappable rather than a dropdown, like every other choice in the
+                app. Ticking one unticks the rest — a part is one kind, and the
+                ticked one is the kind it carries. */}
+            {kinds.length === 0 ? (
+              <div style={{
+                background: 'var(--warm-100)', borderRadius: 'var(--radius-sm)',
+                padding: '9px 12px', fontSize: 12, color: 'var(--warm-300)',
+              }}>
+                No kinds defined yet — add them under Admin → Component Kinds.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {kinds.map(k => {
+                  const on = form.kind === k.name
+                  return (
+                    <button key={k.name} type="button"
+                      onClick={() => handleKindChange(on ? null : k.name)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 7,
+                        padding: '8px 11px', borderRadius: 8, cursor: 'pointer',
+                        fontSize: 12.5, fontWeight: 600,
+                        border: `1.5px solid ${on ? 'var(--accent)' : 'var(--warm-200)'}`,
+                        background: on ? 'var(--accent-bg)' : '#fff',
+                        color: on ? 'var(--accent-dark)' : 'var(--ink)',
+                      }}>
+                      <span style={{
+                        width: 15, height: 15, borderRadius: 4, flexShrink: 0,
+                        border: `2px solid ${on ? 'var(--accent)' : 'var(--warm-200)'}`,
+                        background: on ? 'var(--accent)' : '#fff',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        {on && <CheckIcon size={10} color="#fff" />}
+                      </span>
+                      {k.name}
+                      {k.ask_on_job && (
+                        <span title="The job is asked about this part" style={{ fontSize: 11 }}>💬</span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
+              What this part is, whoever uses it. It groups the library, and decides which
+              parts are offered in place of each other.
+              {form.kind && kinds.find(k => k.name === form.kind)?.ask_on_job
+                ? ` 💬 A ${form.kind} is chosen per window when a job is entered.`
                 : ' Add or rename kinds under Admin → Component Kinds.'}
             </div>
           </div>
@@ -475,7 +509,7 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
           <div className="field" style={{ marginTop: 8 }}>
             <label className="field-label">Notes</label>
             <textarea className="field-input" rows={2} placeholder="Optional notes..."
-              value={form.notes} onChange={e => set('notes', e.target.value)} />
+              value={form.notes || ''} onChange={e => set('notes', e.target.value)} />
           </div>
 
           {isEditing && (

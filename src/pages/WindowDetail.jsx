@@ -6,7 +6,7 @@ import SwapComponentModal from '../components/SwapComponentModal'
 
 export default function WindowDetail({
   window: win, windowIndex, totalWindows, job, product, productComponents, optionDefs = [],
-  allComponents = [], fabricCategories = [], stockMap = {}, suppliers = [], nestedFabricQty,
+  allComponents = [], fabricCategories = [], stockMap = {}, suppliers = [], kinds = [], nestedFabricQty,
   onBack, onUpdate, onDelete, readOnly,
 }) {
   const [overrides, setOverrides] = useState(win.bom_overrides || {})
@@ -355,6 +355,7 @@ export default function WindowDetail({
         substitutions={win.substitutions}
         stockMap={stockMap}
         suppliers={suppliers}
+        kinds={kinds}
         widthMm={win.width_mm}
         dropMm={win.drop_mm}
         config={win.config}

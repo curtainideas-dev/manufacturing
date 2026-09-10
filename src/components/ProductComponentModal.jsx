@@ -30,12 +30,7 @@ const DEFAULT = {
   active_max_drop: null,
   drop_limit: null,
   drop_limit_mode: 'above',
-  job_role: null,
 }
-
-// Roles that come up constantly. Only a seed for the input below — anything
-// can be typed, and a role is just its name.
-const ROLE_SUGGESTIONS = ['Base rail', 'Winder', 'Bracket', 'Tube', 'Chain', 'Motor']
 
 export default function ProductComponentModal({
   open, productComponent, allComponents, suppliers = [], optionDefs = [],
@@ -150,19 +145,6 @@ export default function ProductComponentModal({
   const unit            = displayComp?.unit || 'each'
   const colourVariants  = displayComp?.colour_variants || []
   const hasColours      = colourVariants.length > 0
-
-  /* ---- What the job question will offer ----------------------------------
-   * Every other component of this part's kind. Read straight from the library
-   * rather than stored per line, so adding a winder makes it an answer
-   * everywhere at once instead of nowhere until someone ticks it.
-   * --------------------------------------------------------------------- */
-  const altKind  = displayComp?.kind || null
-  const siblings = altKind
-    ? allComponents
-        .filter(c => c.kind === altKind && c.id !== displayComp?.id)
-        .sort((a, b) => a.name.localeCompare(b.name))
-    : []
-  const siblingCount = siblings.length + 1   // the recipe's own part counts
 
   // Build live formula preview using the shared helper
   const previewPc = { ...form, component: displayComp }
@@ -544,67 +526,6 @@ export default function ProductComponentModal({
               {optionDefs.length === 0 && (
                 <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginTop: -4, marginBottom: 10 }}>
                   No options defined for this product type yet — add them under Products → Options.
-                </div>
-              )}
-
-              {/* Customisable on the job — see supabase_job_role_slots.sql.
-                  Naming the line turns it into a question asked while the job
-                  is being entered; the list below is what that question offers
-                  as answers. Left unnamed (the default) nothing changes. */}
-              <div className="divider" />
-              <div className="field" style={{ marginBottom: 10 }}>
-                <label className="field-label">Ask about this on the job (optional)</label>
-                <input className="field-input" value={form.job_role || ''}
-                  onChange={e => set('job_role', e.target.value || null)}
-                  placeholder="e.g. Base rail, Winder, Bracket" list="job-role-suggestions" />
-                <datalist id="job-role-suggestions">
-                  {ROLE_SUGGESTIONS.map(r => <option key={r} value={r} />)}
-                </datalist>
-                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4 }}>
-                  Named, this part becomes a question when a window is added — answered
-                  alongside the fabric, not hunted down on the BOM afterwards. Leave blank
-                  and it stays a plain recipe line.
-                </div>
-              </div>
-
-              {/* What the question offers is not curated here. The answers are
-                  every component sharing this part's kind — see jobRoleSlots.
-                  Saying it again per recipe line would be the same fact in two
-                  places, free to drift the moment a new winder is added. */}
-              {form.job_role && (
-                <div className="field" style={{ marginBottom: 12 }}>
-                  {altKind ? (
-                    <div style={{
-                      background: 'var(--accent-bg)', borderRadius: 'var(--radius-sm)',
-                      padding: '10px 12px', fontSize: 12.5, lineHeight: 1.5,
-                    }}>
-                      {siblings.length > 0 ? (
-                        <>
-                          Offers all <strong>{siblingCount} {altKind}</strong> components in the
-                          library. <strong>{displayComp?.name}</strong> stays the default.
-                          <div style={{ color: 'var(--warm-300)', marginTop: 5 }}>
-                            or: {siblings.map(c => c.name).join(' · ')}
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <strong>{displayComp?.name}</strong> is the only {altKind} in the library,
-                          so the question offers its colours only. Add another {altKind} and it
-                          becomes an answer here automatically.
-                        </>
-                      )}
-                    </div>
-                  ) : (
-                    <div style={{
-                      background: 'var(--warning-bg)', borderLeft: '3px solid var(--warning)',
-                      borderRadius: 'var(--radius-sm)', padding: '10px 12px',
-                      fontSize: 12, color: 'var(--warning)', lineHeight: 1.5,
-                    }}>
-                      {displayComp?.name || 'This part'} has no <strong>Kind</strong>, so the question
-                      will offer only its own colours. Give it a kind in the component library —
-                      Winder, Base Rail — and every other part of that kind becomes an answer.
-                    </div>
-                  )}
                 </div>
               )}
 

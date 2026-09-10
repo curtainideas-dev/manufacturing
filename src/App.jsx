@@ -583,7 +583,6 @@ export default function App() {
       active_max_drop:   formData.active_max_drop ?? null,
       drop_limit:        formData.drop_limit && Object.keys(formData.drop_limit).length ? formData.drop_limit : null,
       drop_limit_mode:   formData.drop_limit_mode || 'above',
-      job_role:          formData.job_role || null,
       sort_order:        sortOrder,
     })
     if (error) showToast(error.message || 'Failed to add', 'error')
@@ -610,7 +609,6 @@ export default function App() {
       active_max_drop:   formData.active_max_drop ?? null,
       drop_limit:        formData.drop_limit && Object.keys(formData.drop_limit).length ? formData.drop_limit : null,
       drop_limit_mode:   formData.drop_limit_mode || 'above',
-      job_role:          formData.job_role || null,
     }).eq('id', id)
     showToast('Updated ✓', 'success')
     await loadAll()
@@ -1598,6 +1596,7 @@ export default function App() {
           fabricCategories={fabricCategories}
           stockMap={stockMap}
           suppliers={suppliers}
+          kinds={componentKinds}
           nestedFabricQty={liveNestedFabricQty[win.id]}
           onBack={() => setCurrentWindow(null)}
           onUpdate={(updates) => handleWindowUpdate(currentWindow.idx, updates)}
@@ -1649,6 +1648,7 @@ export default function App() {
           productComponents={productComponentsMap[currentProduct.id] || []}
           allComponents={components}
           suppliers={suppliers}
+          kinds={componentKinds}
           optionDefs={productOptions[currentProduct.product_type] || []}
           widthSchedules={widthSchedules}
           fabricCategories={fabricCategories}
@@ -1900,6 +1900,7 @@ export default function App() {
         jobSubMap={substitutionsFor(currentJob, null, components)}
         stockMap={stockMap}
         suppliers={suppliers}
+        kinds={componentKinds}
         onClose={() => setAddWindowOpen(false)}
         onAdd={handleAddWindow}
       />
