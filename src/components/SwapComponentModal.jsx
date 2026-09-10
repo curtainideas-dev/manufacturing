@@ -18,6 +18,10 @@ const TYPE_META = {
  *
  * Stock on hand is on every row, because the usual reason to swap is that a
  * different part is the one actually sitting on the shelf.
+ *
+ * The recipe's own part is offered too, and always first. Picking it is how a
+ * swap is undone, and — where it has colours — how the same part is taken in a
+ * different one, which is a swap in its own right and a common one.
  */
 export default function SwapComponentModal({
   open, scope = 'window', line, components = [], stockMap = {},
@@ -37,29 +41,42 @@ export default function SwapComponentModal({
     if (open) {
       setSearch('')
       setAllTypes(false)
-      setPickedId(current?.id || '')
-      setColour(current ? (line?.colour_variant || null) : null)
+      // Opens on what is in force right now — the swap if there is one, the
+      // recipe's part if there isn't — rather than on nothing, so the colour
+      // swatches for the current part are there to change straight away.
+      setPickedId(current?.id || original?.id || '')
+      setColour(line?.colour_variant || null)
     }
-  }, [open, line, current])
+  }, [open, line, current, original])
 
   const originalType = original?.order_type || 'pack'
   const exclude = useMemo(() => new Set(excludeIds), [excludeIds])
 
   const choices = useMemo(() => {
     const q = search.trim().toLowerCase()
+    // The recipe's own part is never filtered out — not by kind, not by
+    // search, and not by the already-on-this-BOM exclusion it is guaranteed
+    // to trip, since it IS what's on the BOM.
+    const isOriginal = c => c.id === original?.id
     return components
-      .filter(c => c.id !== original?.id)
-      .filter(c => !exclude.has(c.id) || c.id === current?.id)
-      .filter(c => allTypes || (c.order_type || 'pack') === originalType)
-      .filter(c => !q
+      .filter(c => isOriginal(c) || !exclude.has(c.id) || c.id === current?.id)
+      .filter(c => isOriginal(c) || allTypes || (c.order_type || 'pack') === originalType)
+      .filter(c => isOriginal(c) || !q
         || c.name.toLowerCase().includes(q)
         || (c.supplier_pn || '').toLowerCase().includes(q)
         || (c.supplier || '').toLowerCase().includes(q))
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort((a, b) => (isOriginal(b) ? 1 : 0) - (isOriginal(a) ? 1 : 0)
+        || a.name.localeCompare(b.name))
   }, [components, search, allTypes, originalType, original, exclude, current])
 
   const picked  = components.find(c => c.id === pickedId) || null
   const colours = picked?.colour_variants || []
+
+  // What is in force on this line right now, so a save that would change
+  // nothing can't be offered as though it would.
+  const inForce = { id: line?.component?.id, suffix: line?.colour_variant?.suffix || '' }
+  const changed = !!picked
+    && (picked.id !== inForce.id || (colour?.suffix || '') !== inForce.suffix)
 
   if (!open || !line) return null
 
@@ -148,6 +165,11 @@ export default function SwapComponentModal({
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 13.5, fontWeight: 600, color: on ? 'var(--accent-dark)' : 'var(--ink)' }}>
                         {(TYPE_META[c.order_type || 'pack'] || TYPE_META.pack).emoji} {c.name}
+                        {c.id === original?.id && (
+                          <span style={{ fontSize: 10, fontWeight: 700, marginLeft: 6, padding: '1px 5px', borderRadius: 4, background: 'var(--warm-100)', color: 'var(--warm-300)' }}>
+                            as specified
+                          </span>
+                        )}
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
                         {c.unit}
@@ -225,13 +247,15 @@ export default function SwapComponentModal({
 
         <div className="modal-footer">
           <button className="btn btn-secondary" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" style={{ flex: 2 }} disabled={!picked}
+          <button className="btn btn-primary" style={{ flex: 2 }} disabled={!changed}
             onClick={() => onSave({
               from_component_id: original.id,
               component_id:      picked.id,
               colour_variant:    colour,
             })}>
-            {picked ? `Use ${picked.name}` : 'Pick a component'}
+            {!picked ? 'Pick a component'
+              : !changed ? 'Already in use'
+              : `Use ${picked.name}${colour ? ` · ${colour.name}` : ''}`}
           </button>
         </div>
       </div>

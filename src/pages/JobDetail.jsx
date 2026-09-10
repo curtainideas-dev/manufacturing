@@ -27,8 +27,8 @@ const CopyIcon = () => (
 
 export default function JobDetail({
   job, products, productComponentsMap, optionDefsFor,
-  allComponents = [], suppliers = [], fabricCategories = [], stockMap = {},
-  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onReorderWindows, onConfirm, onComplete, onReopen, onAttachPO, poUploading, onDeductStock,
+  allComponents = [], suppliers = [], fabricCategories = [], stockMap = {}, kinds = [],
+  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onReorderWindows, onConfirm, onComplete, onReopen, onBackToReceived, onAttachPO, poUploading, onDeductStock,
 }) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(false)
@@ -107,7 +107,7 @@ export default function JobDetail({
   const handleCutSheet = async () => {
     setCutting(true)
     try {
-      await exportCutSheetPDF(job, windowsWithBOM, optionDefsFor, suppliers)
+      await exportCutSheetPDF(job, windowsWithBOM, optionDefsFor, suppliers, kinds)
     } finally {
       setCutting(false)
     }
@@ -293,7 +293,7 @@ export default function JobDetail({
               background: 'rgba(255,255,255,0.15)', color: '#fff',
               border: '1px solid rgba(255,255,255,0.3)',
               borderRadius: 8, cursor: 'pointer',
-            }}>Reopen</button>
+            }}>← In Progress</button>
           )}
         </div>
       </div>
@@ -546,6 +546,36 @@ export default function JobDetail({
                 >
                   <CheckIcon size={15} /> Mark Complete
                 </button>
+              )}
+
+              {(isInProgress || isCompleted) && (
+                <>
+                  <div className="divider" />
+                  <div style={{
+                    fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                    letterSpacing: '0.08em', color: 'var(--warm-300)', marginBottom: 8,
+                  }}>
+                    Move back
+                  </div>
+
+                  {isCompleted && (
+                    <button className="btn btn-secondary btn-block" onClick={onReopen}>
+                      ← Back to In Progress
+                    </button>
+                  )}
+
+                  {isInProgress && (
+                    <button className="btn btn-secondary btn-block" onClick={onBackToReceived}>
+                      ← Back to Received
+                    </button>
+                  )}
+
+                  <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 7, lineHeight: 1.45 }}>
+                    {isCompleted
+                      ? 'Reopens the job for stock and labels. Pricing stays locked.'
+                      : 'Makes the job editable again. Unlocks pricing, and asks what to do with any stock already deducted.'}
+                  </div>
+                </>
               )}
 
               {(isReceived || isInProgress) && (

@@ -16,6 +16,7 @@ const DEFAULT = {
   supplier_pn: '',
   notes: '',
   colour_variants: [],
+  kind: null,          // what this part IS — Tube, Winder, Base Rail…
   order_type: 'pack',  // 'pack' | 'bar' | 'labour'
   pack_price: 0,
   pack_qty: 1,
@@ -23,7 +24,7 @@ const DEFAULT = {
   bar_price: 0,
 }
 
-export default function ComponentModal({ open, component, suppliers, fabricCategories = [], onClose, onSave, onDelete, saving }) {
+export default function ComponentModal({ open, component, suppliers, fabricCategories = [], kinds = [], onClose, onSave, onDelete, saving }) {
   const [form, setForm]                   = useState(DEFAULT)
   const [newColourName, setNewColourName]  = useState('')
   const [newColourSuffix, setNewColourSuffix] = useState('')
@@ -63,6 +64,35 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
     setNewWidth('')
   }
   const removeWidth = (w) => set('roll_widths', rollWidths.filter(x => x !== w))
+
+  /**
+   * Picking a kind pre-selects how that kind is usually bought.
+   *
+   * A default, never a rule — order_type drives stock, POs and the cut sheet,
+   * and a supplier who sells base rail cut to length rather than in packs must
+   * not need a new kind to say so. It only fills a blank-ish answer: an
+   * order_type the user has already moved off the default is left alone,
+   * because overwriting a deliberate choice is worse than asking twice.
+   */
+  const handleKindChange = (name) => {
+    const picked = kinds.find(k => k.name === name)
+    setForm(prev => {
+      const next = { ...prev, kind: name }
+      // Only fill an answer the user hasn't deliberately set: a brand new
+      // component, or one still sitting on the previous kind's default.
+      const previous = kinds.find(k => k.name === prev.kind)
+      const untouched = !prev.kind || prev.order_type === previous?.default_order_type
+      const ot = picked?.default_order_type
+      if (ot && untouched && ot !== prev.order_type) {
+        next.order_type = ot
+        // Same unit locking `set` applies, so defaulting can't leave a labour
+        // component priced per metre.
+        if (ot === 'labour') next.unit = 'hours'
+        if (ot === 'fabric') next.unit = 'metres'
+      }
+      return next
+    })
+  }
 
   // When supplier changes, default the discount to the supplier's discount
   const handleSupplierChange = (supplierId) => {
@@ -148,6 +178,41 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
               </div>
             </div>
           )}
+
+          {/* Kind — what this part IS, independent of any recipe.
+              Naming it here rather than on each recipe line is what lets two
+              tubes be recognised as the same decision in every product that
+              uses them, and lets a rename reach all of them at once. */}
+          <div className="field" style={{ marginBottom: 16 }}>
+            <label className="field-label">
+              Kind
+              <span style={{ color: 'var(--warm-300)', fontWeight: 400, marginLeft: 6 }}>optional</span>
+            </label>
+            {/* A dropdown: there are already fourteen kinds and the list only
+                grows, so a wall of pills costs more room than it saves. The
+                selected option is the kind the component carries. */}
+            <select className="field-input" value={form.kind || ''}
+              onChange={e => handleKindChange(e.target.value || null)}>
+              <option value="">— No kind —</option>
+              {kinds.map(k => (
+                <option key={k.name} value={k.name}>
+                  {k.name}{k.ask_on_job ? ' 💬' : ''}
+                </option>
+              ))}
+            </select>
+            {kinds.length === 0 && (
+              <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 4 }}>
+                No kinds defined yet — add them under Admin → Component Kinds.
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
+              What this part is, whoever uses it. It groups the library, and decides which
+              parts are offered in place of each other.
+              {form.kind && kinds.find(k => k.name === form.kind)?.ask_on_job
+                ? ` 💬 A ${form.kind} is chosen per window when a job is entered.`
+                : ' Add or rename kinds under Admin → Component Kinds.'}
+            </div>
+          </div>
 
           {/* Supplier dropdown */}
           <div className="grid-2" style={{ marginBottom: 16 }}>
@@ -419,7 +484,7 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
           <div className="field" style={{ marginTop: 8 }}>
             <label className="field-label">Notes</label>
             <textarea className="field-input" rows={2} placeholder="Optional notes..."
-              value={form.notes} onChange={e => set('notes', e.target.value)} />
+              value={form.notes || ''} onChange={e => set('notes', e.target.value)} />
           </div>
 
           {isEditing && (

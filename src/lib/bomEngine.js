@@ -206,11 +206,6 @@ const withinBand = (pc, widthMm, dropMm) =>
   (pc.active_min_drop  == null || dropMm  >= Number(pc.active_min_drop))  &&
   (pc.active_max_drop  == null || dropMm  <= Number(pc.active_max_drop))
 
-const isBanded = pc =>
-  pc.active_min_width != null || pc.active_max_width != null ||
-  pc.active_min_drop  != null || pc.active_max_drop  != null ||
-  hasDropLimit(pc)
-
 const hasDropLimit = pc =>
   !!pc.drop_limit && Object.keys(pc.drop_limit).length > 0
 
@@ -246,26 +241,89 @@ const withinDropLimit = (pc, widthMm, dropMm) => {
     : Number(dropMm) > threshold
 }
 
+/* ==========================================================================
+ * Overlapping conditions
+ *
+ * There used to be a grouping step here: lines could be marked as alternatives
+ * and the resolver would keep exactly one of them. It has been removed, and
+ * the reason is worth keeping.
+ *
+ * A line already says when it applies — an option answer, a width band, a drop
+ * band. If those conditions are written properly they are mutually exclusive,
+ * and exactly one line survives on its own; the grouping never fired. Checked
+ * against every product at every option combination over a sweep of sizes,
+ * 13,824 resolutions, it changed nothing.
+ *
+ * Where it DID fire, it was hiding a mistake. Two lines whose bands overlap is
+ * a recipe error, and the resolver silently kept whichever came first — so the
+ * BOM looked right, the recipe stayed wrong, and nobody found out. Two tubes on
+ * a BOM is a visible, fixable fault. One arbitrarily chosen tube is not.
+ *
+ * So overlap is now detected and reported instead of absorbed.
+ * ========================================================================== */
+
+const RANGE_MAX = Number.MAX_SAFE_INTEGER
+
+const rangesOverlap = (aMin, aMax, bMin, bMax) =>
+  Math.max(Number(aMin ?? 0), Number(bMin ?? 0))
+  <= Math.min(Number(aMax ?? RANGE_MAX), Number(bMax ?? RANGE_MAX))
+
 /**
- * Collapse group_key alternatives down to one line each.
- * Precedence: an explicit window override, then a line supplied by an
- * answered option, then a line whose dimension band matched, then the plain
- * default. Ungrouped lines pass straight through.
+ * Can these two lines ever apply to the same window?
+ *
+ * Two answers of the SAME option can't both be given, so lines gated on
+ * different choices of one option are exclusive however their bands look.
+ * Choices of DIFFERENT options can both be true at once, so those fall through
+ * to the bands.
+ *
+ * A drop_limit is a per-width table rather than a range, so a pair involving
+ * one is reported as undecidable rather than guessed at either way.
  */
-function applyGroups(lines, overrides = {}) {
-  const grouped = {}, out = []
-  lines.forEach(pc => {
-    if (!pc.group_key) { out.push(pc); return }
-    ;(grouped[pc.group_key] ||= []).push(pc)
+export function linesCanCollide(a, b, optionDefs = []) {
+  const optionOf = (choiceId) => optionDefs
+    .find(o => (o.choices || []).some(c => c.id === choiceId))?.code || null
+
+  if (a.option_choice_id && b.option_choice_id && a.option_choice_id !== b.option_choice_id) {
+    const oa = optionOf(a.option_choice_id), ob = optionOf(b.option_choice_id)
+    if (oa && oa === ob) return false          // two answers to one question
+  }
+  if (hasDropLimit(a) || hasDropLimit(b)) return null   // undecidable
+
+  return rangesOverlap(a.active_min_width, a.active_max_width, b.active_min_width, b.active_max_width)
+      && rangesOverlap(a.active_min_drop,  a.active_max_drop,  b.active_min_drop,  b.active_max_drop)
+}
+
+/**
+ * Pairs of lines in one recipe that are the same kind of part AND can both
+ * apply at once — i.e. a window that would get two base rails.
+ *
+ * Same-kind only, deliberately. Two different kinds arriving together is
+ * normal (a bracket and its cover); two of one kind is what nobody intends.
+ * Track Return FF Wave L and R are the exception that proves it — they share
+ * a kind and are MEANT to arrive together on "Both ends", so a report is the
+ * right output here, not a rule.
+ */
+export function overlappingLines(productComponents = [], optionDefs = []) {
+  const out = []
+  const byKind = {}
+  productComponents.forEach(pc => {
+    const k = pc.component?.kind
+    if (k) (byKind[k] ||= []).push(pc)
   })
-  Object.entries(grouped).forEach(([key, candidates]) => {
-    const forcedId = overrides && overrides[key]
-    const pick =
-      (forcedId && candidates.find(c => c.id === forcedId)) ||
-      candidates.find(c => c.option_choice_id) ||
-      candidates.find(isBanded) ||
-      candidates[0]
-    if (pick) out.push(pick)
+
+  Object.entries(byKind).forEach(([kind, lines]) => {
+    for (let i = 0; i < lines.length; i++) {
+      for (let j = i + 1; j < lines.length; j++) {
+        const verdict = linesCanCollide(lines[i], lines[j], optionDefs)
+        if (verdict === false) continue
+        out.push({
+          kind,
+          a: lines[i],
+          b: lines[j],
+          certain: verdict === true,   // false means "couldn't decide"
+        })
+      }
+    }
   })
   return out
 }
@@ -291,7 +349,10 @@ export function resolveRecipe(productComponents = [], config = null, optionDefs 
     withinBand(pc, widthMm, dropMm) &&
     withinDropLimit(pc, widthMm, dropMm))
 
-  return applyGroups(applicable, config && config.overrides)
+  // No collapsing step: a line's own conditions decide whether it applies.
+  // Where two of a kind both survive, that is a recipe fault to be seen, not
+  // one to be quietly resolved — see overlappingLines.
+  return applicable
     .slice()
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
 }
@@ -515,13 +576,22 @@ export function substitutionsFor(job, win, allComponents = []) {
  * Swap components into resolved recipe lines. A line keeps its formula, bands
  * and sort order — only the part it points at changes — and carries
  * `substituted_from` so every screen downstream can say what it replaced.
+ *
+ * A swap that keeps the recipe's own component and changes only its COLOUR is
+ * a real swap and applies like any other — the same base rail profile in White
+ * instead of Anodised is exactly what a job asks for, and it moves the part
+ * number and the stock row the line draws from even though the component id
+ * never budges. Only a swap that changes nothing at all is a no-op.
  */
 export function applySubstitutions(lines, subMap = null) {
   if (!subMap || Object.keys(subMap).length === 0) return lines
   return lines.map(pc => {
     if (pc.cost_type === 'fabric_strip') return pc
     const sub = subMap[pc.component_id]
-    if (!sub || sub.component.id === pc.component_id) return pc
+    if (!sub) return pc
+    const sameComponent = sub.component.id === pc.component_id
+    const sameColour    = (sub.colour_variant?.suffix || '') === (pc.colour_variant?.suffix || '')
+    if (sameComponent && sameColour) return pc
     return {
       ...pc,
       substituted_from: {
@@ -534,6 +604,178 @@ export function applySubstitutions(lines, subMap = null) {
       colour_variant: sub.colour_variant || null,
     }
   })
+}
+
+/**
+ * Collapse a product's recipe into the entries a person reads it as.
+ *
+ * A recipe is stored one line per (part × the answer that supplies it), which
+ * is the right shape to resolve against but the wrong shape to read: one
+ * carrier answered three ways is three rows, and the two tubes that swap over
+ * at 2200mm can sit a dozen rows apart with nothing saying they are the same
+ * decision.
+ *
+ * Two things collapse, in this order:
+ *
+ *   an alternatives group   every line sharing a group_key, whatever parts
+ *                           they name — this is the decision, and exactly one
+ *                           of its lines survives resolution.
+ *
+ *   one part, many answers  otherwise, every line built from the same
+ *                           component. Not a group in the engine's sense —
+ *                           these lines don't compete, they are simply the
+ *                           same part reached different ways — but it is one
+ *                           thing to a reader, and reads as one row.
+ *
+ * Ordering is by where a group FIRST appears in the recipe, so collapsing
+ * never shuffles a list someone has already learned the shape of.
+ *
+ * Pure and exported so the grouping can be checked without a browser.
+ */
+export function groupRecipeLines(productComponents = []) {
+  const groups = new Map()
+
+  productComponents.forEach(pc => {
+    // Grouped by the part's kind. Purely a reading aid now — the engine
+    // collapses nothing, so this changes how the recipe reads and never what
+    // a window gets.
+    const groupName = pc.component?.kind || null
+    const key = groupName ? `g:${groupName}` : `c:${pc.component_id}`
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        label:        groupName || pc.component?.name || '—',
+        // A tagged group is a real choice the engine makes; a same-part group
+        // is only a reading convenience. Worth telling apart on screen.
+        isAlternatives: !!groupName,
+        lines:        [],
+      })
+    }
+    groups.get(key).lines.push(pc)
+  })
+
+  return [...groups.values()]
+    .map(g => ({ ...g, sort_order: Math.min(...g.lines.map(l => Number(l.sort_order) || 0)) }))
+    .sort((a, b) => a.sort_order - b.sort_order)
+}
+
+/* ==========================================================================
+ * Job role slots — the parts a job is ASKED about
+ *
+ * Substitution above is a repair tool: you notice a line is wrong, find it on
+ * the BOM, and pick a replacement out of every component of that kind. It
+ * works, but only for someone who already knows to go looking.
+ *
+ * Some parts get changed often enough that waiting to notice is the wrong
+ * shape. The base rail's colour follows the fabric, and only some suppliers
+ * make some colours. The winder is whichever brand is actually on the shelf
+ * this week. So a KIND can be marked `ask_on_job`, and every recipe line built
+ * from a part of that kind becomes a question put to whoever enters the job,
+ * alongside the fabric. The kind's name is the question and its members are
+ * the answers — there is no second place to keep in step.
+ *
+ * What it OFFERS is not curated per line. The answers are every component
+ * sharing the recipe part's kind, because that is what a kind already means:
+ * a winder's alternatives are the other winders. Curating a list per recipe
+ * line said the same thing again in a second place, and the two could drift —
+ * add a winder to the library and it would be missing from every product until
+ * someone remembered to tick it. Naming the kind once is the whole job.
+ *
+ * The ANSWER is not a new kind of record. It is written into the same
+ * `substitutions` map a hand-made swap uses, keyed the same way, so the two
+ * are one record and cannot drift apart. Everything downstream — costing,
+ * stock, the price snapshot, the PO — needs no idea this exists.
+ * ========================================================================== */
+
+/**
+ * The questions to put for one window, from its RESOLVED recipe lines.
+ *
+ * Resolved, not raw, so a base rail that only applies to a chain-drive blind
+ * stops being asked about the moment the window answers spring-loaded — the
+ * slots follow the same gating as the parts they choose.
+ *
+ * The recipe's own component is always the first choice and always available:
+ * it is both the default and the way back. Alternatives that have since been
+ * deleted from the library drop out silently rather than showing as blanks.
+ */
+export function jobRoleSlots(resolvedLines = [], subMap = null, allComponents = [], kinds = []) {
+  const byId = new Map(allComponents.map(c => [c.id, c]))
+  // The kinds the job gets a say in. A Set of names, because the kind's name
+  // is both the question and the tie to its members.
+  const asked = new Set(kinds.filter(k => k?.ask_on_job).map(k => k.name))
+  const seen = new Set()
+  const slots = []
+
+  resolvedLines.forEach(pc => {
+    if (pc.cost_type === 'fabric_strip') return
+    const kind = pc.component?.kind || byId.get(pc.component_id)?.kind || null
+    if (!kind || !asked.has(kind)) return
+    // Two resolved lines built from the same component share one answer —
+    // substitutions are keyed by component id, so a second slot would be the
+    // same question twice with one shared answer.
+    if (seen.has(pc.component_id)) return
+    seen.add(pc.component_id)
+
+    const recipeComponent = pc.component || byId.get(pc.component_id) || null
+    if (!recipeComponent) return
+
+    // The rest of the kind. Read from the library, so a part added later is an
+    // answer everywhere at once.
+    const alternatives = allComponents
+      .filter(c => c.kind === kind && c.id !== pc.component_id)
+      .sort((a, b) => a.name.localeCompare(b.name))
+
+    const sub    = subMap && subMap[pc.component_id]
+    const chosen = sub
+      ? { component: sub.component, colour_variant: sub.colour_variant || null }
+      : { component: recipeComponent, colour_variant: pc.colour_variant || null }
+
+    slots.push({
+      // What an answer is filed under, and what deleting reverts.
+      key:    pc.component_id,
+      // The kind IS the question — there is no separate name to keep in step.
+      role:   kind,
+      recipe: { component: recipeComponent, colour_variant: pc.colour_variant || null },
+      // Recipe part first — it is the default, not just another option.
+      choices: [recipeComponent, ...alternatives],
+      chosen,
+      changed: chosen.component.id !== recipeComponent.id
+        || (chosen.colour_variant?.suffix || '') !== (pc.colour_variant?.suffix || ''),
+    })
+  })
+
+  return slots
+}
+
+/**
+ * The parts worth printing, as flat spec text — "Base Rail: Q-Bar · White".
+ *
+ * Driven by the KIND's on_cut_sheet flag rather than by what the job was asked
+ * about: those are different questions. A chain length is decided by the drop
+ * so nobody is asked, but the bench still has to know which one to take off
+ * the rack.
+ *
+ * Reads the BOM AFTER substitution, so what it prints is what the line was
+ * actually costed and stocked against — including a swap made on the job.
+ */
+export function roleSpecs(bomLines = [], kinds = []) {
+  const printed = new Set(kinds.filter(k => k?.on_cut_sheet).map(k => k.name))
+  if (printed.size === 0) return []
+
+  const seen = new Set()
+  return (bomLines || []).reduce((out, l) => {
+    const kind = l.component?.kind
+    if (!kind || !printed.has(kind)) return out
+    const key = kind + '|' + l.component_id
+    if (seen.has(key)) return out
+    seen.add(key)
+    out.push({
+      role:  kind,
+      value: `${l.component?.name || '—'}${l.colour_variant?.name ? ` · ${l.colour_variant.name}` : ''}`,
+      changed: !!l.substituted_from,
+    })
+    return out
+  }, [])
 }
 
 /**
@@ -627,6 +869,10 @@ export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = nul
       // The recipe's own part, when this line has been swapped away from it.
       // Null on every unswapped line — see applySubstitutions.
       substituted_from:     pc.substituted_from || null,
+      // The name this line is asked about under at job entry — "Base rail",
+      // "Winder" — or null on a line nobody is asked about. Rides along so the
+      // cut sheet can print the spec without re-reading the recipe.
+      job_role:             pc.job_role || null,
       display_pn,
       calculated_qty,
       qty_frozen,

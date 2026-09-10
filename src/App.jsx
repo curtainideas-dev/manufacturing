@@ -8,6 +8,10 @@ import ProductDetail     from './pages/ProductDetail'
 import OptionsAdmin      from './pages/OptionsAdmin'
 import AdminHome              from './pages/AdminHome'
 import FabricCategoriesAdmin  from './pages/FabricCategoriesAdmin'
+import ComponentKindsAdmin     from './pages/ComponentKindsAdmin'
+import DeletedRecordsAdmin     from './pages/DeletedRecordsAdmin'
+import DeleteJobModal          from './components/DeleteJobModal'
+import BackToReceivedModal     from './components/BackToReceivedModal'
 import JobList           from './pages/JobList'
 import JobDetail         from './pages/JobDetail'
 import WindowDetail      from './pages/WindowDetail'
@@ -27,7 +31,7 @@ import PurchaseOrderModal    from './components/PurchaseOrderModal'
 import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
-import { buildStockMap, stockKey, checkLowStock, getStock } from './lib/stockEngine'
+import { buildStockMap, stockKey, checkLowStock, getStock, planStockRestore } from './lib/stockEngine'
 import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting } from './lib/bomEngine'
 import { orderUnitInfo } from './lib/poEngine'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
@@ -65,7 +69,15 @@ export default function App() {
   const [currentWindow, setCurrentWindow]     = useState(null)
   const [currentSupplier, setCurrentSupplier] = useState(null)
   const [currentPO, setCurrentPO]             = useState(null)
-  const [adminSection, setAdminSection]       = useState(null) // 'options' | 'fabric_categories' | null
+  const [adminSection, setAdminSection]       = useState(null) // 'options' | 'fabric_categories' | 'component_kinds' | null
+  const [componentKinds, setComponentKinds]   = useState([])
+  // null until we know — distinguishes "no deletes yet" from "table not created"
+  const [deletedRecords, setDeletedRecords]   = useState(null)
+  const [restoringId, setRestoringId]         = useState(null)
+  const [deleteJobPlan, setDeleteJobPlan]     = useState(null)  // { job, plan } | null
+  const [deletingJob, setDeletingJob]         = useState(false)
+  const [revertPlan, setRevertPlan]           = useState(null)   // { job, plan } | null
+  const [reverting, setReverting]             = useState(false)
 
   const [compModalOpen, setCompModalOpen]         = useState(false)
   const [editingComp, setEditingComp]             = useState(null)
@@ -114,6 +126,22 @@ export default function App() {
   const [pricingExporting, setPricingExporting]   = useState(false)
 
   const { toasts, showToast } = useToast()
+
+  /**
+   * The kinds a component may be given, as { name, default_order_type }.
+   *
+   * The managed vocabulary is the list. Anything a component already carries
+   * that isn't in it rides along too, so the field still works before
+   * supabase_component_kinds_table.sql is run, and a kind deleted out from
+   * under a component never makes that component unsavable.
+   */
+  const kindOptions = useMemo(() => {
+    const byName = new Map(componentKinds.map(k => [k.name, k]))
+    components.forEach(c => {
+      if (c.kind && !byName.has(c.kind)) byName.set(c.kind, { name: c.kind, default_order_type: null })
+    })
+    return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [componentKinds, components])
 
   // The option definitions that apply to a product, via its type. Recipe
   // resolution needs these to know which option lines a window has answered.
@@ -189,7 +217,7 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     if (!hasLoadedRef.current) setLoading(true)
-    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes, fcRes] = await Promise.all([
+    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes, fcRes, ckRes, delRes] = await Promise.all([
       supabase.from('components').select('*').order('name'),
       supabase.from('suppliers').select('*').order('name'),
       supabase.from('products').select('*').order('name'),
@@ -202,12 +230,23 @@ export default function App() {
       supabase.from('purchase_order_lines').select('*, component:components(*)').order('created_at'),
       supabase.from('product_options').select('*, choices:product_option_choices(*)').order('sort_order'),
       supabase.from('fabric_categories').select('*').order('code'),
+      supabase.from('component_kinds').select('*').order('sort_order'),
+      supabase.from('deleted_records').select('*').order('deleted_at', { ascending: false }),
     ])
 
     const schedules = wsRes.error ? [] : (wsRes.data || [])
     if (!wsRes.error) setWidthSchedules(schedules)
 
     if (!fcRes.error) setFabricCategories(fcRes.data || [])
+
+    // Missing until supabase_component_kinds_table.sql is run; the library and
+    // the component editor both fall back to whatever kinds the components
+    // themselves already carry, so nothing breaks in the meantime.
+    if (!ckRes.error) setComponentKinds(ckRes.data || [])
+
+    // Left null when the table isn't there, so the admin screen can say
+    // "not switched on yet" rather than the far worse "nothing was deleted".
+    setDeletedRecords(delRes.error ? null : (delRes.data || []))
 
     // Option definitions, keyed by product type, each with its choices sorted.
     // Recipe resolution needs these — without them a product's option lines
@@ -336,6 +375,7 @@ export default function App() {
     setCompSaving(true)
     const payload = {
       name:             formData.name.trim(),
+      kind:             formData.kind?.trim() || null,
       unit:             formData.unit,
       unit_cost:        Number(formData.unit_cost) || 0,
       discount:         Number(formData.discount) || 0,
@@ -584,6 +624,109 @@ export default function App() {
 
   // ==== JOBS ====
 
+  // ==== DELETED RECORDS ====
+
+  /**
+   * Put a snapshot back under its original id, so anything that referenced it
+   * lines up again. A job restores with its windows in one go — a job shell
+   * without them would look restored while being useless.
+   *
+   * The bin entry is marked rather than removed: "who deleted the Wilson job
+   * and when" stays worth answering after it is back.
+   */
+  const handleRestoreRecord = async (rec) => {
+    setRestoringId(rec.id)
+    try {
+      if (rec.table_name === 'mfg_jobs') {
+        const job     = rec.payload?.job
+        const windows = rec.payload?.windows || []
+        if (!job?.id) { showToast('That snapshot has no job in it', 'error'); return }
+
+        const { error: je } = await supabase.from('mfg_jobs').insert(job)
+        if (je) {
+          showToast(je.code === '23505'
+            ? 'That job is already back — nothing to restore'
+            : `Restore failed: ${je.message}`, 'error')
+          return
+        }
+        if (windows.length) {
+          const { error: we } = await supabase.from('mfg_windows').insert(windows)
+          if (we) {
+            showToast(`Job restored, but its ${windows.length} window(s) failed: ${we.message}`, 'error')
+            return
+          }
+        }
+      } else if (rec.table_name === 'mfg_windows') {
+        const win = rec.payload?.window
+        if (!win?.id) { showToast('That snapshot has no window in it', 'error'); return }
+        // Its job may have been deleted since; restoring into nothing would fail
+        // on the foreign key with a message nobody can act on.
+        const { data: parent } = await supabase
+          .from('mfg_jobs').select('id').eq('id', win.job_id).maybeSingle()
+        if (!parent) {
+          showToast('That window\u2019s job is gone — restore the job first', 'error')
+          return
+        }
+        const { error } = await supabase.from('mfg_windows').insert(win)
+        if (error) { showToast(`Restore failed: ${error.message}`, 'error'); return }
+      } else {
+        showToast(`Don't know how to restore a ${rec.table_name} row`, 'error')
+        return
+      }
+
+      await supabase.from('deleted_records')
+        .update({ restored_at: new Date().toISOString() }).eq('id', rec.id)
+      showToast('Restored ✓', 'success')
+      await loadAll()
+    } finally {
+      setRestoringId(null)
+    }
+  }
+
+  // ==== COMPONENT KINDS ====
+
+  // A kind's NAME is what components store, so a rename is two writes: the
+  // vocabulary row, then every component pointing at the old name. Done here
+  // rather than left to the user to notice.
+  const handleSaveKind = async (kind, renamedFrom = null) => {
+    setProdSaving(true)
+    const { id, created_at, ...fields } = kind   // eslint-disable-line no-unused-vars
+    const { error } = id
+      ? await supabase.from('component_kinds').update(fields).eq('id', id)
+      : await supabase.from('component_kinds').insert(fields)
+
+    if (error) {
+      showToast(error.code === '23505' ? 'That kind already exists' : 'Failed to save kind', 'error')
+      setProdSaving(false)
+      return
+    }
+
+    if (renamedFrom && renamedFrom !== fields.name) {
+      const { error: ce } = await supabase.from('components')
+        .update({ kind: fields.name }).eq('kind', renamedFrom)
+      if (ce) showToast('Kind renamed, but components still point at the old name', 'error')
+      else showToast(`Renamed to ${fields.name} ✓`, 'success')
+    }
+
+    await loadAll()
+    setProdSaving(false)
+  }
+
+  // Deleting a kind that components still use would leave them naming a
+  // vocabulary entry that no longer exists — and, where a recipe groups by
+  // kind, quietly change what competes. So it is refused, with the count.
+  const handleDeleteKind = async (kind, usedBy = 0) => {
+    if (usedBy > 0) {
+      showToast(`${kind.name} is on ${usedBy} component${usedBy !== 1 ? 's' : ''} — clear it there first`, 'error')
+      return
+    }
+    if (!window.confirm(`Delete the kind "${kind.name}"?`)) return
+    const { error } = await supabase.from('component_kinds').delete().eq('id', kind.id)
+    if (error) { showToast('Failed to delete kind', 'error'); return }
+    showToast('Kind deleted')
+    await loadAll()
+  }
+
   // ==== PRODUCT OPTIONS ====
 
   const handleSaveOption = async (data) => {
@@ -703,22 +846,155 @@ export default function App() {
     await supabase.from('mfg_jobs').update(updates).eq('id', currentJob.id)
   }
 
-  const handleJobDelete = async () => {
-    const wasInProgress = currentJob.status === 'in_progress'
-    const msg = wasInProgress
-      ? 'Delete this in-progress job and all its windows?\n\nAny stock already deducted for it will NOT be returned.'
-      : 'Delete this job and all its windows?'
-    if (!window.confirm(msg)) return
-    const jobId = currentJob.id
-    // Clear rows that reference this job so the delete can't fail on a foreign key.
-    // (Deducted stock quantities are intentionally left as-is.)
-    await supabase.from('stock_movements').delete().eq('job_id', jobId)
-    await supabase.from('stock_bars').update({ job_id: null }).eq('job_id', jobId)
-    const { error } = await supabase.from('mfg_jobs').delete().eq('id', jobId)
-    if (error) { showToast('Delete failed', 'error'); return }
-    setJobs(prev => prev.filter(j => j.id !== jobId))
-    setCurrentJob(null)
-    showToast('Job deleted')
+  /**
+   * Deleting a job is two questions, so it is two steps.
+   *
+   * The first is what happens to any stock already deducted. That used to be
+   * decided for the user — the confirm said the stock would NOT come back —
+   * but a job cancelled before cutting should return its parts to the shelf
+   * and a job deleted after fitting should not, and only the person deleting
+   * it knows which. So the plan is worked out first and put to them.
+   */
+  // What returning this job's stock would do. Read fresh rather than from
+  // jobMovements, which is only loaded when the deduct modal is opened.
+  const buildRestorePlan = useCallback(async (jobId) => {
+    const [{ data: movements }, { data: jobBars }] = await Promise.all([
+      supabase.from('stock_movements').select('*').eq('job_id', jobId).eq('movement_type', 'deduct'),
+      supabase.from('stock_bars').select('*').eq('job_id', jobId),
+    ])
+    return planStockRestore({ movements: movements || [], jobBars: jobBars || [], components })
+  }, [components])
+
+  /**
+   * Put a job's stock back. Shared by deleting and by moving back to Received,
+   * because it is the same undo either way. Returns the failures rather than
+   * toasting them, so the caller can decide whether to carry on — deleting
+   * must not, moving back may.
+   */
+  const returnJobStock = useCallback(async (plan) => {
+    const failures = []
+
+    for (const line of plan.quantities) {
+      const row = stockMap[stockKey(line.component_id, line.colour_variant)]
+      if (!row?.id) { failures.push(`${line.component?.name || 'a part'} has no stock row`); continue }
+      const { error } = await supabase.from('stock')
+        .update({ qty_on_hand: (Number(row.qty_on_hand) || 0) + line.qty })
+        .eq('id', row.id)
+      if (error) failures.push(`${line.component?.name || 'a part'}: ${error.message}`)
+    }
+
+    if (plan.pieces.length) {
+      const { error } = await supabase.from('stock_bars')
+        .update({ status: 'available', job_id: null })
+        .in('id', plan.pieces.map(b => b.id))
+      if (error) failures.push(`bars and rolls: ${error.message}`)
+    }
+
+    // Offcuts the job created come back out, or it would leave stock behind
+    // that was never there before.
+    if (plan.offcuts.length) {
+      const { error } = await supabase.from('stock_bars')
+        .delete().in('id', plan.offcuts.map(b => b.id))
+      if (error) failures.push(`offcuts: ${error.message}`)
+    }
+
+    return failures
+  }, [stockMap])
+
+  const handleJobDeleteRequest = async () => {
+    setDeleteJobPlan({ job: currentJob, plan: await buildRestorePlan(currentJob.id) })
+  }
+
+  /* ---- Moving backwards through the statuses ----------------------------
+   * Completed -> In Progress is just a status change; nothing was locked or
+   * consumed by completing it.
+   *
+   * In Progress -> Received is not: confirming took a pricing snapshot and
+   * may have deducted stock, and both have to be dealt with. Hence the modal.
+   * -------------------------------------------------------------------- */
+  const handleJobBackToReceivedRequest = async () => {
+    setRevertPlan({ job: currentJob, plan: await buildRestorePlan(currentJob.id) })
+  }
+
+  const handleJobBackToReceivedConfirm = async ({ restoreStock }) => {
+    const job = revertPlan?.job
+    const plan = revertPlan?.plan
+    if (!job) return
+    setReverting(true)
+    try {
+      if (restoreStock && plan) {
+        const failures = await returnJobStock(plan)
+        if (failures.length) {
+          showToast(`Stock not fully returned — job left In Progress. ${failures[0]}`, 'error')
+          return
+        }
+        // The deduction is undone, so its record has to go too — otherwise
+        // deducting again after the next Confirm would look like a second
+        // deduction on top of one that no longer exists.
+        await supabase.from('stock_movements').delete().eq('job_id', job.id)
+        const moved = plan.quantities.length + plan.pieces.length
+        if (moved) showToast(`Returned ${moved} stock line${moved !== 1 ? 's' : ''}`, 'success')
+      }
+
+      // Drop the pricing lock: Received is editable, and an editable job
+      // quoting a snapshot taken before the edits is worse than no snapshot.
+      await handleJobUpdate({
+        status: 'received',
+        price_snapshot: null,
+        qty_snapshot: null,
+        locked_total: null,
+      })
+      setRevertPlan(null)
+      showToast('Back to Received — pricing unlocked')
+      await loadAll()
+    } finally {
+      setReverting(false)
+    }
+  }
+
+  /**
+   * Put the stock back, then delete.
+   *
+   * Order matters: the movements and bar rows are what say WHAT to return, and
+   * the delete clears them, so returning has to finish first. If any part of
+   * the return fails the delete is abandoned — a half-returned job that no
+   * longer exists is the one outcome with no way back.
+   */
+  const handleJobDeleteConfirm = async ({ restoreStock }) => {
+    const job  = deleteJobPlan?.job
+    const plan = deleteJobPlan?.plan
+    if (!job) return
+    const jobId = job.id
+    setDeletingJob(true)
+
+    try {
+      if (restoreStock && plan) {
+        const failures = await returnJobStock(plan)
+        if (failures.length) {
+          showToast(`Stock not fully returned — job NOT deleted. ${failures[0]}`, 'error')
+          return
+        }
+
+        const movedBack = plan.quantities.length + plan.pieces.length
+        if (movedBack) showToast(`Returned ${movedBack} stock line${movedBack !== 1 ? 's' : ''}`, 'success')
+      }
+
+      // Clear rows that reference this job so the delete can't fail on a
+      // foreign key. Anything not returned above is deliberately left as-is.
+      await supabase.from('stock_movements').delete().eq('job_id', jobId)
+      await supabase.from('stock_bars').update({ job_id: null }).eq('job_id', jobId)
+
+      const { error } = await supabase.from('mfg_jobs').delete().eq('id', jobId)
+      if (error) { showToast('Delete failed', 'error'); return }
+
+      setJobs(prev => prev.filter(j => j.id !== jobId))
+      setCurrentJob(null)
+      setDeleteJobPlan(null)
+      showToast(restoreStock ? 'Job deleted, stock returned ✓' : 'Job deleted')
+      await loadAll()
+    } finally {
+      setDeletingJob(false)
+    }
   }
 
   // Compute the price snapshot + locked total for a job from current recipes
@@ -784,10 +1060,12 @@ export default function App() {
     showToast('Job completed ✓', 'success')
   }
 
+  // Completed -> In Progress. Nothing was locked or consumed by completing a
+  // job, so there is nothing to undo but the status itself.
   const handleJobReopen = async () => {
-    if (!window.confirm('Reopen this job back to In Progress?')) return
+    if (!window.confirm('Move this job back to In Progress?')) return
     await handleJobUpdate({ status: 'in_progress' })
-    showToast('Job reopened')
+    showToast('Back to In Progress')
   }
 
   const handleAddWindow = async (winData) => {
@@ -802,12 +1080,17 @@ export default function App() {
         drop_mm:      Number(winData.drop_mm),
         sort_order:   sortOrder,
         bom_overrides: {},
-        substitutions: {},
+        substitutions: winData.substitutions || {},
         config:        winData.config || {},
       })
       .select().single()
     if (error) { showToast('Failed to add window', 'error'); return }
-    const newWin = { ...data, bom_overrides: {}, substitutions: {}, config: data.config || {} }
+    const newWin = {
+      ...data,
+      bom_overrides: {},
+      substitutions: data.substitutions || {},
+      config:        data.config || {},
+    }
     const updated = { ...currentJob, windows: [...(currentJob.windows || []), newWin] }
     setCurrentJob(updated)
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
@@ -1031,20 +1314,26 @@ export default function App() {
       const key   = stockKey(d.component.id, d.colour_variant)
       const stock = stockMap[key]
 
-      // Record movement
-      movements.push({
+      // Record movement. qty is the BOM quantity; qty_on_hand_delta is what
+      // actually left the stock ROW, which is a different number for bars
+      // (whole bars, not millimetres) and fabric (nothing at all). Without it
+      // a deduction cannot be reversed — see planStockRestore.
+      const movement = {
         component_id:   d.component.id,
         colour_variant: d.colour_variant || null,
         job_id:         currentJob.id,
         movement_type:  'deduct',
         qty:            -d.qty,
-      })
+        qty_on_hand_delta: 0,
+      }
+      movements.push(movement)
 
       // Update pack stock qty. Bars and fabric are held as individual pieces
       // in stock_bars, not as a count on the stock row — decrementing a metre
       // figure off qty_on_hand would be meaningless for either.
       if (stock?.id && !['bar', 'fabric'].includes(d.component.order_type)) {
         stockUpdates.push({ id: stock.id, qty: (stock.qty_on_hand || 0) - d.qty })
+        movement.qty_on_hand_delta = -d.qty
       }
 
       // Fabric — a roll is consumed whole and whatever survives the nesting
@@ -1063,6 +1352,9 @@ export default function App() {
               length_mm:      Math.round(oc.length_mm),
               roll_width_mm:  Math.round(oc.roll_width_mm),
               status:         'available',
+              // Stamped so that deleting the job can take back what it made.
+              // Available + this job = created here; used + this job = taken.
+              job_id:         currentJob.id,
             })
           }
         }
@@ -1086,11 +1378,13 @@ export default function App() {
               label:          bar.offcut.label,
               length_mm:      Math.round(bar.offcut.length_mm),
               status:         'available',
+              job_id:         currentJob.id,
             })
           }
         }
         if (fullBarsUsed > 0 && s?.id) {
           stockUpdates.push({ id: s.id, qty: (s.qty_on_hand || 0) - fullBarsUsed })
+          movement.qty_on_hand_delta = -fullBarsUsed
         }
       }
     }
@@ -1301,6 +1595,8 @@ export default function App() {
           allComponents={components}
           fabricCategories={fabricCategories}
           stockMap={stockMap}
+          suppliers={suppliers}
+          kinds={componentKinds}
           nestedFabricQty={liveNestedFabricQty[win.id]}
           onBack={() => setCurrentWindow(null)}
           onUpdate={(updates) => handleWindowUpdate(currentWindow.idx, updates)}
@@ -1320,16 +1616,18 @@ export default function App() {
           optionDefsFor={optionDefsFor}
           allComponents={components}
           suppliers={suppliers}
+          kinds={componentKinds}
           fabricCategories={fabricCategories}
           stockMap={stockMap}
           onBack={() => setCurrentJob(null)}
           onUpdate={handleJobUpdate}
-          onDelete={handleJobDelete}
+          onDelete={handleJobDeleteRequest}
           onAddWindow={() => setAddWindowOpen(true)}
           onOpenWindow={(win, idx) => setCurrentWindow({ win, idx })}
           onDuplicateWindow={handleWindowDuplicate}
           onReorderWindows={handleWindowsReorder}
           onConfirm={handleJobConfirm}
+          onBackToReceived={handleJobBackToReceivedRequest}
           onComplete={handleJobComplete}
           onReopen={handleJobReopen}
           onAttachPO={handleAttachPO}
@@ -1351,6 +1649,7 @@ export default function App() {
           productComponents={productComponentsMap[currentProduct.id] || []}
           allComponents={components}
           suppliers={suppliers}
+          kinds={componentKinds}
           optionDefs={productOptions[currentProduct.product_type] || []}
           widthSchedules={widthSchedules}
           fabricCategories={fabricCategories}
@@ -1400,9 +1699,39 @@ export default function App() {
       )
     }
 
+    if (navTab === 'admin' && adminSection === 'deleted_records') {
+      return (
+        <DeletedRecordsAdmin
+          records={deletedRecords || []}
+          available={deletedRecords !== null}
+          onBack={() => setAdminSection(null)}
+          onRestore={handleRestoreRecord}
+          restoring={restoringId}
+        />
+      )
+    }
+
+    if (navTab === 'admin' && adminSection === 'component_kinds') {
+      // The real vocabulary rows, not kindOptions — this screen renames and
+      // deletes by id, and kindOptions carries id-less stand-ins for kinds a
+      // component holds that the table doesn't know about yet.
+      return (
+        <ComponentKindsAdmin
+          kinds={componentKinds}
+          components={components}
+          onBack={() => setAdminSection(null)}
+          onSave={handleSaveKind}
+          onDelete={handleDeleteKind}
+          saving={prodSaving}
+        />
+      )
+    }
+
     if (navTab === 'admin') {
       return <AdminHome onOpenOptions={() => setAdminSection('options')}
-               onOpenFabricCategories={() => setAdminSection('fabric_categories')} />
+               onOpenFabricCategories={() => setAdminSection('fabric_categories')}
+               onOpenComponentKinds={() => setAdminSection('component_kinds')}
+               onOpenDeletedRecords={() => setAdminSection('deleted_records')} />
     }
 
     // Supplier detail
@@ -1526,6 +1855,7 @@ export default function App() {
         open={compModalOpen}
         component={editingComp}
         suppliers={suppliers}
+        kinds={kindOptions}
         fabricCategories={fabricCategories}
         onClose={() => { setCompModalOpen(false); setEditingComp(null) }}
         onSave={handleCompSave}
@@ -1542,6 +1872,24 @@ export default function App() {
         saving={supplierSaving}
       />
 
+      <BackToReceivedModal
+        open={!!revertPlan}
+        job={revertPlan?.job}
+        plan={revertPlan?.plan}
+        working={reverting}
+        onClose={() => setRevertPlan(null)}
+        onConfirm={handleJobBackToReceivedConfirm}
+      />
+
+      <DeleteJobModal
+        open={!!deleteJobPlan}
+        job={deleteJobPlan?.job}
+        plan={deleteJobPlan?.plan}
+        deleting={deletingJob}
+        onClose={() => setDeleteJobPlan(null)}
+        onConfirm={handleJobDeleteConfirm}
+      />
+
       <AddWindowModal
         open={addWindowOpen}
         windowNumber={(currentJob?.windows || []).length + 1}
@@ -1550,6 +1898,10 @@ export default function App() {
         productOptions={productOptions}
         allComponents={components}
         fabricCategories={fabricCategories}
+        jobSubMap={substitutionsFor(currentJob, null, components)}
+        stockMap={stockMap}
+        suppliers={suppliers}
+        kinds={componentKinds}
         onClose={() => setAddWindowOpen(false)}
         onAdd={handleAddWindow}
       />

@@ -1,22 +1,86 @@
 import { useState, useEffect, useMemo } from 'react'
 import { ChevronLeftIcon, PlusIcon, TrashIcon, XIcon } from '../components/Icons'
 import ProductComponentModal from '../components/ProductComponentModal'
-import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, fabricLineFor, DEFAULT_ROLL_WIDTH_MM, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel } from '../lib/bomEngine'
+import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, fabricLineFor, DEFAULT_ROLL_WIDTH_MM, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel, groupRecipeLines, overlappingLines } from '../lib/bomEngine'
 
 const COST_TYPE_LABELS = {
   fixed: 'Fixed qty', width_based: 'Width-based',
   drop_based: 'Drop-based', width_drop_based: 'W × D', labour: 'Labour',
 }
 
+/**
+ * What decides whether a recipe line applies — the option answer that supplies
+ * it, the sizes it is limited to, the drop it trips at. Everything a reader
+ * needs to tell one line of a group from its siblings.
+ *
+ * `withGroup` is off inside a collapsed group, where the header already names
+ * the group and repeating it on every line is noise.
+ */
+function conditionBadges(pc, optionDefs = [], withGroup = true, askedKinds = new Set()) {
+  const badges = []
+  const choice = pc.option_choice_id && optionDefs
+    .flatMap(o => (o.choices || []).map(c => ({ o, c })))
+    .find(x => x.c.id === pc.option_choice_id)
+  if (choice) badges.push({ t: `${choice.o.name}: ${choice.c.label}`, bg: 'var(--accent-bg)', fg: 'var(--accent-dark)' })
+  if (withGroup && pc.component?.kind) badges.push({ t: pc.component.kind, bg: 'var(--blue-bg)', fg: 'var(--blue)' })
+  if (askedKinds.has(pc.component?.kind)) badges.push({ t: `asks: ${pc.component.kind}`, bg: 'var(--success-bg)', fg: 'var(--success)' })
+  const w = [pc.active_min_width, pc.active_max_width]
+  const d = [pc.active_min_drop, pc.active_max_drop]
+  if (w[0] != null || w[1] != null) badges.push({ t: `W ${w[0] ?? '0'}–${w[1] ?? '∞'}`, bg: 'var(--warning-bg)', fg: 'var(--warning)' })
+  if (d[0] != null || d[1] != null) badges.push({ t: `D ${d[0] ?? '0'}–${d[1] ?? '∞'}`, bg: 'var(--warning-bg)', fg: 'var(--warning)' })
+  if (pc.drop_limit && Object.keys(pc.drop_limit).length) {
+    const n = Object.keys(pc.drop_limit).length
+    badges.push({ t: `drop limit · ${n} band${n === 1 ? '' : 's'}`, bg: 'var(--warning-bg)', fg: 'var(--warning)' })
+  }
+  return badges
+}
+
+// A line with nothing gating it applies to every window, and saying so beats
+// leaving the row silent next to siblings that all carry a condition.
+const ALWAYS = { t: 'always', bg: 'var(--warm-100)', fg: 'var(--warm-300)' }
+
+function BadgeRow({ items, style }) {
+  if (!items.length) return null
+  return (
+    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4, ...style }}>
+      {items.map((b, i) => (
+        <span key={i} style={{
+          fontSize: 10, fontWeight: 700, padding: '1px 6px',
+          borderRadius: 4, background: b.bg, color: b.fg,
+        }}>{b.t}</span>
+      ))}
+    </div>
+  )
+}
+
+const priceOf = pc => Number(pc.component?.unit_cost || 0)
+
+function PriceCell({ pc }) {
+  return (
+    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
+      ${priceOf(pc).toFixed(2)}
+      {Number(pc.component?.discount) > 0 && (
+        <span style={{ fontSize: 11, color: 'var(--success)', marginLeft: 4 }}>
+          −{pc.component?.discount}%
+        </span>
+      )}
+    </div>
+  )
+}
+
 
 
 export default function ProductDetail({
-  product, productComponents, allComponents, suppliers = [], optionDefs = [],
+  product, productComponents, allComponents, suppliers = [], optionDefs = [], kinds = [],
   widthSchedules = [], onSaveSchedule, onDeleteSchedule, fabricCategories = [],
   onBack, onUpdateProduct, onAddComponent, onUpdateComponent,
   onRemoveComponent, onDuplicate, onDeleteProduct, saving,
   onExportPricing, pricingExporting,
 }) {
+  // Which collapsed recipe entries are open, keyed by group. Deliberately
+  // per-visit rather than remembered: the list is short once collapsed, and a
+  // half-open list restored from a previous visit reads as noise.
+  const [openGroups, setOpenGroups]   = useState({})
   const [nameDraft, setNameDraft]     = useState(product.name || '')
   const [notesDraft, setNotesDraft]   = useState(product.notes || '')
   useEffect(() => {
@@ -49,6 +113,26 @@ export default function ProductDetail({
 
   // Grids assume each option's default answer, since a price grid has to pick
   // one build to price. What it assumed is shown above the table.
+  // Kinds the job is asked about, so a recipe line can say so.
+  const askedKinds = useMemo(
+    () => new Set(kinds.filter(k => k?.ask_on_job).map(k => k.name)),
+    [kinds])
+
+  // The recipe as entries rather than raw lines — see groupRecipeLines.
+  const recipeGroups = useMemo(() => groupRecipeLines(productComponents), [productComponents])
+
+  /* Two lines of one kind that can both apply to the same window — a window
+   * that would get two base rails. Nothing collapses these any more, so the
+   * recipe has to say so where it happens; a silent fix would leave the recipe
+   * wrong forever. Keyed by kind, which is how the list is grouped. */
+  const overlapsByKind = useMemo(() => {
+    const out = {}
+    overlappingLines(productComponents, optionDefs).forEach(o => {
+      (out[o.kind] ||= []).push(o)
+    })
+    return out
+  }, [productComponents, optionDefs])
+
   const { config: previewCfg, assumed } = useMemo(() => previewConfig(optionDefs), [optionDefs])
 
   const isTrack = (product.product_type || product.category) === 'track'
@@ -342,9 +426,15 @@ export default function ProductDetail({
             </div>
           )}
 
-          {/* Recipe */}
+          {/* Recipe — collapsed into entries rather than raw lines. See
+              groupRecipeLines: an alternatives group is one entry whatever
+              parts it names, and otherwise one part is one entry however many
+              answers reach it. A single-line entry looks exactly as it always
+              did, so nothing moves for a recipe with no repetition. */}
           <div className="section-title" style={{ padding: '0 0 8px' }}>
-            Component Recipe ({productComponents.length})
+            Component Recipe ({productComponents.length}
+            {recipeGroups.length !== productComponents.length
+              ? ` lines · ${recipeGroups.length} entries` : ''})
           </div>
 
           <div className="card" style={{ marginBottom: 12 }}>
@@ -354,60 +444,145 @@ export default function ProductDetail({
                 <div className="empty-title" style={{ fontSize: 17 }}>No components yet</div>
                 <div className="empty-desc">Add components to build the recipe for this product</div>
               </div>
-            ) : productComponents.map(pc => (
-              <div key={pc.id} className="component-item" onClick={() => setEditingPc(pc)}>
-                <div className="component-avatar" style={{ fontSize: 16 }}>📦</div>
-                <div className="component-info">
-                  <div className="component-name">{pc.component?.name || '—'}</div>
-                  <div className="component-sub">
-                    {formulaDescription(pc)}
-                    {pc.colour_variant ? ` · ${pc.colour_variant.name}` : ''}
-                    {pc.component?.supplier ? ` · ${pc.component.supplier}` : ''}
+            ) : recipeGroups.map(group => {
+              const [first] = group.lines
+
+              /* One line — the row it always was, opening straight into the
+                 editor. Grouping is a reading aid, not an extra click. */
+              if (group.lines.length === 1) {
+                return (
+                  <div key={group.key} className="component-item" onClick={() => setEditingPc(first)}>
+                    <div className="component-avatar" style={{ fontSize: 16 }}>📦</div>
+                    <div className="component-info">
+                      <div className="component-name">{first.component?.name || '—'}</div>
+                      <div className="component-sub">
+                        {formulaDescription(first)}
+                        {first.colour_variant ? ` · ${first.colour_variant.name}` : ''}
+                        {first.component?.supplier ? ` · ${first.component.supplier}` : ''}
+                      </div>
+                      <BadgeRow items={conditionBadges(first, optionDefs, true, askedKinds)} />
+                    </div>
+                    <div className="component-right">
+                      <PriceCell pc={first} />
+                      <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
+                        {COST_TYPE_LABELS[first.cost_type]}
+                      </div>
+                    </div>
+                    <ChevronRightIcon size={16} />
                   </div>
-                  {(() => {
-                    const badges = []
-                    const choice = pc.option_choice_id && optionDefs
-                      .flatMap(o => (o.choices || []).map(c => ({ o, c })))
-                      .find(x => x.c.id === pc.option_choice_id)
-                    if (choice) badges.push({ t: `${choice.o.name}: ${choice.c.label}`, bg: 'var(--accent-bg)', fg: 'var(--accent-dark)' })
-                    if (pc.group_key) badges.push({ t: `alt: ${pc.group_key}`, bg: 'var(--blue-bg)', fg: 'var(--blue)' })
-                    const w = [pc.active_min_width, pc.active_max_width]
-                    const d = [pc.active_min_drop, pc.active_max_drop]
-                    if (w[0] != null || w[1] != null) badges.push({ t: `W ${w[0] ?? '0'}–${w[1] ?? '∞'}`, bg: 'var(--warning-bg)', fg: 'var(--warning)' })
-                    if (d[0] != null || d[1] != null) badges.push({ t: `D ${d[0] ?? '0'}–${d[1] ?? '∞'}`, bg: 'var(--warning-bg)', fg: 'var(--warning)' })
-                    if (pc.drop_limit && Object.keys(pc.drop_limit).length) {
-                      const n = Object.keys(pc.drop_limit).length
-                      badges.push({ t: `drop limit · ${n} band${n === 1 ? '' : 's'}`, bg: 'var(--warning-bg)', fg: 'var(--warning)' })
-                    }
-                    if (!badges.length) return null
+                )
+              }
+
+              /* Several lines — one header saying what the entry is and what
+                 tells its lines apart, expanding to the lines themselves.
+                 Collapsed by default: every line's condition is on the header,
+                 so a closed group still answers "when does each apply". */
+              const open   = !!openGroups[group.key]
+              const prices = group.lines.map(priceOf)
+              const lo = Math.min(...prices), hi = Math.max(...prices)
+              // Only an alternatives group can span parts, so only it can span
+              // prices; a same-part group is one component, so it keeps the
+              // ordinary price cell and the discount that goes with it.
+              const spansPrices = lo !== hi
+
+              return (
+                <div key={group.key}>
+                  <div className="component-item" onClick={() =>
+                    setOpenGroups(o => ({ ...o, [group.key]: !o[group.key] }))}>
+                    <div className="component-avatar" style={{
+                      fontSize: 16,
+                      background: group.isAlternatives ? 'var(--blue-bg)' : undefined,
+                    }}>
+                      {group.isAlternatives ? '🔀' : '📦'}
+                    </div>
+                    <div className="component-info">
+                      <div className="component-name">
+                        {group.label}
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, marginLeft: 6, padding: '1px 6px',
+                          borderRadius: 4, background: 'var(--warm-100)', color: 'var(--warm-300)',
+                        }}>{group.lines.length}</span>
+                      </div>
+                      <div className="component-sub">
+                        {group.isAlternatives
+                          ? `${group.lines.length} lines — whichever one the conditions match`
+                          : `${group.lines.length} ways this part is supplied`}
+                        {first.component?.supplier ? ` · ${first.component.supplier}` : ''}
+                      </div>
+                      {/* Every line's condition, on the closed header. This is
+                          the whole point of collapsing: the group stays legible
+                          without being opened. */}
+                      <BadgeRow items={group.lines.map(l =>
+                        conditionBadges(l, optionDefs, false, askedKinds)[0] || ALWAYS)} />
+
+                      {(overlapsByKind[group.label] || []).length > 0 && (
+                        <div style={{
+                          background: 'var(--warning-bg)', borderLeft: '3px solid var(--warning)',
+                          borderRadius: 'var(--radius-sm)', padding: '7px 10px', marginTop: 7,
+                          fontSize: 11, color: 'var(--warning)', lineHeight: 1.45,
+                        }}>
+                          {overlapsByKind[group.label].map((o, i) => (
+                            <div key={i}>
+                              {o.certain
+                                ? <>⚠ <strong>{o.a.component?.name}</strong> and <strong>{o.b.component?.name}</strong> can
+                                    both apply to one window — it would get two.</>
+                                : <>⚠ <strong>{o.a.component?.name}</strong> and <strong>{o.b.component?.name}</strong> may
+                                    overlap; a drop limit makes it impossible to be sure.</>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="component-right">
+                      {spansPrices
+                        ? <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
+                            ${lo.toFixed(2)}–${hi.toFixed(2)}
+                          </div>
+                        : <PriceCell pc={first} />}
+                      <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
+                        {open ? 'Hide lines' : 'Show lines'}
+                      </div>
+                    </div>
+                    <ChevronRightIcon size={16} style={{
+                      transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s',
+                    }} />
+                  </div>
+
+                  {open && group.lines.map(pc => {
+                    const badges = conditionBadges(pc, optionDefs, false, askedKinds)
                     return (
-                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-                        {badges.map((b, i) => (
-                          <span key={i} style={{
-                            fontSize: 10, fontWeight: 700, padding: '1px 6px',
-                            borderRadius: 4, background: b.bg, color: b.fg,
-                          }}>{b.t}</span>
-                        ))}
+                      <div key={pc.id} className="component-item"
+                        onClick={() => setEditingPc(pc)}
+                        style={{
+                          paddingLeft: 34, background: 'var(--warm-100)',
+                          borderLeft: '3px solid var(--warm-200)',
+                        }}>
+                        <div className="component-info">
+                          <div className="component-name" style={{ fontSize: 13 }}>
+                            {/* Named per line inside an alternatives group, where
+                                the parts differ; inside a same-part group the
+                                header already said it, so the formula leads. */}
+                            {group.isAlternatives ? (pc.component?.name || '—') : formulaDescription(pc)}
+                          </div>
+                          <div className="component-sub">
+                            {group.isAlternatives ? formulaDescription(pc) : ''}
+                            {pc.colour_variant ? `${group.isAlternatives ? ' · ' : ''}${pc.colour_variant.name}` : ''}
+                          </div>
+                          <BadgeRow items={badges.length ? badges : [ALWAYS]} />
+                        </div>
+                        <div className="component-right">
+                          {group.isAlternatives && <PriceCell pc={pc} />}
+                          <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
+                            {COST_TYPE_LABELS[pc.cost_type]}
+                          </div>
+                        </div>
+                        <ChevronRightIcon size={16} />
                       </div>
                     )
-                  })()}
+                  })}
                 </div>
-                <div className="component-right">
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>
-                    ${Number(pc.component?.unit_cost || 0).toFixed(2)}
-                    {Number(pc.component?.discount) > 0 && (
-                      <span style={{ fontSize: 11, color: 'var(--success)', marginLeft: 4 }}>
-                        −{pc.component?.discount}%
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
-                    {COST_TYPE_LABELS[pc.cost_type]}
-                  </div>
-                </div>
-                <ChevronRightIcon size={16} />
-              </div>
-            ))}
+              )
+            })}
           </div>
 
           <button className="btn btn-secondary btn-block" style={{ marginBottom: 24 }} onClick={() => setAddOpen(true)}>

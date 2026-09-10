@@ -47,10 +47,14 @@ export default function ProductComponentModal({
   const [editingSchedule, setEditingSchedule] = useState(null) // { id, name, qty_map } | null
   const [scheduleSaving, setScheduleSaving]   = useState(false)
 
+
   useEffect(() => {
     if (open) {
       const initial = productComponent
-        ? { ...DEFAULT, ...productComponent, width_schedule_id: productComponent.width_schedule_id || '' }
+        ? {
+            ...DEFAULT, ...productComponent,
+            width_schedule_id: productComponent.width_schedule_id || '',
+          }
         : DEFAULT
       setForm(initial)
       initialForm.current = initial
@@ -524,16 +528,6 @@ export default function ProductComponentModal({
                   No options defined for this product type yet — add them under Products → Options.
                 </div>
               )}
-
-              <div className="field" style={{ marginBottom: 10 }}>
-                <label className="field-label">Alternatives group (optional)</label>
-                <input className="field-input" value={form.group_key || ''}
-                  onChange={e => set('group_key', e.target.value || null)}
-                  placeholder="e.g. Tube, Bracket" />
-                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4 }}>
-                  Lines sharing a name here are alternatives — only one ends up in the window.
-                </div>
-              </div>
 
               <label className="field-label">Only for sizes in this range (optional)</label>
               <div className="grid-2" style={{ marginBottom: 8 }}>
