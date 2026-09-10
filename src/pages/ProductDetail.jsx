@@ -623,12 +623,12 @@ export default function ProductDetail({
                     </thead>
                     <tbody>
                       {blindGrid.map((row, ri) => (
-                        <tr key={row.drop} style={{ background: ri % 2 ? 'var(--row-alt)' : '#fff' }}>
+                        <tr key={row.drop} style={{ background: 'var(--row)' }}>
                           <td style={{
                             padding: '8px 12px', fontSize: 12, fontWeight: 700,
                             borderTop: '1px solid var(--warm-200)', whiteSpace: 'nowrap',
                             position: 'sticky', left: 0, zIndex: 1,
-                            background: ri % 2 ? 'var(--row-alt)' : '#fff',
+                            background: 'var(--row)',
                           }}>{row.drop}</td>
                           {row.cells.map(cell => (
                             <td key={cell.width} style={{

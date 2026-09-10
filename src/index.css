@@ -14,17 +14,17 @@
   --warm-200: #E7E2DB;
   --warm-300: #8C8279;
 
-  /* Row banding.
+  /* Rows.
    *
-   * Rows used to be separated by a #F1F5F9 hairline on a white card — about
-   * two percent of contrast, which is to say none, and why a long list read
-   * as one grey slab. The band does the separating now and the divider is a
-   * real line behind it.
+   * Every row is warm — not alternating. Striping made a list look like a
+   * spreadsheet and left half the rows white, which is what the page already
+   * is. A table should read as one warm block sitting on a lighter page, with
+   * the rows told apart by a divider that is actually visible.
    *
-   * Three distinct steps, so banding, hover and press never collide:
-   * a banded row must still visibly light up under a finger.
+   * Three stepped tones so rest, hover and press never collide: a warm row
+   * must still light up under a finger.
    */
-  --row-alt: #F4F0E9;
+  --row: #F4F0E9;
   --row-hover: #E9E3D9;
   --row-press: #DCD4C8;
   --accent: #8DC73F;
@@ -102,6 +102,11 @@ input, textarea, select, button { font-family: inherit; font-size: inherit; }
   background: #fff; border-radius: var(--radius); border: 1px solid var(--warm-200);
   overflow: hidden; transition: box-shadow 0.2s;
 }
+/* A card that holds rows takes their colour, so no white sliver shows at the
+ * rounded corners or under the last row. Cards holding a form or a figure are
+ * untouched and stay white. */
+.card:has(> .component-item),
+.card:has(> div > .component-item) { background: var(--row); }
 .card-body { padding: 16px; }
 
 /* Section title */
@@ -213,26 +218,15 @@ select.field-input {
 }
 .component-item:last-child { border-bottom: none; }
 
-/* Alternate rows are banded so a long list can be read across.
- *
- * Two selectors because rows come two ways: straight children of a card, and
- * wrapped one level deep where a row expands (the recipe groups, the tracking
- * list). Banding the wrapper in that case is right — the panel it opens sets
- * its own background and covers it. */
-.card > .component-item:nth-child(even),
-.card > div:nth-child(even) > .component-item:first-child { background: var(--row-alt); }
+/* Every row is warm, so the whole table reads as one block against the
+ * lighter page. Rows are told apart by the divider above, not by alternating
+ * colour. */
+.component-item { background: var(--row); }
+.component-item:hover { background: var(--row-hover); }
+.component-item:active { background: var(--row-press); }
 
-/* Pointer states beat the band, or a banded row would look unresponsive. */
-.component-item:hover,
-.card > .component-item:nth-child(even):hover,
-.card > div:nth-child(even) > .component-item:first-child:hover { background: var(--row-hover); }
-.component-item:active,
-.card > .component-item:nth-child(even):active,
-.card > div:nth-child(even) > .component-item:first-child:active { background: var(--row-press); }
-
-/* Real tables get the same treatment. Header rows set their own dark
- * background inline, so only body rows are banded. */
-tbody tr:nth-child(even) { background: var(--row-alt); }
+/* Real tables the same. Header rows set their own dark background inline. */
+tbody tr { background: var(--row); }
 .component-avatar {
   width: 42px; height: 42px; border-radius: 10px; background: var(--accent-bg);
   display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 20px;
