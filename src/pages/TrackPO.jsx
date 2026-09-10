@@ -25,24 +25,76 @@ const fmtDate = (d) => d
   ? new Date(d).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })
   : '—'
 
-const fmtQty = (n) => {
-  const v = Number(n) || 0
-  return v % 1 === 0 ? String(v) : v.toFixed(2)
-}
+/**
+ * Three things can be wrong with a part, and they mean different things to
+ * whoever is chasing an order:
+ *
+ *   jobShort    this job alone needs more than is on the shelf. It cannot be
+ *               built today, full stop.
+ *   shelfShort  everything committed across the in-progress jobs needs more
+ *               than is there. This job might still get built — but someone
+ *               is going to come up short, so it needs ordering.
+ *   belowMin    it all fits; what is left just drops under the reorder point.
+ *
+ * Kept apart because rolling them into one "parts short" number is what made
+ * the old page unreadable, and under-reported besides.
+ */
+const split = (lines = []) => ({
+  blocked: lines.filter(l => l.jobShort),
+  ordered: lines.filter(l => !l.jobShort && l.shelfShort),
+  low:     lines.filter(l => !l.jobShort && !l.shelfShort && l.belowMin),
+})
 
 /**
- * checkLowStock flags anything that would drop BELOW ITS MINIMUM, which is not
- * the same as running out — a part with ten on hand, ten needed and a minimum
- * of two is flagged, and calling that "short" is wrong. It builds fine; it just
- * leaves the shelf bare.
- *
- * The two matter differently to whoever is chasing an order: one stops the job,
- * the other only means reorder soon. So they are counted and worded apart.
+ * "2.33 metres", "5" — a bare number was half the problem, but "each" is not a
+ * unit anybody says out loud. It reads as noise in a label and as a mistake in
+ * a sentence ("14 each short"), so only real units are printed.
  */
-const splitAlerts = (alerts = []) => ({
-  blocking: alerts.filter(a => Number(a.qty_after) < 0),
-  low:      alerts.filter(a => Number(a.qty_after) >= 0),
-})
+const qty = (n, unit) => {
+  const v = Number(n) || 0
+  const num = v % 1 === 0 ? String(v) : v.toFixed(2)
+  return unit && unit !== 'each' ? `${num} ${unit}` : num
+}
+
+const partName = (l) => `${l.component?.name || 'Unknown part'}${l.colour_variant?.name ? ` · ${l.colour_variant.name}` : ''}`
+
+/**
+ * One part, said in full: what this job wants, what is there, who else wants
+ * it, and the conclusion. Four short lines rather than one cryptic one —
+ * "short 0.33 of 2.33" was arithmetic the reader had to do themselves.
+ */
+function StockLine({ l, last }) {
+  const tone = l.jobShort ? 'var(--danger)' : l.shelfShort ? 'var(--warning)' : 'var(--warm-300)'
+  return (
+    <div style={{
+      padding: '9px 0', fontSize: 12,
+      borderTop: last ? 'none' : '1px solid rgba(0,0,0,0.06)',
+    }}>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>{partName(l)}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 10px' }}>
+        <span style={{ color: 'var(--warm-300)' }}>This job needs</span>
+        <span style={{ fontWeight: 600 }}>{qty(l.jobQty, l.unit)}</span>
+        <span style={{ color: 'var(--warm-300)' }}>In stock</span>
+        <span style={{ fontWeight: 600 }}>{qty(l.onHand, l.unit)}</span>
+        {l.otherJobs > 0 && (
+          <>
+            <span style={{ color: 'var(--warm-300)' }}>Also wanted by</span>
+            <span style={{ fontWeight: 600 }}>
+              {l.otherJobs} other job{l.otherJobs !== 1 ? 's' : ''} ({qty(l.otherQty, l.unit)})
+            </span>
+          </>
+        )}
+      </div>
+      <div style={{ marginTop: 5, fontWeight: 700, color: tone }}>
+        {l.jobShort
+          ? `Not enough for this job on its own — ${qty(l.jobShortBy, l.unit)} short`
+          : l.shelfShort
+            ? `Enough for this job, but ${qty(l.shelfShortBy, l.unit)} short across all jobs`
+            : `Builds fine — would leave ${qty(l.leaves, l.unit)}, below the ${qty(l.minimum, l.unit)} minimum`}
+      </div>
+    </div>
+  )
+}
 
 function Detail({ label, value }) {
   return (
@@ -56,7 +108,7 @@ function Detail({ label, value }) {
   )
 }
 
-export default function TrackPO({ jobs = [], products = [], shortagesByJob = {}, loading }) {
+export default function TrackPO({ jobs = [], products = [], stockByJob = {}, loading }) {
   const [openId, setOpenId] = useState(null)
   const [search, setSearch] = useState('')
 
@@ -71,14 +123,14 @@ export default function TrackPO({ jobs = [], products = [], shortagesByJob = {},
 
   const held = useMemo(
     () => jobs.filter(j => j.status === 'in_progress'
-      && splitAlerts(shortagesByJob[j.id]).blocking.length > 0).length,
-    [jobs, shortagesByJob])
+      && split(stockByJob[j.id]).blocked.length > 0).length,
+    [jobs, stockByJob])
 
   const Job = (job) => {
     const open = openId === job.id
-    const { blocking, low } = splitAlerts(
-      job.status === 'in_progress' ? (shortagesByJob[job.id] || []) : [])
-    const short = [...blocking, ...low]
+    const { blocked, ordered, low } = split(
+      job.status === 'in_progress' ? (stockByJob[job.id] || []) : [])
+    const all = [...blocked, ...ordered, ...low]
     const types = productTypesIn(job, products)
     const windows = job.windows || []
 
@@ -101,18 +153,26 @@ export default function TrackPO({ jobs = [], products = [], shortagesByJob = {},
                   {t.meta.label}{t.showCount ? ` ${t.count}` : ''}
                 </span>
               ))}
-              {blocking.length > 0 && (
+              {blocked.length > 0 && (
                 <span style={{
                   fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
                   background: 'var(--danger-bg)', color: 'var(--danger)',
                 }}>
-                  ⚠ {blocking.length} part{blocking.length !== 1 ? 's' : ''} short
+                  ⚠ {blocked.length} part{blocked.length !== 1 ? 's' : ''} not in stock
+                </span>
+              )}
+              {ordered.length > 0 && (
+                <span style={{
+                  fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+                  background: 'var(--warning-bg)', color: 'var(--warning)',
+                }}>
+                  {ordered.length} short across jobs
                 </span>
               )}
               {low.length > 0 && (
                 <span style={{
                   fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
-                  background: 'var(--warning-bg)', color: 'var(--warning)',
+                  background: 'var(--warm-100)', color: 'var(--warm-300)',
                 }}>
                   {low.length} running low
                 </span>
@@ -150,43 +210,32 @@ export default function TrackPO({ jobs = [], products = [], shortagesByJob = {},
 
             {/* What is actually holding it up. The whole reason someone opens
                 a tracking page on a job that is late. */}
-            {short.length > 0 && (
+            {all.length > 0 && (
               <div style={{
-                background: blocking.length ? 'var(--danger-bg)' : 'var(--warning-bg)',
-                borderLeft: `3px solid ${blocking.length ? 'var(--danger)' : 'var(--warning)'}`,
+                background: blocked.length ? 'var(--danger-bg)'
+                  : ordered.length ? 'var(--warning-bg)' : 'var(--warm-100)',
+                borderLeft: `3px solid ${blocked.length ? 'var(--danger)'
+                  : ordered.length ? 'var(--warning)' : 'var(--warm-200)'}`,
                 borderRadius: 'var(--radius-sm)', padding: '10px 12px', marginBottom: 12,
               }}>
                 <div style={{
-                  fontSize: 12, fontWeight: 700, marginBottom: 6,
-                  color: blocking.length ? 'var(--danger)' : 'var(--warning)',
+                  fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                  letterSpacing: '0.07em', marginBottom: 2,
+                  color: blocked.length ? 'var(--danger)'
+                    : ordered.length ? 'var(--warning)' : 'var(--warm-300)',
                 }}>
-                  {blocking.length
-                    ? `Not enough stock to build ${blocking.length === 1 ? 'one part' : 'these parts'}`
-                    : 'Enough to build — but these drop below their minimum'}
+                  Stock
                 </div>
-                {short.map((a, i) => {
-                  const after = Number(a.qty_after)
-                  const isBlocking = after < 0
-                  return (
-                    <div key={i} style={{
-                      display: 'flex', justifyContent: 'space-between', gap: 10,
-                      fontSize: 12, padding: '3px 0',
-                    }}>
-                      <span>
-                        {a.component?.name || 'Unknown part'}
-                        {a.colour_variant?.name ? ` · ${a.colour_variant.name}` : ''}
-                      </span>
-                      <span style={{
-                        fontWeight: 700, flexShrink: 0,
-                        color: isBlocking ? 'var(--danger)' : 'var(--warning)',
-                      }}>
-                        {isBlocking
-                          ? `short ${fmtQty(Math.abs(after))} of ${fmtQty(a.qty_required)}`
-                          : `leaves ${fmtQty(after)}, min ${fmtQty(a.qty_minimum)}`}
-                      </span>
-                    </div>
-                  )
-                })}
+                {/* Says which question is being answered, because "short" on
+                    its own never made clear whether it meant this job or the
+                    shelf. Both are answered per part below. */}
+                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginBottom: 4, lineHeight: 1.45 }}>
+                  Stock is shared across every job being built, so a part can be
+                  enough for this one and still run out overall.
+                </div>
+                {all.map((l, i) => (
+                  <StockLine key={i} l={l} last={i === 0} />
+                ))}
               </div>
             )}
 
@@ -250,7 +299,7 @@ export default function TrackPO({ jobs = [], products = [], shortagesByJob = {},
               borderRadius: 'var(--radius-sm)', padding: '10px 13px',
               fontSize: 12.5, color: 'var(--danger)', fontWeight: 600,
             }}>
-              ⚠ {held} in-progress order{held !== 1 ? 's do' : ' does'} not have enough stock to build — open one to see what.
+              ⚠ {held} in-progress order{held !== 1 ? 's have' : ' has'} a part that isn’t in stock — open one to see which.
             </div>
           </div>
         )}

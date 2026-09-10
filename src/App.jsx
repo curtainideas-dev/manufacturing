@@ -32,7 +32,7 @@ import PurchaseOrderModal    from './components/PurchaseOrderModal'
 import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
-import { buildStockMap, stockKey, checkLowStock, getStock, planStockRestore } from './lib/stockEngine'
+import { buildStockMap, stockKey, getStock, planStockRestore, stockPositions } from './lib/stockEngine'
 import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting } from './lib/bomEngine'
 import { orderUnitInfo } from './lib/poEngine'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
@@ -1000,21 +1000,24 @@ export default function App({ route = 'manufacturing' }) {
   }
 
   /**
-   * What each in-progress job is short of, keyed by job id.
+   * The stock position of every in-progress job, keyed by job id.
    *
-   * Only in-progress jobs: a Received job has not been committed to, and a
-   * Completed one was already built, so a shortage against either means
-   * nothing. Only computed for /track, because it walks every window of every
-   * job and the workshop screens never ask for it.
+   * Worked out together, not job by job. Measuring each job against the whole
+   * shelf on its own is what let three jobs each be told they could have the
+   * same ten parts — on live data that hid five genuinely short items. See
+   * stockPositions.
+   *
+   * Only in-progress jobs: a Received job has not been committed to and a
+   * Completed one was already built, so neither has a claim on the shelf.
+   * Only computed for /track, because it walks every window of every job and
+   * the workshop screens never ask for it.
    */
-  const shortagesByJob = useMemo(() => {
+  const stockByJob = useMemo(() => {
     if (route !== 'track') return {}
-    const out = {}
-    jobs.filter(j => j.status === 'in_progress').forEach(job => {
-      const alerts = checkLowStock(calcJobSummary(buildJobWindows(job, true)), stockMap)
-      if (alerts.length) out[job.id] = alerts
-    })
-    return out
+    const entries = jobs
+      .filter(j => j.status === 'in_progress')
+      .map(job => ({ jobId: job.id, summary: calcJobSummary(buildJobWindows(job, true)) }))
+    return stockPositions(entries, stockMap)
   }, [route, jobs, buildJobWindows, stockMap])
 
   // Compute the price snapshot + locked total for a job from current recipes
@@ -1604,7 +1607,7 @@ export default function App({ route = 'manufacturing' }) {
         <TrackPO
           jobs={jobs}
           products={products}
-          shortagesByJob={shortagesByJob}
+          stockByJob={stockByJob}
         />
       )
     }
