@@ -247,7 +247,26 @@ const withinDropLimit = (pc, widthMm, dropMm) => {
 }
 
 /**
- * Collapse group_key alternatives down to one line each.
+ * The group a recipe line competes in, or null if it competes with nothing.
+ *
+ * The name lives on the COMPONENT — a tube is a tube whoever puts it in a
+ * recipe — and the recipe line only says whether it competes. That split is
+ * not tidiness: a shared kind must not be enough on its own, because Track
+ * Return FF Wave L and R are the same kind and a "Both ends" track takes both.
+ * Grouping them would drop one from the BOM. Only the recipe knows the
+ * difference between alternatives and a matched pair, so only the recipe ticks
+ * the box.
+ *
+ * An explicit group_key still wins, so anything named by hand keeps working.
+ */
+export function groupKeyOf(pc) {
+  if (pc?.group_key) return pc.group_key
+  if (pc?.group_by_kind && pc?.component?.kind) return pc.component.kind
+  return null
+}
+
+/**
+ * Collapse alternatives down to one line each.
  * Precedence: an explicit window override, then a line supplied by an
  * answered option, then a line whose dimension band matched, then the plain
  * default. Ungrouped lines pass straight through.
@@ -255,8 +274,9 @@ const withinDropLimit = (pc, widthMm, dropMm) => {
 function applyGroups(lines, overrides = {}) {
   const grouped = {}, out = []
   lines.forEach(pc => {
-    if (!pc.group_key) { out.push(pc); return }
-    ;(grouped[pc.group_key] ||= []).push(pc)
+    const key = groupKeyOf(pc)
+    if (!key) { out.push(pc); return }
+    ;(grouped[key] ||= []).push(pc)
   })
   Object.entries(grouped).forEach(([key, candidates]) => {
     const forcedId = overrides && overrides[key]
@@ -575,14 +595,17 @@ export function groupRecipeLines(productComponents = []) {
   const groups = new Map()
 
   productComponents.forEach(pc => {
-    const key = pc.group_key ? `g:${pc.group_key}` : `c:${pc.component_id}`
+    // Same resolver the engine collapses by, so the list can never show a
+    // grouping the BOM does not actually apply.
+    const groupName = groupKeyOf(pc)
+    const key = groupName ? `g:${groupName}` : `c:${pc.component_id}`
     if (!groups.has(key)) {
       groups.set(key, {
         key,
-        label:        pc.group_key || pc.component?.name || '—',
+        label:        groupName || pc.component?.name || '—',
         // A tagged group is a real choice the engine makes; a same-part group
         // is only a reading convenience. Worth telling apart on screen.
-        isAlternatives: !!pc.group_key,
+        isAlternatives: !!groupName,
         lines:        [],
       })
     }

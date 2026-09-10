@@ -16,6 +16,7 @@ const DEFAULT = {
   supplier_pn: '',
   notes: '',
   colour_variants: [],
+  kind: null,          // what this part IS — Tube, Winder, Base Rail…
   order_type: 'pack',  // 'pack' | 'bar' | 'labour'
   pack_price: 0,
   pack_qty: 1,
@@ -23,7 +24,7 @@ const DEFAULT = {
   bar_price: 0,
 }
 
-export default function ComponentModal({ open, component, suppliers, fabricCategories = [], onClose, onSave, onDelete, saving }) {
+export default function ComponentModal({ open, component, suppliers, fabricCategories = [], kinds = [], onClose, onSave, onDelete, saving }) {
   const [form, setForm]                   = useState(DEFAULT)
   const [newColourName, setNewColourName]  = useState('')
   const [newColourSuffix, setNewColourSuffix] = useState('')
@@ -148,6 +149,28 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
               </div>
             </div>
           )}
+
+          {/* Kind — what this part IS, independent of any recipe.
+              Naming it here rather than on each recipe line is what lets two
+              tubes be recognised as the same decision in every product that
+              uses them, and lets a rename reach all of them at once. */}
+          <div className="field" style={{ marginBottom: 16 }}>
+            <label className="field-label">
+              Kind
+              <span style={{ color: 'var(--warm-300)', fontWeight: 400, marginLeft: 6 }}>optional</span>
+            </label>
+            <input className="field-input" value={form.kind || ''}
+              onChange={e => set('kind', e.target.value || null)}
+              placeholder="e.g. Tube, Winder, Base Rail" list="component-kinds" />
+            <datalist id="component-kinds">
+              {kinds.map(k => <option key={k} value={k} />)}
+            </datalist>
+            <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4 }}>
+              What this part is, whoever uses it. Parts sharing a kind can be offered
+              as alternatives to each other in a recipe — but a kind on its own groups
+              nothing, so naming it here is always safe.
+            </div>
+          </div>
 
           {/* Supplier dropdown */}
           <div className="grid-2" style={{ marginBottom: 16 }}>

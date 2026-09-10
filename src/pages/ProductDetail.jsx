@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { ChevronLeftIcon, PlusIcon, TrashIcon, XIcon } from '../components/Icons'
 import ProductComponentModal from '../components/ProductComponentModal'
-import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, fabricLineFor, DEFAULT_ROLL_WIDTH_MM, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel, groupRecipeLines } from '../lib/bomEngine'
+import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, fabricLineFor, DEFAULT_ROLL_WIDTH_MM, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel, groupRecipeLines, groupKeyOf } from '../lib/bomEngine'
 
 const COST_TYPE_LABELS = {
   fixed: 'Fixed qty', width_based: 'Width-based',
@@ -22,7 +22,8 @@ function conditionBadges(pc, optionDefs = [], withGroup = true) {
     .flatMap(o => (o.choices || []).map(c => ({ o, c })))
     .find(x => x.c.id === pc.option_choice_id)
   if (choice) badges.push({ t: `${choice.o.name}: ${choice.c.label}`, bg: 'var(--accent-bg)', fg: 'var(--accent-dark)' })
-  if (withGroup && pc.group_key) badges.push({ t: `alt: ${pc.group_key}`, bg: 'var(--blue-bg)', fg: 'var(--blue)' })
+  const groupName = groupKeyOf(pc)
+  if (withGroup && groupName) badges.push({ t: `alt: ${groupName}`, bg: 'var(--blue-bg)', fg: 'var(--blue)' })
   if (pc.job_role) badges.push({ t: `asks: ${pc.job_role}`, bg: 'var(--success-bg)', fg: 'var(--success)' })
   const w = [pc.active_min_width, pc.active_max_width]
   const d = [pc.active_min_drop, pc.active_max_drop]

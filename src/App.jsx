@@ -117,6 +117,12 @@ export default function App() {
 
   // The option definitions that apply to a product, via its type. Recipe
   // resolution needs these to know which option lines a window has answered.
+  // Kinds already in use, so naming a part offers what is there rather than
+  // inviting a second spelling of a group that already exists.
+  const componentKinds = useMemo(
+    () => [...new Set(components.map(c => c.kind).filter(Boolean))].sort(),
+    [components])
+
   const optionDefsFor = useCallback((productId) => {
     const product = products.find(p => p.id === productId)
     return productOptions[product?.product_type] || []
@@ -336,6 +342,7 @@ export default function App() {
     setCompSaving(true)
     const payload = {
       name:             formData.name.trim(),
+      kind:             formData.kind?.trim() || null,
       unit:             formData.unit,
       unit_cost:        Number(formData.unit_cost) || 0,
       discount:         Number(formData.discount) || 0,
@@ -545,6 +552,7 @@ export default function App() {
       drop_limit_mode:   formData.drop_limit_mode || 'above',
       job_role:          formData.job_role || null,
       job_alternatives:  formData.job_alternatives || [],
+      group_by_kind:     !!formData.group_by_kind,
       sort_order:        sortOrder,
     })
     if (error) showToast(error.message || 'Failed to add', 'error')
@@ -573,6 +581,7 @@ export default function App() {
       drop_limit_mode:   formData.drop_limit_mode || 'above',
       job_role:          formData.job_role || null,
       job_alternatives:  formData.job_alternatives || [],
+      group_by_kind:     !!formData.group_by_kind,
     }).eq('id', id)
     showToast('Updated ✓', 'success')
     await loadAll()
@@ -1536,6 +1545,7 @@ export default function App() {
         open={compModalOpen}
         component={editingComp}
         suppliers={suppliers}
+        kinds={componentKinds}
         fabricCategories={fabricCategories}
         onClose={() => { setCompModalOpen(false); setEditingComp(null) }}
         onSave={handleCompSave}
