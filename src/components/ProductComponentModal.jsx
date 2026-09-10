@@ -24,7 +24,6 @@ const DEFAULT = {
   width_schedule_id: '',
   option_choice_id: null,
   group_key: null,
-  group_by_kind: false,
   active_min_width: null,
   active_max_width: null,
   active_min_drop: null,
@@ -547,68 +546,6 @@ export default function ProductComponentModal({
                   No options defined for this product type yet — add them under Products → Options.
                 </div>
               )}
-
-              {/* Alternatives — named by the part's kind, decided by the
-                  recipe. A shared kind is deliberately not enough on its own:
-                  Track Return FF Wave L and R are the same kind and a
-                  "Both ends" track takes both, so grouping has to be asked
-                  for, never assumed. */}
-              <div className="field" style={{ marginBottom: 10 }}>
-                <label className="field-label">Alternatives</label>
-
-                {displayComp?.kind ? (
-                  <>
-                    <label style={{
-                      display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer',
-                      padding: '9px 11px', borderRadius: 'var(--radius-sm)',
-                      border: `1.5px solid ${form.group_by_kind ? 'var(--accent)' : 'var(--warm-200)'}`,
-                      background: form.group_by_kind ? 'var(--accent-bg)' : '#fff',
-                    }}>
-                      <input type="checkbox" checked={!!form.group_by_kind}
-                        onChange={e => set('group_by_kind', e.target.checked)}
-                        style={{ marginTop: 2 }} />
-                      <span>
-                        <span style={{ fontSize: 13, fontWeight: 600 }}>
-                          One of the {displayComp.kind}s
-                        </span>
-                        <span style={{ display: 'block', fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
-                          Competes with the other {displayComp.kind} lines in this recipe — exactly
-                          one reaches the window. Leave off for parts that are used together.
-                        </span>
-                      </span>
-                    </label>
-                    <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
-                      The group is named by the part's kind, set in the component library.
-                      Rename it there and every recipe follows.
-                    </div>
-                  </>
-                ) : (
-                  <div style={{
-                    background: 'var(--warm-100)', borderRadius: 'var(--radius-sm)',
-                    padding: '9px 12px', fontSize: 11.5, color: 'var(--warm-300)',
-                  }}>
-                    {displayComp?.name || 'This part'} has no <strong>Kind</strong> yet. Set one on it in
-                    the component library — Tube, Winder, Base Rail — and it can then be
-                    grouped with its alternatives here.
-                  </div>
-                )}
-
-                {/* Anything named by hand before kinds existed still works and
-                    still wins, so it is shown rather than silently overridden. */}
-                {form.group_key && (
-                  <div style={{
-                    background: 'var(--warning-bg)', borderLeft: '3px solid var(--warning)',
-                    borderRadius: 'var(--radius-sm)', padding: '8px 11px', marginTop: 8,
-                    fontSize: 11.5, color: 'var(--warning)',
-                  }}>
-                    Grouped by hand as <strong>{form.group_key}</strong>, which overrides the kind.
-                    <button type="button" onClick={() => set('group_key', null)}
-                      style={{ background: 'none', border: 'none', padding: 0, marginLeft: 6, cursor: 'pointer', font: 'inherit', fontWeight: 700, textDecoration: 'underline', color: 'inherit' }}>
-                      clear it
-                    </button>
-                  </div>
-                )}
-              </div>
 
               {/* Customisable on the job — see supabase_job_role_slots.sql.
                   Naming the line turns it into a question asked while the job

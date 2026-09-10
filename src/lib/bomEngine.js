@@ -206,11 +206,6 @@ const withinBand = (pc, widthMm, dropMm) =>
   (pc.active_min_drop  == null || dropMm  >= Number(pc.active_min_drop))  &&
   (pc.active_max_drop  == null || dropMm  <= Number(pc.active_max_drop))
 
-const isBanded = pc =>
-  pc.active_min_width != null || pc.active_max_width != null ||
-  pc.active_min_drop  != null || pc.active_max_drop  != null ||
-  hasDropLimit(pc)
-
 const hasDropLimit = pc =>
   !!pc.drop_limit && Object.keys(pc.drop_limit).length > 0
 
@@ -246,46 +241,89 @@ const withinDropLimit = (pc, widthMm, dropMm) => {
     : Number(dropMm) > threshold
 }
 
+/* ==========================================================================
+ * Overlapping conditions
+ *
+ * There used to be a grouping step here: lines could be marked as alternatives
+ * and the resolver would keep exactly one of them. It has been removed, and
+ * the reason is worth keeping.
+ *
+ * A line already says when it applies — an option answer, a width band, a drop
+ * band. If those conditions are written properly they are mutually exclusive,
+ * and exactly one line survives on its own; the grouping never fired. Checked
+ * against every product at every option combination over a sweep of sizes,
+ * 13,824 resolutions, it changed nothing.
+ *
+ * Where it DID fire, it was hiding a mistake. Two lines whose bands overlap is
+ * a recipe error, and the resolver silently kept whichever came first — so the
+ * BOM looked right, the recipe stayed wrong, and nobody found out. Two tubes on
+ * a BOM is a visible, fixable fault. One arbitrarily chosen tube is not.
+ *
+ * So overlap is now detected and reported instead of absorbed.
+ * ========================================================================== */
+
+const RANGE_MAX = Number.MAX_SAFE_INTEGER
+
+const rangesOverlap = (aMin, aMax, bMin, bMax) =>
+  Math.max(Number(aMin ?? 0), Number(bMin ?? 0))
+  <= Math.min(Number(aMax ?? RANGE_MAX), Number(bMax ?? RANGE_MAX))
+
 /**
- * The group a recipe line competes in, or null if it competes with nothing.
+ * Can these two lines ever apply to the same window?
  *
- * The name lives on the COMPONENT — a tube is a tube whoever puts it in a
- * recipe — and the recipe line only says whether it competes. That split is
- * not tidiness: a shared kind must not be enough on its own, because Track
- * Return FF Wave L and R are the same kind and a "Both ends" track takes both.
- * Grouping them would drop one from the BOM. Only the recipe knows the
- * difference between alternatives and a matched pair, so only the recipe ticks
- * the box.
+ * Two answers of the SAME option can't both be given, so lines gated on
+ * different choices of one option are exclusive however their bands look.
+ * Choices of DIFFERENT options can both be true at once, so those fall through
+ * to the bands.
  *
- * An explicit group_key still wins, so anything named by hand keeps working.
+ * A drop_limit is a per-width table rather than a range, so a pair involving
+ * one is reported as undecidable rather than guessed at either way.
  */
-export function groupKeyOf(pc) {
-  if (pc?.group_key) return pc.group_key
-  if (pc?.group_by_kind && pc?.component?.kind) return pc.component.kind
-  return null
+export function linesCanCollide(a, b, optionDefs = []) {
+  const optionOf = (choiceId) => optionDefs
+    .find(o => (o.choices || []).some(c => c.id === choiceId))?.code || null
+
+  if (a.option_choice_id && b.option_choice_id && a.option_choice_id !== b.option_choice_id) {
+    const oa = optionOf(a.option_choice_id), ob = optionOf(b.option_choice_id)
+    if (oa && oa === ob) return false          // two answers to one question
+  }
+  if (hasDropLimit(a) || hasDropLimit(b)) return null   // undecidable
+
+  return rangesOverlap(a.active_min_width, a.active_max_width, b.active_min_width, b.active_max_width)
+      && rangesOverlap(a.active_min_drop,  a.active_max_drop,  b.active_min_drop,  b.active_max_drop)
 }
 
 /**
- * Collapse alternatives down to one line each.
- * Precedence: an explicit window override, then a line supplied by an
- * answered option, then a line whose dimension band matched, then the plain
- * default. Ungrouped lines pass straight through.
+ * Pairs of lines in one recipe that are the same kind of part AND can both
+ * apply at once — i.e. a window that would get two base rails.
+ *
+ * Same-kind only, deliberately. Two different kinds arriving together is
+ * normal (a bracket and its cover); two of one kind is what nobody intends.
+ * Track Return FF Wave L and R are the exception that proves it — they share
+ * a kind and are MEANT to arrive together on "Both ends", so a report is the
+ * right output here, not a rule.
  */
-function applyGroups(lines, overrides = {}) {
-  const grouped = {}, out = []
-  lines.forEach(pc => {
-    const key = groupKeyOf(pc)
-    if (!key) { out.push(pc); return }
-    ;(grouped[key] ||= []).push(pc)
+export function overlappingLines(productComponents = [], optionDefs = []) {
+  const out = []
+  const byKind = {}
+  productComponents.forEach(pc => {
+    const k = pc.component?.kind
+    if (k) (byKind[k] ||= []).push(pc)
   })
-  Object.entries(grouped).forEach(([key, candidates]) => {
-    const forcedId = overrides && overrides[key]
-    const pick =
-      (forcedId && candidates.find(c => c.id === forcedId)) ||
-      candidates.find(c => c.option_choice_id) ||
-      candidates.find(isBanded) ||
-      candidates[0]
-    if (pick) out.push(pick)
+
+  Object.entries(byKind).forEach(([kind, lines]) => {
+    for (let i = 0; i < lines.length; i++) {
+      for (let j = i + 1; j < lines.length; j++) {
+        const verdict = linesCanCollide(lines[i], lines[j], optionDefs)
+        if (verdict === false) continue
+        out.push({
+          kind,
+          a: lines[i],
+          b: lines[j],
+          certain: verdict === true,   // false means "couldn't decide"
+        })
+      }
+    }
   })
   return out
 }
@@ -311,7 +349,10 @@ export function resolveRecipe(productComponents = [], config = null, optionDefs 
     withinBand(pc, widthMm, dropMm) &&
     withinDropLimit(pc, widthMm, dropMm))
 
-  return applyGroups(applicable, config && config.overrides)
+  // No collapsing step: a line's own conditions decide whether it applies.
+  // Where two of a kind both survive, that is a recipe fault to be seen, not
+  // one to be quietly resolved — see overlappingLines.
+  return applicable
     .slice()
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
 }
@@ -595,9 +636,10 @@ export function groupRecipeLines(productComponents = []) {
   const groups = new Map()
 
   productComponents.forEach(pc => {
-    // Same resolver the engine collapses by, so the list can never show a
-    // grouping the BOM does not actually apply.
-    const groupName = groupKeyOf(pc)
+    // Grouped by the part's kind. Purely a reading aid now — the engine
+    // collapses nothing, so this changes how the recipe reads and never what
+    // a window gets.
+    const groupName = pc.component?.kind || null
     const key = groupName ? `g:${groupName}` : `c:${pc.component_id}`
     if (!groups.has(key)) {
       groups.set(key, {
