@@ -9,6 +9,7 @@ import OptionsAdmin      from './pages/OptionsAdmin'
 import AdminHome              from './pages/AdminHome'
 import FabricCategoriesAdmin  from './pages/FabricCategoriesAdmin'
 import ComponentKindsAdmin     from './pages/ComponentKindsAdmin'
+import TrackPO                 from './pages/TrackPO'
 import DeletedRecordsAdmin     from './pages/DeletedRecordsAdmin'
 import DeleteJobModal          from './components/DeleteJobModal'
 import BackToReceivedModal     from './components/BackToReceivedModal'
@@ -31,7 +32,7 @@ import PurchaseOrderModal    from './components/PurchaseOrderModal'
 import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
-import { buildStockMap, stockKey, checkLowStock, getStock, planStockRestore } from './lib/stockEngine'
+import { buildStockMap, stockKey, getStock, planStockRestore, stockPositions } from './lib/stockEngine'
 import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting } from './lib/bomEngine'
 import { orderUnitInfo } from './lib/poEngine'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
@@ -45,11 +46,12 @@ const NAV_TABS = [
   { id: 'bom',        label: 'Jobs',       emoji: '📋' },
   { id: 'stock',      label: 'Stock',      emoji: '🏪' },
   { id: 'orders',     label: 'Orders',     emoji: '🧾' },
-  { id: 'admin',      label: 'Admin',      emoji: '🛠️' },
+  // Not a tab — a way out. Takes the slot Admin left when it moved to /admin.
+  { id: 'home',       label: 'Home',       emoji: '🏠', href: '/' },
 ]
 
-export default function App() {
-  const [navTab, setNavTab] = useState('components')
+export default function App({ route = 'manufacturing' }) {
+  const [navTab, setNavTab] = useState(route === 'admin' ? 'admin' : 'components')
 
   // ---- Data ----
   const [components, setComponents]                     = useState([])
@@ -997,6 +999,27 @@ export default function App() {
     }
   }
 
+  /**
+   * The stock position of every in-progress job, keyed by job id.
+   *
+   * Worked out together, not job by job. Measuring each job against the whole
+   * shelf on its own is what let three jobs each be told they could have the
+   * same ten parts — on live data that hid five genuinely short items. See
+   * stockPositions.
+   *
+   * Only in-progress jobs: a Received job has not been committed to and a
+   * Completed one was already built, so neither has a claim on the shelf.
+   * Only computed for /track, because it walks every window of every job and
+   * the workshop screens never ask for it.
+   */
+  const stockByJob = useMemo(() => {
+    if (route !== 'track') return {}
+    const entries = jobs
+      .filter(j => j.status === 'in_progress')
+      .map(job => ({ jobId: job.id, summary: calcJobSummary(buildJobWindows(job, true)) }))
+    return stockPositions(entries, stockMap)
+  }, [route, jobs, buildJobWindows, stockMap])
+
   // Compute the price snapshot + locked total for a job from current recipes
   const computeJobLock = useCallback((job) => {
     // Nested BEFORE snapshotting, so a confirmed job freezes the metres it
@@ -1578,6 +1601,17 @@ export default function App() {
   // ==== ROUTING ====
 
   const renderScreen = () => {
+    // Tracking is its own read-only screen, not one of the workshop tabs.
+    if (route === 'track') {
+      return (
+        <TrackPO
+          jobs={jobs}
+          products={products}
+          stockByJob={stockByJob}
+        />
+      )
+    }
+
     // Window detail
     if (navTab === 'bom' && currentJob && currentWindow) {
       const win     = currentWindow.win
@@ -1820,7 +1854,8 @@ export default function App() {
   }
 
   // Hide bottom nav when drilling into details
-  const showBottomNav = !currentProduct && !currentJob && !currentWindow && !currentSupplier && !currentPO && !adminSection
+  const showBottomNav = route === 'manufacturing'
+    && !currentProduct && !currentJob && !currentWindow && !currentSupplier && !currentPO && !adminSection
 
   return (
     <div className="app">
@@ -1835,7 +1870,9 @@ export default function App() {
           paddingBottom: 'env(safe-area-inset-bottom)',
         }}>
           {NAV_TABS.map(tab => (
-            <button key={tab.id} onClick={() => setNavTab(tab.id)} style={{
+            <button key={tab.id}
+              onClick={() => tab.href ? (window.location.href = tab.href) : setNavTab(tab.id)}
+              style={{
               flex: 1, padding: '10px 0 12px', border: 'none', background: 'none',
               cursor: 'pointer', display: 'flex', flexDirection: 'column',
               alignItems: 'center', gap: 3,

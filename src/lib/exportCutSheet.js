@@ -48,10 +48,10 @@ import { nestPieces, nestSummary } from './fabricEngine'
 import { resolveAnswers, roleSpecs } from './bomEngine'
 
 const ACCENT_DARK = [28, 46, 15]
-const WARM_100    = [241, 245, 249]
-const WARM_200    = [226, 232, 240]
-const WARM_300    = [148, 163, 184]
-const INK         = [15, 23, 42]
+const WARM_100    = [245, 243, 240]  // --warm-100 #F5F3F0
+const WARM_200    = [231, 226, 219]  // --warm-200 #E7E2DB
+const WARM_300    = [140, 130, 121]  // --warm-300 #8C8279
+const INK         = [31, 27, 22]     // --ink #1F1B16
 const WHITE       = [255, 255, 255]
 
 const loadJsPDF = () => new Promise((resolve, reject) => {

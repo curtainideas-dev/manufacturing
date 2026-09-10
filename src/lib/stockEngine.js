@@ -320,3 +320,104 @@ export function planStockRestore({ movements = [], jobBars = [], components = []
       && offcuts.length === 0 && unreturnable.length === 0,
   }
 }
+
+/* ==========================================================================
+ * Stock position across jobs
+ *
+ * checkLowStock answers "does this one job dip the shelf below its minimum",
+ * which sounds right and quietly is not, because every job is measured against
+ * the WHOLE shelf on its own. Three jobs each wanting eight of a part with ten
+ * in stock are each told they are fine. On live data that hid five genuinely
+ * short parts, including one where two jobs wanted 5.08m of a tube against 2m
+ * on hand and the page reported a shortfall of 0.33.
+ *
+ * So demand is totted up once across every job in play, and each job is then
+ * told two things: whether IT can be built, and whether the shelf covers
+ * everything promised. They are different questions and both get asked.
+ * ========================================================================== */
+
+/**
+ * The stock position for a set of jobs sharing one shelf.
+ *
+ * `entries` is [{ jobId, summary }] where summary is calcJobSummary output.
+ * Returns { [jobId]: line[] }, a line per part worth mentioning:
+ *
+ *   jobShort    this job alone needs more than is on the shelf — it cannot be
+ *               built today whatever else happens.
+ *   shelfShort  everything committed across these jobs needs more than is on
+ *               the shelf. This job might still be buildable; something has to
+ *               give somewhere.
+ *   belowMin    it all fits, but what is left drops under the reorder minimum.
+ *
+ * A part with none of the three is left out entirely.
+ */
+export function stockPositions(entries = [], stockMap = {}) {
+  // One pass to total demand, so every job is measured against the same shelf.
+  const demand = new Map()
+  entries.forEach(({ summary = [] }) => {
+    summary.forEach(row => {
+      const k = stockKey(row.component.id, row.colour_variant)
+      demand.set(k, (demand.get(k) || 0) + (Number(row.total_qty) || 0))
+    })
+  })
+
+  const out = {}
+  entries.forEach(({ jobId, summary = [] }) => {
+    const lines = []
+    // Fold the job's own rows per part first. calcJobSummary already merges,
+    // so this is belt and braces — but without it a part appearing twice in
+    // one summary would produce two lines saying different things about the
+    // same shelf.
+    const own = new Map()
+    summary.forEach(r => {
+      const k = stockKey(r.component.id, r.colour_variant)
+      if (!own.has(k)) own.set(k, { ...r, total_qty: 0 })
+      own.get(k).total_qty += Number(r.total_qty) || 0
+    })
+    ;[...own.values()].forEach(row => {
+      const k = stockKey(row.component.id, row.colour_variant)
+      const stock = stockMap[k]
+      // Nothing tracked for this part — silence beats a made-up shortfall.
+      if (!stock) return
+
+      const onHand      = Number(stock.qty_on_hand) || 0
+      const minimum     = Number(stock.qty_minimum) || 0
+      const jobQty      = Number(row.total_qty) || 0
+      const totalDemand = demand.get(k) || 0
+      const otherQty    = Math.max(0, totalDemand - jobQty)
+
+      const jobShort   = jobQty > onHand
+      const shelfShort = totalDemand > onHand
+      const belowMin   = !shelfShort && (onHand - totalDemand) < minimum
+
+      if (!jobShort && !shelfShort && !belowMin) return
+
+      lines.push({
+        component:      row.component,
+        colour_variant: row.colour_variant || null,
+        unit:           row.component?.unit || '',
+        jobQty,
+        onHand,
+        minimum,
+        totalDemand,
+        otherQty,
+        // How many OTHER jobs here want any of it — "also wanted by 2 jobs".
+        otherJobs: entries.filter(e => e.jobId !== jobId
+          && (e.summary || []).some(r => stockKey(r.component.id, r.colour_variant) === k)).length,
+        jobShort,
+        shelfShort,
+        belowMin,
+        jobShortBy:   Math.max(0, jobQty - onHand),
+        shelfShortBy: Math.max(0, totalDemand - onHand),
+        leaves:       onHand - totalDemand,
+      })
+    })
+    if (lines.length) {
+      // Worst first: what stops this job, then what stops the shelf.
+      lines.sort((a, b) => (b.jobShort - a.jobShort) || (b.shelfShort - a.shelfShort)
+        || b.shelfShortBy - a.shelfShortBy)
+      out[jobId] = lines
+    }
+  })
+  return out
+}

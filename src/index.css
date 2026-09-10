@@ -1,11 +1,32 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap');
 
 :root {
-  --ink: #0F172A;
-  --paper: #F8FAFC;
-  --warm-100: #F1F5F9;
-  --warm-200: #E2E8F0;
-  --warm-300: #94A3B8;
+  /* Neutrals are warm stone, not cool slate.
+   *
+   * They were always CALLED warm — the variable names never changed — but
+   * held slate values, which sat badly against the green and made everything
+   * read faintly blue. Only the neutrals moved; the accent, the dark green
+   * header and every semantic colour are untouched.
+   */
+  --ink: #1F1B16;
+  --paper: #FAF8F5;
+  --warm-100: #F5F3F0;
+  --warm-200: #E7E2DB;
+  --warm-300: #8C8279;
+
+  /* Rows.
+   *
+   * Every row is warm — not alternating. Striping made a list look like a
+   * spreadsheet and left half the rows white, which is what the page already
+   * is. A table should read as one warm block sitting on a lighter page, with
+   * the rows told apart by a divider that is actually visible.
+   *
+   * Three stepped tones so rest, hover and press never collide: a warm row
+   * must still light up under a finger.
+   */
+  --row: #F4F0E9;
+  --row-hover: #E9E3D9;
+  --row-press: #DCD4C8;
   --accent: #8DC73F;
   --accent-dark: #1C2E0F;
   --accent-hover: #7ab535;
@@ -20,9 +41,10 @@
   --warning: #C2410C;
   --radius: 12px;
   --radius-sm: 8px;
-  --shadow-sm: 0 1px 3px rgba(15,23,42,0.06);
-  --shadow: 0 4px 12px rgba(15,23,42,0.08);
-  --shadow-lg: 0 12px 32px rgba(15,23,42,0.12);
+  /* Cast from the ink, so shadows stop tinting the page blue. */
+  --shadow-sm: 0 1px 3px rgba(31,27,22,0.07);
+  --shadow: 0 4px 12px rgba(31,27,22,0.09);
+  --shadow-lg: 0 12px 32px rgba(31,27,22,0.14);
   --font-body: 'DM Sans', 'Segoe UI', sans-serif;
 }
 
@@ -80,6 +102,11 @@ input, textarea, select, button { font-family: inherit; font-size: inherit; }
   background: #fff; border-radius: var(--radius); border: 1px solid var(--warm-200);
   overflow: hidden; transition: box-shadow 0.2s;
 }
+/* A card that holds rows takes their colour, so no white sliver shows at the
+ * rounded corners or under the last row. Cards holding a form or a figure are
+ * untouched and stay white. */
+.card:has(> .component-item),
+.card:has(> div > .component-item) { background: var(--row); }
 .card-body { padding: 16px; }
 
 /* Section title */
@@ -187,11 +214,19 @@ select.field-input {
 /* Component list item */
 .component-item {
   padding: 14px 16px; display: flex; align-items: center; gap: 12px;
-  border-bottom: 1px solid var(--warm-100); cursor: pointer; transition: background 0.15s;
+  border-bottom: 1px solid var(--warm-200); cursor: pointer; transition: background 0.15s;
 }
 .component-item:last-child { border-bottom: none; }
-.component-item:hover { background: var(--warm-100); }
-.component-item:active { background: var(--warm-200); }
+
+/* Every row is warm, so the whole table reads as one block against the
+ * lighter page. Rows are told apart by the divider above, not by alternating
+ * colour. */
+.component-item { background: var(--row); }
+.component-item:hover { background: var(--row-hover); }
+.component-item:active { background: var(--row-press); }
+
+/* Real tables the same. Header rows set their own dark background inline. */
+tbody tr { background: var(--row); }
 .component-avatar {
   width: 42px; height: 42px; border-radius: 10px; background: var(--accent-bg);
   display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 20px;
