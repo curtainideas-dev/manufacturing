@@ -11,6 +11,7 @@ import FabricCategoriesAdmin  from './pages/FabricCategoriesAdmin'
 import ComponentKindsAdmin     from './pages/ComponentKindsAdmin'
 import DeletedRecordsAdmin     from './pages/DeletedRecordsAdmin'
 import DeleteJobModal          from './components/DeleteJobModal'
+import BackToReceivedModal     from './components/BackToReceivedModal'
 import JobList           from './pages/JobList'
 import JobDetail         from './pages/JobDetail'
 import WindowDetail      from './pages/WindowDetail'
@@ -75,6 +76,8 @@ export default function App() {
   const [restoringId, setRestoringId]         = useState(null)
   const [deleteJobPlan, setDeleteJobPlan]     = useState(null)  // { job, plan } | null
   const [deletingJob, setDeletingJob]         = useState(false)
+  const [revertPlan, setRevertPlan]           = useState(null)   // { job, plan } | null
+  const [reverting, setReverting]             = useState(false)
 
   const [compModalOpen, setCompModalOpen]         = useState(false)
   const [editingComp, setEditingComp]             = useState(null)
@@ -858,20 +861,101 @@ export default function App() {
    * and a job deleted after fitting should not, and only the person deleting
    * it knows which. So the plan is worked out first and put to them.
    */
-  const handleJobDeleteRequest = async () => {
-    const jobId = currentJob.id
+  // What returning this job's stock would do. Read fresh rather than from
+  // jobMovements, which is only loaded when the deduct modal is opened.
+  const buildRestorePlan = useCallback(async (jobId) => {
     const [{ data: movements }, { data: jobBars }] = await Promise.all([
       supabase.from('stock_movements').select('*').eq('job_id', jobId).eq('movement_type', 'deduct'),
       supabase.from('stock_bars').select('*').eq('job_id', jobId),
     ])
-    setDeleteJobPlan({
-      job:  currentJob,
-      plan: planStockRestore({
-        movements:  movements || [],
-        jobBars:    jobBars || [],
-        components,
-      }),
-    })
+    return planStockRestore({ movements: movements || [], jobBars: jobBars || [], components })
+  }, [components])
+
+  /**
+   * Put a job's stock back. Shared by deleting and by moving back to Received,
+   * because it is the same undo either way. Returns the failures rather than
+   * toasting them, so the caller can decide whether to carry on — deleting
+   * must not, moving back may.
+   */
+  const returnJobStock = useCallback(async (plan) => {
+    const failures = []
+
+    for (const line of plan.quantities) {
+      const row = stockMap[stockKey(line.component_id, line.colour_variant)]
+      if (!row?.id) { failures.push(`${line.component?.name || 'a part'} has no stock row`); continue }
+      const { error } = await supabase.from('stock')
+        .update({ qty_on_hand: (Number(row.qty_on_hand) || 0) + line.qty })
+        .eq('id', row.id)
+      if (error) failures.push(`${line.component?.name || 'a part'}: ${error.message}`)
+    }
+
+    if (plan.pieces.length) {
+      const { error } = await supabase.from('stock_bars')
+        .update({ status: 'available', job_id: null })
+        .in('id', plan.pieces.map(b => b.id))
+      if (error) failures.push(`bars and rolls: ${error.message}`)
+    }
+
+    // Offcuts the job created come back out, or it would leave stock behind
+    // that was never there before.
+    if (plan.offcuts.length) {
+      const { error } = await supabase.from('stock_bars')
+        .delete().in('id', plan.offcuts.map(b => b.id))
+      if (error) failures.push(`offcuts: ${error.message}`)
+    }
+
+    return failures
+  }, [stockMap])
+
+  const handleJobDeleteRequest = async () => {
+    setDeleteJobPlan({ job: currentJob, plan: await buildRestorePlan(currentJob.id) })
+  }
+
+  /* ---- Moving backwards through the statuses ----------------------------
+   * Completed -> In Progress is just a status change; nothing was locked or
+   * consumed by completing it.
+   *
+   * In Progress -> Received is not: confirming took a pricing snapshot and
+   * may have deducted stock, and both have to be dealt with. Hence the modal.
+   * -------------------------------------------------------------------- */
+  const handleJobBackToReceivedRequest = async () => {
+    setRevertPlan({ job: currentJob, plan: await buildRestorePlan(currentJob.id) })
+  }
+
+  const handleJobBackToReceivedConfirm = async ({ restoreStock }) => {
+    const job = revertPlan?.job
+    const plan = revertPlan?.plan
+    if (!job) return
+    setReverting(true)
+    try {
+      if (restoreStock && plan) {
+        const failures = await returnJobStock(plan)
+        if (failures.length) {
+          showToast(`Stock not fully returned — job left In Progress. ${failures[0]}`, 'error')
+          return
+        }
+        // The deduction is undone, so its record has to go too — otherwise
+        // deducting again after the next Confirm would look like a second
+        // deduction on top of one that no longer exists.
+        await supabase.from('stock_movements').delete().eq('job_id', job.id)
+        const moved = plan.quantities.length + plan.pieces.length
+        if (moved) showToast(`Returned ${moved} stock line${moved !== 1 ? 's' : ''}`, 'success')
+      }
+
+      // Drop the pricing lock: Received is editable, and an editable job
+      // quoting a snapshot taken before the edits is worse than no snapshot.
+      await handleJobUpdate({
+        status: 'received',
+        price_snapshot: null,
+        qty_snapshot: null,
+        locked_total: null,
+      })
+      setRevertPlan(null)
+      showToast('Back to Received — pricing unlocked')
+      await loadAll()
+    } finally {
+      setReverting(false)
+    }
   }
 
   /**
@@ -891,37 +975,7 @@ export default function App() {
 
     try {
       if (restoreStock && plan) {
-        const failures = []
-
-        // Counted quantities, read off the recorded deltas.
-        for (const line of plan.quantities) {
-          const row = stockMap[stockKey(line.component_id, line.colour_variant)]
-          if (!row?.id) {
-            failures.push(`${line.component?.name || 'a part'} has no stock row`)
-            continue
-          }
-          const { error } = await supabase.from('stock')
-            .update({ qty_on_hand: (Number(row.qty_on_hand) || 0) + line.qty })
-            .eq('id', row.id)
-          if (error) failures.push(`${line.component?.name || 'a part'}: ${error.message}`)
-        }
-
-        // Bars and rolls the job consumed become available again.
-        if (plan.pieces.length) {
-          const { error } = await supabase.from('stock_bars')
-            .update({ status: 'available', job_id: null })
-            .in('id', plan.pieces.map(b => b.id))
-          if (error) failures.push(`bars and rolls: ${error.message}`)
-        }
-
-        // Offcuts the job created come back out, or deleting it would leave
-        // stock behind that was never there before.
-        if (plan.offcuts.length) {
-          const { error } = await supabase.from('stock_bars')
-            .delete().in('id', plan.offcuts.map(b => b.id))
-          if (error) failures.push(`offcuts: ${error.message}`)
-        }
-
+        const failures = await returnJobStock(plan)
         if (failures.length) {
           showToast(`Stock not fully returned — job NOT deleted. ${failures[0]}`, 'error')
           return
@@ -1012,10 +1066,12 @@ export default function App() {
     showToast('Job completed ✓', 'success')
   }
 
+  // Completed -> In Progress. Nothing was locked or consumed by completing a
+  // job, so there is nothing to undo but the status itself.
   const handleJobReopen = async () => {
-    if (!window.confirm('Reopen this job back to In Progress?')) return
+    if (!window.confirm('Move this job back to In Progress?')) return
     await handleJobUpdate({ status: 'in_progress' })
-    showToast('Job reopened')
+    showToast('Back to In Progress')
   }
 
   const handleAddWindow = async (winData) => {
@@ -1575,6 +1631,7 @@ export default function App() {
           onDuplicateWindow={handleWindowDuplicate}
           onReorderWindows={handleWindowsReorder}
           onConfirm={handleJobConfirm}
+          onBackToReceived={handleJobBackToReceivedRequest}
           onComplete={handleJobComplete}
           onReopen={handleJobReopen}
           onAttachPO={handleAttachPO}
@@ -1816,6 +1873,15 @@ export default function App() {
         onSave={handleSupplierSave}
         onDelete={handleSupplierDelete}
         saving={supplierSaving}
+      />
+
+      <BackToReceivedModal
+        open={!!revertPlan}
+        job={revertPlan?.job}
+        plan={revertPlan?.plan}
+        working={reverting}
+        onClose={() => setRevertPlan(null)}
+        onConfirm={handleJobBackToReceivedConfirm}
       />
 
       <DeleteJobModal
