@@ -19,6 +19,26 @@ import { ChevronLeftIcon, PlusIcon, TrashIcon } from '../components/Icons'
  *                           done in one write rather than left to be noticed.
  */
 
+function Tick({ on, title, body, onChange }) {
+  return (
+    <label style={{
+      display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer',
+      marginTop: 9, padding: '8px 10px', borderRadius: 'var(--radius-sm)',
+      border: `1.5px solid ${on ? 'var(--accent)' : 'var(--warm-200)'}`,
+      background: on ? 'var(--accent-bg)' : '#fff',
+    }}>
+      <input type="checkbox" checked={!!on}
+        onChange={e => onChange(e.target.checked)} style={{ marginTop: 2 }} />
+      <span>
+        <span style={{ fontSize: 12.5, fontWeight: 600 }}>{title}</span>
+        <span style={{ display: 'block', fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
+          {body}
+        </span>
+      </span>
+    </label>
+  )
+}
+
 const ORDER_TYPES = [
   { val: '',       label: 'No default',      note: 'ask each time' },
   { val: 'pack',   label: '📦 Pack',          note: 'counted' },
@@ -137,30 +157,24 @@ export default function ComponentKindsAdmin({
                       </button>
                     </div>
 
-                    {/* Whether the job gets a say in this part. A fact about
-                        the kind, not about any one recipe — winders are chosen
-                        by what is on the shelf, and that is true wherever a
-                        winder is used. */}
-                    <label style={{
-                      display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer',
-                      marginTop: 9, padding: '8px 10px', borderRadius: 'var(--radius-sm)',
-                      border: `1.5px solid ${kind.ask_on_job ? 'var(--accent)' : 'var(--warm-200)'}`,
-                      background: kind.ask_on_job ? 'var(--accent-bg)' : '#fff',
-                    }}>
-                      <input type="checkbox" checked={!!kind.ask_on_job}
-                        onChange={e => onSave({ ...kind, ask_on_job: e.target.checked })}
-                        style={{ marginTop: 2 }} />
-                      <span>
-                        <span style={{ fontSize: 12.5, fontWeight: 600 }}>
-                          Ask about the {kind.name} when a window is added
-                        </span>
-                        <span style={{ display: 'block', fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
-                          {used > 0
-                            ? `Offers the ${used} ${kind.name} component${used !== 1 ? 's' : ''} and their colours, on every product that uses one.`
-                            : `Nothing carries this kind yet, so nothing would be asked.`}
-                        </span>
-                      </span>
-                    </label>
+                    {/* Two different questions, deliberately two ticks. "Does
+                        someone choose this?" and "does the bench need to see
+                        it?" have different answers — a chain length is decided
+                        by the drop, so nobody is asked, but the bench still has
+                        to pick the right one off the rack. */}
+                    <Tick
+                      on={kind.ask_on_job}
+                      onChange={v => onSave({ ...kind, ask_on_job: v })}
+                      title={`Ask about the ${kind.name} when a window is added`}
+                      body={used > 0
+                        ? `Offers the ${used} ${kind.name} component${used !== 1 ? 's' : ''} and their colours, on every product that uses one.`
+                        : 'Nothing carries this kind yet, so nothing would be asked.'} />
+
+                    <Tick
+                      on={kind.on_cut_sheet}
+                      onChange={v => onSave({ ...kind, on_cut_sheet: v })}
+                      title={`Print the ${kind.name} on the cut sheet`}
+                      body={`Adds "${kind.name}: <part> · <colour>" under each window, so the bench reads it off the sheet instead of the BOM.`} />
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 11.5, color: 'var(--warm-300)' }}>

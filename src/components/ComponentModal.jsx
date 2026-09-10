@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { XIcon, TrashIcon, PlusIcon, CheckIcon } from './Icons'
+import { XIcon, TrashIcon, PlusIcon } from './Icons'
 import { categoryForPrice } from '../lib/fabricEngine'
 
 const UNITS = ['each', 'metres', 'mm', 'm²', 'hours']
@@ -188,46 +188,21 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
               Kind
               <span style={{ color: 'var(--warm-300)', fontWeight: 400, marginLeft: 6 }}>optional</span>
             </label>
-            {/* Tappable rather than a dropdown, like every other choice in the
-                app. Ticking one unticks the rest — a part is one kind, and the
-                ticked one is the kind it carries. */}
-            {kinds.length === 0 ? (
-              <div style={{
-                background: 'var(--warm-100)', borderRadius: 'var(--radius-sm)',
-                padding: '9px 12px', fontSize: 12, color: 'var(--warm-300)',
-              }}>
+            {/* A dropdown: there are already fourteen kinds and the list only
+                grows, so a wall of pills costs more room than it saves. The
+                selected option is the kind the component carries. */}
+            <select className="field-input" value={form.kind || ''}
+              onChange={e => handleKindChange(e.target.value || null)}>
+              <option value="">— No kind —</option>
+              {kinds.map(k => (
+                <option key={k.name} value={k.name}>
+                  {k.name}{k.ask_on_job ? ' 💬' : ''}
+                </option>
+              ))}
+            </select>
+            {kinds.length === 0 && (
+              <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 4 }}>
                 No kinds defined yet — add them under Admin → Component Kinds.
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {kinds.map(k => {
-                  const on = form.kind === k.name
-                  return (
-                    <button key={k.name} type="button"
-                      onClick={() => handleKindChange(on ? null : k.name)}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 7,
-                        padding: '8px 11px', borderRadius: 8, cursor: 'pointer',
-                        fontSize: 12.5, fontWeight: 600,
-                        border: `1.5px solid ${on ? 'var(--accent)' : 'var(--warm-200)'}`,
-                        background: on ? 'var(--accent-bg)' : '#fff',
-                        color: on ? 'var(--accent-dark)' : 'var(--ink)',
-                      }}>
-                      <span style={{
-                        width: 15, height: 15, borderRadius: 4, flexShrink: 0,
-                        border: `2px solid ${on ? 'var(--accent)' : 'var(--warm-200)'}`,
-                        background: on ? 'var(--accent)' : '#fff',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      }}>
-                        {on && <CheckIcon size={10} color="#fff" />}
-                      </span>
-                      {k.name}
-                      {k.ask_on_job && (
-                        <span title="The job is asked about this part" style={{ fontSize: 11 }}>💬</span>
-                      )}
-                    </button>
-                  )
-                })}
               </div>
             )}
             <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>

@@ -1616,6 +1616,7 @@ export default function App() {
           optionDefsFor={optionDefsFor}
           allComponents={components}
           suppliers={suppliers}
+          kinds={componentKinds}
           fabricCategories={fabricCategories}
           stockMap={stockMap}
           onBack={() => setCurrentJob(null)}

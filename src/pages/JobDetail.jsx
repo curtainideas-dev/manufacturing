@@ -27,7 +27,7 @@ const CopyIcon = () => (
 
 export default function JobDetail({
   job, products, productComponentsMap, optionDefsFor,
-  allComponents = [], suppliers = [], fabricCategories = [], stockMap = {},
+  allComponents = [], suppliers = [], fabricCategories = [], stockMap = {}, kinds = [],
   onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onReorderWindows, onConfirm, onComplete, onReopen, onBackToReceived, onAttachPO, poUploading, onDeductStock,
 }) {
   const [tab, setTab]         = useState('windows')
@@ -107,7 +107,7 @@ export default function JobDetail({
   const handleCutSheet = async () => {
     setCutting(true)
     try {
-      await exportCutSheetPDF(job, windowsWithBOM, optionDefsFor, suppliers)
+      await exportCutSheetPDF(job, windowsWithBOM, optionDefsFor, suppliers, kinds)
     } finally {
       setCutting(false)
     }

@@ -124,7 +124,7 @@ function optionAnswer(win, optionDefs, code, pattern, exclude = null) {
  * `optionDefs` are the option definitions for this window's product — the
  * same list App.jsx's optionDefsFor hands the BOM builder.
  */
-export function cutSheetRow(win, optionDefs = []) {
+export function cutSheetRow(win, optionDefs = [], kinds = []) {
   const bom = win.bom || []
 
   // Tracks and tubes — the things that get sawn. Usually one; joined rather
@@ -146,10 +146,11 @@ export function cutSheetRow(win, optionDefs = []) {
   return {
     window:      win.label || DASH,
     tube:        bars.length ? bars.map(l => l.component?.name || DASH).join(' / ') : DASH,
-    // The job-customisable parts as they were actually answered. Empty on a
-    // product whose recipe names none, which is every product until one is
-    // tagged — so the sheet is unchanged until there's something to say.
-    specs:       roleSpecs(bom),
+    // The parts whose kind is marked for the cut sheet — base rail and its
+    // colour, chain length — as they were actually resolved for this window.
+    // Empty until a kind is ticked, so the sheet is unchanged until there is
+    // something to say.
+    specs:       roleSpecs(bom, kinds),
     roll:        optionAnswer(win, optionDefs, ROLL_CODE, ROLL_PATTERN) || DASH,
     control:     optionAnswer(win, optionDefs, CONTROL_CODE, CONTROL_PATTERN, CONTROL_EXCLUDE) || DASH,
     fabric:      fabric
@@ -389,7 +390,7 @@ const COLS = [
  * same one the BOM builder gets; the sheet needs it to turn a window's stored
  * option answers into the roll and control-side labels a maker reads.
  */
-export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = []) {
+export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = []) {
   const jsPDF = await loadJsPDF()
   const doc   = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
 
@@ -451,7 +452,7 @@ export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor =
   drawTableHeader()
 
   windowsWithBOM.forEach((win, i) => {
-    const r = cutSheetRow(win, optionDefsFor(win.product_id))
+    const r = cutSheetRow(win, optionDefsFor(win.product_id), kinds)
     const specH = r.specs.length > 0 ? SPEC_H : 0
 
     // Break before the row, counting its spec line — a spec stranded at the
@@ -760,8 +761,8 @@ export function cutSheetFilename(job) {
   return `${orderNo}_${customerLastName(job?.customer_name)}_Cut Sheet.pdf`
 }
 
-export async function exportCutSheetPDF(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = []) {
-  const doc = await buildCutSheetDoc(job, windowsWithBOM, optionDefsFor, suppliers)
+export async function exportCutSheetPDF(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = []) {
+  const doc = await buildCutSheetDoc(job, windowsWithBOM, optionDefsFor, suppliers, kinds)
   printPDF(doc, cutSheetFilename(job))
   return { rowCount: windowsWithBOM.length }
 }

@@ -748,17 +748,29 @@ export function jobRoleSlots(resolvedLines = [], subMap = null, allComponents = 
 }
 
 /**
- * The role slots as flat spec text — "Base rail: Slimline 25 · Black" — for
- * anything that prints rather than asks. Reads the BOM AFTER substitution, so
- * what it says is what the line was actually costed and stocked against.
+ * The parts worth printing, as flat spec text — "Base Rail: Q-Bar · White".
+ *
+ * Driven by the KIND's on_cut_sheet flag rather than by what the job was asked
+ * about: those are different questions. A chain length is decided by the drop
+ * so nobody is asked, but the bench still has to know which one to take off
+ * the rack.
+ *
+ * Reads the BOM AFTER substitution, so what it prints is what the line was
+ * actually costed and stocked against — including a swap made on the job.
  */
-export function roleSpecs(bomLines = []) {
+export function roleSpecs(bomLines = [], kinds = []) {
+  const printed = new Set(kinds.filter(k => k?.on_cut_sheet).map(k => k.name))
+  if (printed.size === 0) return []
+
   const seen = new Set()
   return (bomLines || []).reduce((out, l) => {
-    if (!l.job_role || seen.has(l.job_role + '|' + l.component_id)) return out
-    seen.add(l.job_role + '|' + l.component_id)
+    const kind = l.component?.kind
+    if (!kind || !printed.has(kind)) return out
+    const key = kind + '|' + l.component_id
+    if (seen.has(key)) return out
+    seen.add(key)
     out.push({
-      role:  l.job_role,
+      role:  kind,
       value: `${l.component?.name || '—'}${l.colour_variant?.name ? ` · ${l.colour_variant.name}` : ''}`,
       changed: !!l.substituted_from,
     })
