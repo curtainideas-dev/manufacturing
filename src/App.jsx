@@ -8,6 +8,7 @@ import ProductDetail     from './pages/ProductDetail'
 import OptionsAdmin      from './pages/OptionsAdmin'
 import AdminHome              from './pages/AdminHome'
 import FabricCategoriesAdmin  from './pages/FabricCategoriesAdmin'
+import ComponentKindsAdmin     from './pages/ComponentKindsAdmin'
 import JobList           from './pages/JobList'
 import JobDetail         from './pages/JobDetail'
 import WindowDetail      from './pages/WindowDetail'
@@ -65,7 +66,8 @@ export default function App() {
   const [currentWindow, setCurrentWindow]     = useState(null)
   const [currentSupplier, setCurrentSupplier] = useState(null)
   const [currentPO, setCurrentPO]             = useState(null)
-  const [adminSection, setAdminSection]       = useState(null) // 'options' | 'fabric_categories' | null
+  const [adminSection, setAdminSection]       = useState(null) // 'options' | 'fabric_categories' | 'component_kinds' | null
+  const [componentKinds, setComponentKinds]   = useState([])
 
   const [compModalOpen, setCompModalOpen]         = useState(false)
   const [editingComp, setEditingComp]             = useState(null)
@@ -115,14 +117,24 @@ export default function App() {
 
   const { toasts, showToast } = useToast()
 
+  /**
+   * The kinds a component may be given, as { name, default_order_type }.
+   *
+   * The managed vocabulary is the list. Anything a component already carries
+   * that isn't in it rides along too, so the field still works before
+   * supabase_component_kinds_table.sql is run, and a kind deleted out from
+   * under a component never makes that component unsavable.
+   */
+  const kindOptions = useMemo(() => {
+    const byName = new Map(componentKinds.map(k => [k.name, k]))
+    components.forEach(c => {
+      if (c.kind && !byName.has(c.kind)) byName.set(c.kind, { name: c.kind, default_order_type: null })
+    })
+    return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [componentKinds, components])
+
   // The option definitions that apply to a product, via its type. Recipe
   // resolution needs these to know which option lines a window has answered.
-  // Kinds already in use, so naming a part offers what is there rather than
-  // inviting a second spelling of a group that already exists.
-  const componentKinds = useMemo(
-    () => [...new Set(components.map(c => c.kind).filter(Boolean))].sort(),
-    [components])
-
   const optionDefsFor = useCallback((productId) => {
     const product = products.find(p => p.id === productId)
     return productOptions[product?.product_type] || []
@@ -195,7 +207,7 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     if (!hasLoadedRef.current) setLoading(true)
-    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes, fcRes] = await Promise.all([
+    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes, fcRes, ckRes] = await Promise.all([
       supabase.from('components').select('*').order('name'),
       supabase.from('suppliers').select('*').order('name'),
       supabase.from('products').select('*').order('name'),
@@ -208,12 +220,18 @@ export default function App() {
       supabase.from('purchase_order_lines').select('*, component:components(*)').order('created_at'),
       supabase.from('product_options').select('*, choices:product_option_choices(*)').order('sort_order'),
       supabase.from('fabric_categories').select('*').order('code'),
+      supabase.from('component_kinds').select('*').order('sort_order'),
     ])
 
     const schedules = wsRes.error ? [] : (wsRes.data || [])
     if (!wsRes.error) setWidthSchedules(schedules)
 
     if (!fcRes.error) setFabricCategories(fcRes.data || [])
+
+    // Missing until supabase_component_kinds_table.sql is run; the library and
+    // the component editor both fall back to whatever kinds the components
+    // themselves already carry, so nothing breaks in the meantime.
+    if (!ckRes.error) setComponentKinds(ckRes.data || [])
 
     // Option definitions, keyed by product type, each with its choices sorted.
     // Recipe resolution needs these — without them a product's option lines
@@ -596,6 +614,50 @@ export default function App() {
   }
 
   // ==== JOBS ====
+
+  // ==== COMPONENT KINDS ====
+
+  // A kind's NAME is what components store, so a rename is two writes: the
+  // vocabulary row, then every component pointing at the old name. Done here
+  // rather than left to the user to notice.
+  const handleSaveKind = async (kind, renamedFrom = null) => {
+    setProdSaving(true)
+    const { id, created_at, ...fields } = kind   // eslint-disable-line no-unused-vars
+    const { error } = id
+      ? await supabase.from('component_kinds').update(fields).eq('id', id)
+      : await supabase.from('component_kinds').insert(fields)
+
+    if (error) {
+      showToast(error.code === '23505' ? 'That kind already exists' : 'Failed to save kind', 'error')
+      setProdSaving(false)
+      return
+    }
+
+    if (renamedFrom && renamedFrom !== fields.name) {
+      const { error: ce } = await supabase.from('components')
+        .update({ kind: fields.name }).eq('kind', renamedFrom)
+      if (ce) showToast('Kind renamed, but components still point at the old name', 'error')
+      else showToast(`Renamed to ${fields.name} ✓`, 'success')
+    }
+
+    await loadAll()
+    setProdSaving(false)
+  }
+
+  // Deleting a kind that components still use would leave them naming a
+  // vocabulary entry that no longer exists — and, where a recipe groups by
+  // kind, quietly change what competes. So it is refused, with the count.
+  const handleDeleteKind = async (kind, usedBy = 0) => {
+    if (usedBy > 0) {
+      showToast(`${kind.name} is on ${usedBy} component${usedBy !== 1 ? 's' : ''} — clear it there first`, 'error')
+      return
+    }
+    if (!window.confirm(`Delete the kind "${kind.name}"?`)) return
+    const { error } = await supabase.from('component_kinds').delete().eq('id', kind.id)
+    if (error) { showToast('Failed to delete kind', 'error'); return }
+    showToast('Kind deleted')
+    await loadAll()
+  }
 
   // ==== PRODUCT OPTIONS ====
 
@@ -1419,9 +1481,26 @@ export default function App() {
       )
     }
 
+    if (navTab === 'admin' && adminSection === 'component_kinds') {
+      // The real vocabulary rows, not kindOptions — this screen renames and
+      // deletes by id, and kindOptions carries id-less stand-ins for kinds a
+      // component holds that the table doesn't know about yet.
+      return (
+        <ComponentKindsAdmin
+          kinds={componentKinds}
+          components={components}
+          onBack={() => setAdminSection(null)}
+          onSave={handleSaveKind}
+          onDelete={handleDeleteKind}
+          saving={prodSaving}
+        />
+      )
+    }
+
     if (navTab === 'admin') {
       return <AdminHome onOpenOptions={() => setAdminSection('options')}
-               onOpenFabricCategories={() => setAdminSection('fabric_categories')} />
+               onOpenFabricCategories={() => setAdminSection('fabric_categories')}
+               onOpenComponentKinds={() => setAdminSection('component_kinds')} />
     }
 
     // Supplier detail
@@ -1545,7 +1624,7 @@ export default function App() {
         open={compModalOpen}
         component={editingComp}
         suppliers={suppliers}
-        kinds={componentKinds}
+        kinds={kindOptions}
         fabricCategories={fabricCategories}
         onClose={() => { setCompModalOpen(false); setEditingComp(null) }}
         onSave={handleCompSave}

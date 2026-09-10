@@ -65,6 +65,35 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
   }
   const removeWidth = (w) => set('roll_widths', rollWidths.filter(x => x !== w))
 
+  /**
+   * Picking a kind pre-selects how that kind is usually bought.
+   *
+   * A default, never a rule — order_type drives stock, POs and the cut sheet,
+   * and a supplier who sells base rail cut to length rather than in packs must
+   * not need a new kind to say so. It only fills a blank-ish answer: an
+   * order_type the user has already moved off the default is left alone,
+   * because overwriting a deliberate choice is worse than asking twice.
+   */
+  const handleKindChange = (name) => {
+    const picked = kinds.find(k => k.name === name)
+    setForm(prev => {
+      const next = { ...prev, kind: name }
+      // Only fill an answer the user hasn't deliberately set: a brand new
+      // component, or one still sitting on the previous kind's default.
+      const previous = kinds.find(k => k.name === prev.kind)
+      const untouched = !prev.kind || prev.order_type === previous?.default_order_type
+      const ot = picked?.default_order_type
+      if (ot && untouched && ot !== prev.order_type) {
+        next.order_type = ot
+        // Same unit locking `set` applies, so defaulting can't leave a labour
+        // component priced per metre.
+        if (ot === 'labour') next.unit = 'hours'
+        if (ot === 'fabric') next.unit = 'metres'
+      }
+      return next
+    })
+  }
+
   // When supplier changes, default the discount to the supplier's discount
   const handleSupplierChange = (supplierId) => {
     set('supplier_id', supplierId)
@@ -159,16 +188,20 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
               Kind
               <span style={{ color: 'var(--warm-300)', fontWeight: 400, marginLeft: 6 }}>optional</span>
             </label>
-            <input className="field-input" value={form.kind || ''}
-              onChange={e => set('kind', e.target.value || null)}
-              placeholder="e.g. Tube, Winder, Base Rail" list="component-kinds" />
-            <datalist id="component-kinds">
-              {kinds.map(k => <option key={k} value={k} />)}
-            </datalist>
+            <select className="field-input" value={form.kind || ''}
+              onChange={e => handleKindChange(e.target.value || null)}>
+              <option value="">— No kind —</option>
+              {kinds.map(k => (
+                <option key={k.name} value={k.name}>{k.name}</option>
+              ))}
+            </select>
             <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4 }}>
               What this part is, whoever uses it. Parts sharing a kind can be offered
               as alternatives to each other in a recipe — but a kind on its own groups
               nothing, so naming it here is always safe.
+              {kinds.length === 0
+                ? ' No kinds defined yet — add them under Admin → Component Kinds.'
+                : ' Add or rename kinds under Admin → Component Kinds.'}
             </div>
           </div>
 

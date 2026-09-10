@@ -5,10 +5,16 @@ const SECTIONS = [
     desc: 'The questions asked when a window is created — one set per product type.' },
   { key: 'fabric_categories', emoji: '🎨', name: 'Fabric Categories',
     desc: 'The A-F pricing tiers a blind is quoted at, and the price ceiling that sorts fabrics into each.' },
+  { key: 'component_kinds', emoji: '🔀', name: 'Component Kinds',
+    desc: 'What a part is — Tube, Winder, Base Rail. Groups the library, and lets a recipe offer one part in place of another.' },
 ]
 
-export default function AdminHome({ onOpenOptions, onOpenFabricCategories }) {
-  const handlers = { options: onOpenOptions, fabric_categories: onOpenFabricCategories }
+export default function AdminHome({ onOpenOptions, onOpenFabricCategories, onOpenComponentKinds }) {
+  const handlers = {
+    options:           onOpenOptions,
+    fabric_categories: onOpenFabricCategories,
+    component_kinds:   onOpenComponentKinds,
+  }
 
   return (
     <>
