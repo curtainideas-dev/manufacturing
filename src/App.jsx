@@ -9,6 +9,7 @@ import OptionsAdmin      from './pages/OptionsAdmin'
 import AdminHome              from './pages/AdminHome'
 import FabricCategoriesAdmin  from './pages/FabricCategoriesAdmin'
 import ComponentKindsAdmin     from './pages/ComponentKindsAdmin'
+import DeletedRecordsAdmin     from './pages/DeletedRecordsAdmin'
 import JobList           from './pages/JobList'
 import JobDetail         from './pages/JobDetail'
 import WindowDetail      from './pages/WindowDetail'
@@ -68,6 +69,9 @@ export default function App() {
   const [currentPO, setCurrentPO]             = useState(null)
   const [adminSection, setAdminSection]       = useState(null) // 'options' | 'fabric_categories' | 'component_kinds' | null
   const [componentKinds, setComponentKinds]   = useState([])
+  // null until we know — distinguishes "no deletes yet" from "table not created"
+  const [deletedRecords, setDeletedRecords]   = useState(null)
+  const [restoringId, setRestoringId]         = useState(null)
 
   const [compModalOpen, setCompModalOpen]         = useState(false)
   const [editingComp, setEditingComp]             = useState(null)
@@ -207,7 +211,7 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     if (!hasLoadedRef.current) setLoading(true)
-    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes, fcRes, ckRes] = await Promise.all([
+    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes, fcRes, ckRes, delRes] = await Promise.all([
       supabase.from('components').select('*').order('name'),
       supabase.from('suppliers').select('*').order('name'),
       supabase.from('products').select('*').order('name'),
@@ -221,6 +225,7 @@ export default function App() {
       supabase.from('product_options').select('*, choices:product_option_choices(*)').order('sort_order'),
       supabase.from('fabric_categories').select('*').order('code'),
       supabase.from('component_kinds').select('*').order('sort_order'),
+      supabase.from('deleted_records').select('*').order('deleted_at', { ascending: false }),
     ])
 
     const schedules = wsRes.error ? [] : (wsRes.data || [])
@@ -232,6 +237,10 @@ export default function App() {
     // the component editor both fall back to whatever kinds the components
     // themselves already carry, so nothing breaks in the meantime.
     if (!ckRes.error) setComponentKinds(ckRes.data || [])
+
+    // Left null when the table isn't there, so the admin screen can say
+    // "not switched on yet" rather than the far worse "nothing was deleted".
+    setDeletedRecords(delRes.error ? null : (delRes.data || []))
 
     // Option definitions, keyed by product type, each with its choices sorted.
     // Recipe resolution needs these — without them a product's option lines
@@ -614,6 +623,65 @@ export default function App() {
   }
 
   // ==== JOBS ====
+
+  // ==== DELETED RECORDS ====
+
+  /**
+   * Put a snapshot back under its original id, so anything that referenced it
+   * lines up again. A job restores with its windows in one go — a job shell
+   * without them would look restored while being useless.
+   *
+   * The bin entry is marked rather than removed: "who deleted the Wilson job
+   * and when" stays worth answering after it is back.
+   */
+  const handleRestoreRecord = async (rec) => {
+    setRestoringId(rec.id)
+    try {
+      if (rec.table_name === 'mfg_jobs') {
+        const job     = rec.payload?.job
+        const windows = rec.payload?.windows || []
+        if (!job?.id) { showToast('That snapshot has no job in it', 'error'); return }
+
+        const { error: je } = await supabase.from('mfg_jobs').insert(job)
+        if (je) {
+          showToast(je.code === '23505'
+            ? 'That job is already back — nothing to restore'
+            : `Restore failed: ${je.message}`, 'error')
+          return
+        }
+        if (windows.length) {
+          const { error: we } = await supabase.from('mfg_windows').insert(windows)
+          if (we) {
+            showToast(`Job restored, but its ${windows.length} window(s) failed: ${we.message}`, 'error')
+            return
+          }
+        }
+      } else if (rec.table_name === 'mfg_windows') {
+        const win = rec.payload?.window
+        if (!win?.id) { showToast('That snapshot has no window in it', 'error'); return }
+        // Its job may have been deleted since; restoring into nothing would fail
+        // on the foreign key with a message nobody can act on.
+        const { data: parent } = await supabase
+          .from('mfg_jobs').select('id').eq('id', win.job_id).maybeSingle()
+        if (!parent) {
+          showToast('That window\u2019s job is gone — restore the job first', 'error')
+          return
+        }
+        const { error } = await supabase.from('mfg_windows').insert(win)
+        if (error) { showToast(`Restore failed: ${error.message}`, 'error'); return }
+      } else {
+        showToast(`Don't know how to restore a ${rec.table_name} row`, 'error')
+        return
+      }
+
+      await supabase.from('deleted_records')
+        .update({ restored_at: new Date().toISOString() }).eq('id', rec.id)
+      showToast('Restored ✓', 'success')
+      await loadAll()
+    } finally {
+      setRestoringId(null)
+    }
+  }
 
   // ==== COMPONENT KINDS ====
 
@@ -1481,6 +1549,18 @@ export default function App() {
       )
     }
 
+    if (navTab === 'admin' && adminSection === 'deleted_records') {
+      return (
+        <DeletedRecordsAdmin
+          records={deletedRecords || []}
+          available={deletedRecords !== null}
+          onBack={() => setAdminSection(null)}
+          onRestore={handleRestoreRecord}
+          restoring={restoringId}
+        />
+      )
+    }
+
     if (navTab === 'admin' && adminSection === 'component_kinds') {
       // The real vocabulary rows, not kindOptions — this screen renames and
       // deletes by id, and kindOptions carries id-less stand-ins for kinds a
@@ -1500,7 +1580,8 @@ export default function App() {
     if (navTab === 'admin') {
       return <AdminHome onOpenOptions={() => setAdminSection('options')}
                onOpenFabricCategories={() => setAdminSection('fabric_categories')}
-               onOpenComponentKinds={() => setAdminSection('component_kinds')} />
+               onOpenComponentKinds={() => setAdminSection('component_kinds')}
+               onOpenDeletedRecords={() => setAdminSection('deleted_records')} />
     }
 
     // Supplier detail

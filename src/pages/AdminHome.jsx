@@ -7,13 +7,18 @@ const SECTIONS = [
     desc: 'The A-F pricing tiers a blind is quoted at, and the price ceiling that sorts fabrics into each.' },
   { key: 'component_kinds', emoji: '🔀', name: 'Component Kinds',
     desc: 'What a part is — Tube, Winder, Base Rail. Groups the library, and lets a recipe offer one part in place of another.' },
+  { key: 'deleted_records', emoji: '🗑', name: 'Deleted Items',
+    desc: 'Jobs and windows that were deleted, kept with their contents so they can be put back.' },
 ]
 
-export default function AdminHome({ onOpenOptions, onOpenFabricCategories, onOpenComponentKinds }) {
+export default function AdminHome({
+  onOpenOptions, onOpenFabricCategories, onOpenComponentKinds, onOpenDeletedRecords,
+}) {
   const handlers = {
     options:           onOpenOptions,
     fabric_categories: onOpenFabricCategories,
     component_kinds:   onOpenComponentKinds,
+    deleted_records:   onOpenDeletedRecords,
   }
 
   return (
