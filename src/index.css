@@ -1,11 +1,32 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap');
 
 :root {
-  --ink: #0F172A;
-  --paper: #F8FAFC;
-  --warm-100: #F1F5F9;
-  --warm-200: #E2E8F0;
-  --warm-300: #94A3B8;
+  /* Neutrals are warm stone, not cool slate.
+   *
+   * They were always CALLED warm — the variable names never changed — but
+   * held slate values, which sat badly against the green and made everything
+   * read faintly blue. Only the neutrals moved; the accent, the dark green
+   * header and every semantic colour are untouched.
+   */
+  --ink: #1F1B16;
+  --paper: #FAF8F5;
+  --warm-100: #F5F3F0;
+  --warm-200: #E7E2DB;
+  --warm-300: #8C8279;
+
+  /* Row banding.
+   *
+   * Rows used to be separated by a #F1F5F9 hairline on a white card — about
+   * two percent of contrast, which is to say none, and why a long list read
+   * as one grey slab. The band does the separating now and the divider is a
+   * real line behind it.
+   *
+   * Three distinct steps, so banding, hover and press never collide:
+   * a banded row must still visibly light up under a finger.
+   */
+  --row-alt: #F4F0E9;
+  --row-hover: #E9E3D9;
+  --row-press: #DCD4C8;
   --accent: #8DC73F;
   --accent-dark: #1C2E0F;
   --accent-hover: #7ab535;
@@ -20,9 +41,10 @@
   --warning: #C2410C;
   --radius: 12px;
   --radius-sm: 8px;
-  --shadow-sm: 0 1px 3px rgba(15,23,42,0.06);
-  --shadow: 0 4px 12px rgba(15,23,42,0.08);
-  --shadow-lg: 0 12px 32px rgba(15,23,42,0.12);
+  /* Cast from the ink, so shadows stop tinting the page blue. */
+  --shadow-sm: 0 1px 3px rgba(31,27,22,0.07);
+  --shadow: 0 4px 12px rgba(31,27,22,0.09);
+  --shadow-lg: 0 12px 32px rgba(31,27,22,0.14);
   --font-body: 'DM Sans', 'Segoe UI', sans-serif;
 }
 
@@ -187,11 +209,30 @@ select.field-input {
 /* Component list item */
 .component-item {
   padding: 14px 16px; display: flex; align-items: center; gap: 12px;
-  border-bottom: 1px solid var(--warm-100); cursor: pointer; transition: background 0.15s;
+  border-bottom: 1px solid var(--warm-200); cursor: pointer; transition: background 0.15s;
 }
 .component-item:last-child { border-bottom: none; }
-.component-item:hover { background: var(--warm-100); }
-.component-item:active { background: var(--warm-200); }
+
+/* Alternate rows are banded so a long list can be read across.
+ *
+ * Two selectors because rows come two ways: straight children of a card, and
+ * wrapped one level deep where a row expands (the recipe groups, the tracking
+ * list). Banding the wrapper in that case is right — the panel it opens sets
+ * its own background and covers it. */
+.card > .component-item:nth-child(even),
+.card > div:nth-child(even) > .component-item:first-child { background: var(--row-alt); }
+
+/* Pointer states beat the band, or a banded row would look unresponsive. */
+.component-item:hover,
+.card > .component-item:nth-child(even):hover,
+.card > div:nth-child(even) > .component-item:first-child:hover { background: var(--row-hover); }
+.component-item:active,
+.card > .component-item:nth-child(even):active,
+.card > div:nth-child(even) > .component-item:first-child:active { background: var(--row-press); }
+
+/* Real tables get the same treatment. Header rows set their own dark
+ * background inline, so only body rows are banded. */
+tbody tr:nth-child(even) { background: var(--row-alt); }
 .component-avatar {
   width: 42px; height: 42px; border-radius: 10px; background: var(--accent-bg);
   display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 20px;
