@@ -515,13 +515,22 @@ export function substitutionsFor(job, win, allComponents = []) {
  * Swap components into resolved recipe lines. A line keeps its formula, bands
  * and sort order — only the part it points at changes — and carries
  * `substituted_from` so every screen downstream can say what it replaced.
+ *
+ * A swap that keeps the recipe's own component and changes only its COLOUR is
+ * a real swap and applies like any other — the same base rail profile in White
+ * instead of Anodised is exactly what a job asks for, and it moves the part
+ * number and the stock row the line draws from even though the component id
+ * never budges. Only a swap that changes nothing at all is a no-op.
  */
 export function applySubstitutions(lines, subMap = null) {
   if (!subMap || Object.keys(subMap).length === 0) return lines
   return lines.map(pc => {
     if (pc.cost_type === 'fabric_strip') return pc
     const sub = subMap[pc.component_id]
-    if (!sub || sub.component.id === pc.component_id) return pc
+    if (!sub) return pc
+    const sameComponent = sub.component.id === pc.component_id
+    const sameColour    = (sub.colour_variant?.suffix || '') === (pc.colour_variant?.suffix || '')
+    if (sameComponent && sameColour) return pc
     return {
       ...pc,
       substituted_from: {
@@ -534,6 +543,97 @@ export function applySubstitutions(lines, subMap = null) {
       colour_variant: sub.colour_variant || null,
     }
   })
+}
+
+/* ==========================================================================
+ * Job role slots — the parts a job is ASKED about
+ *
+ * Substitution above is a repair tool: you notice a line is wrong, find it on
+ * the BOM, and pick a replacement out of every component of that kind. It
+ * works, but only for someone who already knows to go looking.
+ *
+ * Some parts get changed often enough that waiting to notice is the wrong
+ * shape. The base rail's colour follows the fabric, and only some suppliers
+ * make some colours. The winder is whichever brand is actually on the shelf
+ * this week. So a recipe line can be tagged with a `job_role` — the name the
+ * question is asked under — and a short curated `job_alternatives` list, and
+ * it becomes a question put to whoever enters the job, alongside the fabric.
+ *
+ * The ANSWER is not a new kind of record. It is written into the same
+ * `substitutions` map a hand-made swap uses, keyed the same way, so the two
+ * are one record and cannot drift apart. Everything downstream — costing,
+ * stock, the price snapshot, the PO — needs no idea this exists.
+ * ========================================================================== */
+
+/**
+ * The questions to put for one window, from its RESOLVED recipe lines.
+ *
+ * Resolved, not raw, so a base rail that only applies to a chain-drive blind
+ * stops being asked about the moment the window answers spring-loaded — the
+ * slots follow the same gating as the parts they choose.
+ *
+ * The recipe's own component is always the first choice and always available:
+ * it is both the default and the way back. Alternatives that have since been
+ * deleted from the library drop out silently rather than showing as blanks.
+ */
+export function jobRoleSlots(resolvedLines = [], subMap = null, allComponents = []) {
+  const byId = new Map(allComponents.map(c => [c.id, c]))
+  const seen = new Set()
+  const slots = []
+
+  resolvedLines.forEach(pc => {
+    if (!pc.job_role || pc.cost_type === 'fabric_strip') return
+    // Two resolved lines built from the same component share one answer —
+    // substitutions are keyed by component id, so a second slot would be the
+    // same question twice with one shared answer.
+    if (seen.has(pc.component_id)) return
+    seen.add(pc.component_id)
+
+    const recipeComponent = pc.component || byId.get(pc.component_id) || null
+    if (!recipeComponent) return
+
+    const alternatives = (pc.job_alternatives || [])
+      .map(id => byId.get(id))
+      .filter(c => c && c.id !== pc.component_id)
+
+    const sub    = subMap && subMap[pc.component_id]
+    const chosen = sub
+      ? { component: sub.component, colour_variant: sub.colour_variant || null }
+      : { component: recipeComponent, colour_variant: pc.colour_variant || null }
+
+    slots.push({
+      // What an answer is filed under, and what deleting reverts.
+      key:    pc.component_id,
+      role:   pc.job_role,
+      recipe: { component: recipeComponent, colour_variant: pc.colour_variant || null },
+      // Recipe part first — it is the default, not just another option.
+      choices: [recipeComponent, ...alternatives],
+      chosen,
+      changed: chosen.component.id !== recipeComponent.id
+        || (chosen.colour_variant?.suffix || '') !== (pc.colour_variant?.suffix || ''),
+    })
+  })
+
+  return slots
+}
+
+/**
+ * The role slots as flat spec text — "Base rail: Slimline 25 · Black" — for
+ * anything that prints rather than asks. Reads the BOM AFTER substitution, so
+ * what it says is what the line was actually costed and stocked against.
+ */
+export function roleSpecs(bomLines = []) {
+  const seen = new Set()
+  return (bomLines || []).reduce((out, l) => {
+    if (!l.job_role || seen.has(l.job_role + '|' + l.component_id)) return out
+    seen.add(l.job_role + '|' + l.component_id)
+    out.push({
+      role:  l.job_role,
+      value: `${l.component?.name || '—'}${l.colour_variant?.name ? ` · ${l.colour_variant.name}` : ''}`,
+      changed: !!l.substituted_from,
+    })
+    return out
+  }, [])
 }
 
 /**
@@ -627,6 +727,10 @@ export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = nul
       // The recipe's own part, when this line has been swapped away from it.
       // Null on every unswapped line — see applySubstitutions.
       substituted_from:     pc.substituted_from || null,
+      // The name this line is asked about under at job entry — "Base rail",
+      // "Winder" — or null on a line nobody is asked about. Rides along so the
+      // cut sheet can print the spec without re-reading the recipe.
+      job_role:             pc.job_role || null,
       display_pn,
       calculated_qty,
       qty_frozen,

@@ -6,7 +6,7 @@ import SwapComponentModal from '../components/SwapComponentModal'
 
 export default function WindowDetail({
   window: win, windowIndex, totalWindows, job, product, productComponents, optionDefs = [],
-  allComponents = [], fabricCategories = [], stockMap = {}, nestedFabricQty,
+  allComponents = [], fabricCategories = [], stockMap = {}, suppliers = [], nestedFabricQty,
   onBack, onUpdate, onDelete, readOnly,
 }) {
   const [overrides, setOverrides] = useState(win.bom_overrides || {})
@@ -22,6 +22,13 @@ export default function WindowDetail({
   const subMap = useMemo(
     () => substitutionsFor(job, win, allComponents),
     [job, win, allComponents])
+
+  // What Customise puts its role answers on top of: the JOB's swaps only. The
+  // window's own arrive as `substitutions` for the modal to edit, so passing
+  // the merged map would layer this window's answers over themselves.
+  const jobSubMap = useMemo(
+    () => substitutionsFor(job, null, allComponents),
+    [job, allComponents])
 
   const bom = useMemo(() => {
     const lines = buildWindowBOM(productComponents, win, optionDefs, null, null,
@@ -344,12 +351,18 @@ export default function WindowDetail({
         optionDefs={optionDefs}
         allComponents={allComponents}
         categories={fabricCategories}
-        subMap={subMap}
+        subMap={jobSubMap}
+        substitutions={win.substitutions}
+        stockMap={stockMap}
+        suppliers={suppliers}
         widthMm={win.width_mm}
         dropMm={win.drop_mm}
         config={win.config}
         onClose={() => setCustomiseOpen(false)}
-        onSave={(config) => { onUpdate({ config }); setCustomiseOpen(false) }}
+        onSave={(config, substitutions) => {
+          onUpdate({ config, substitutions: substitutions || {} })
+          setCustomiseOpen(false)
+        }}
         saveLabel="Save answers"
       />
 

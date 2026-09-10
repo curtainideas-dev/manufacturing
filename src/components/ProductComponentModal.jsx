@@ -30,7 +30,13 @@ const DEFAULT = {
   active_max_drop: null,
   drop_limit: null,
   drop_limit_mode: 'above',
+  job_role: null,
+  job_alternatives: [],
 }
+
+// Roles that come up constantly. Only a seed for the input below — anything
+// can be typed, and a role is just its name.
+const ROLE_SUGGESTIONS = ['Base rail', 'Winder', 'Bracket', 'Tube', 'Chain', 'Motor']
 
 export default function ProductComponentModal({
   open, productComponent, allComponents, suppliers = [], optionDefs = [],
@@ -47,10 +53,17 @@ export default function ProductComponentModal({
   const [editingSchedule, setEditingSchedule] = useState(null) // { id, name, qty_map } | null
   const [scheduleSaving, setScheduleSaving]   = useState(false)
 
+  // Search box over the curated alternatives list
+  const [altSearch, setAltSearch] = useState('')
+
   useEffect(() => {
     if (open) {
       const initial = productComponent
-        ? { ...DEFAULT, ...productComponent, width_schedule_id: productComponent.width_schedule_id || '' }
+        ? {
+            ...DEFAULT, ...productComponent,
+            width_schedule_id: productComponent.width_schedule_id || '',
+            job_alternatives:  productComponent.job_alternatives || [],
+          }
         : DEFAULT
       setForm(initial)
       initialForm.current = initial
@@ -58,6 +71,7 @@ export default function ProductComponentModal({
       setShowUnsaved(false)
       setSelectedSupplierId(productComponent?.component?.supplier_id || '')
       setEditingSchedule(null)
+      setAltSearch('')
     }
   }, [open, productComponent])
 
@@ -141,6 +155,34 @@ export default function ProductComponentModal({
   const unit            = displayComp?.unit || 'each'
   const colourVariants  = displayComp?.colour_variants || []
   const hasColours      = colourVariants.length > 0
+
+  /* ---- Curated alternatives for a job role -------------------------------
+   * Defaults to the same kind of part as the line itself — a base rail is
+   * replaced by another bar, not by a labour line — because that is nearly
+   * always the intent, and an unfiltered library is too long to pick from.
+   * Anything already ticked stays visible whatever the search says, so a
+   * chosen alternative can never be silently un-pickable.
+   * --------------------------------------------------------------------- */
+  const altChoices = (() => {
+    const q    = altSearch.trim().toLowerCase()
+    const kind = displayComp?.order_type || 'pack'
+    return allComponents
+      .filter(c => c.id !== form.component_id)
+      .filter(c => form.job_alternatives.includes(c.id) || (c.order_type || 'pack') === kind)
+      .filter(c => form.job_alternatives.includes(c.id) || !q
+        || c.name.toLowerCase().includes(q)
+        || (c.supplier_pn || '').toLowerCase().includes(q))
+      .sort((a, b) => {
+        const pick = form.job_alternatives
+        const d = (pick.includes(b.id) ? 1 : 0) - (pick.includes(a.id) ? 1 : 0)
+        return d || a.name.localeCompare(b.name)
+      })
+  })()
+
+  const toggleAlternative = (id) => set('job_alternatives',
+    form.job_alternatives.includes(id)
+      ? form.job_alternatives.filter(x => x !== id)
+      : [...form.job_alternatives, id])
 
   // Build live formula preview using the shared helper
   const previewPc = { ...form, component: displayComp }
@@ -534,6 +576,89 @@ export default function ProductComponentModal({
                   Lines sharing a name here are alternatives — only one ends up in the window.
                 </div>
               </div>
+
+              {/* Customisable on the job — see supabase_job_role_slots.sql.
+                  Naming the line turns it into a question asked while the job
+                  is being entered; the list below is what that question offers
+                  as answers. Left unnamed (the default) nothing changes. */}
+              <div className="divider" />
+              <div className="field" style={{ marginBottom: 10 }}>
+                <label className="field-label">Ask about this on the job (optional)</label>
+                <input className="field-input" value={form.job_role || ''}
+                  onChange={e => set('job_role', e.target.value || null)}
+                  placeholder="e.g. Base rail, Winder, Bracket" list="job-role-suggestions" />
+                <datalist id="job-role-suggestions">
+                  {ROLE_SUGGESTIONS.map(r => <option key={r} value={r} />)}
+                </datalist>
+                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4 }}>
+                  Named, this part becomes a question when a window is added — answered
+                  alongside the fabric, not hunted down on the BOM afterwards. Leave blank
+                  and it stays a plain recipe line.
+                </div>
+              </div>
+
+              {form.job_role && (
+                <div className="field" style={{ marginBottom: 12 }}>
+                  <label className="field-label">
+                    Alternatives offered
+                    {altChoices.length > 0 && (
+                      <span style={{ color: 'var(--warm-300)', fontWeight: 400, marginLeft: 6 }}>
+                        {form.job_alternatives.length} picked
+                      </span>
+                    )}
+                  </label>
+
+                  <input className="field-input" value={altSearch}
+                    onChange={e => setAltSearch(e.target.value)}
+                    placeholder="Search components…"
+                    style={{ fontSize: 13, marginBottom: 8 }} />
+
+                  <div style={{
+                    border: '1px solid var(--warm-200)', borderRadius: 'var(--radius-sm)',
+                    maxHeight: 190, overflowY: 'auto', background: '#fff',
+                  }}>
+                    {altChoices.length === 0 ? (
+                      <div style={{ padding: '16px 14px', textAlign: 'center', fontSize: 12.5, color: 'var(--warm-300)' }}>
+                        No other components match.
+                      </div>
+                    ) : altChoices.map(c => {
+                      const on = form.job_alternatives.includes(c.id)
+                      return (
+                        <button key={c.id} type="button" onClick={() => toggleAlternative(c.id)}
+                          style={{
+                            width: '100%', textAlign: 'left', cursor: 'pointer',
+                            padding: '8px 12px', border: 'none',
+                            borderBottom: '1px solid var(--warm-100)',
+                            background: on ? 'var(--accent-bg)' : '#fff',
+                            display: 'flex', alignItems: 'center', gap: 10,
+                          }}>
+                          <div style={{
+                            width: 18, height: 18, borderRadius: 5, flexShrink: 0,
+                            border: `2px solid ${on ? 'var(--accent)' : 'var(--warm-200)'}`,
+                            background: on ? 'var(--accent)' : '#fff',
+                          }} />
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: on ? 700 : 600, color: on ? 'var(--accent-dark)' : 'var(--ink)' }}>
+                              {c.name}
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 1 }}>
+                              {c.unit}
+                              {c.supplier_pn ? ` · ${c.supplier_pn}` : ''}
+                              {(c.colour_variants || []).length > 0 ? ` · ${c.colour_variants.length} colours` : ''}
+                            </div>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
+                    {displayComp?.name || 'The recipe’s own part'} is always offered first
+                    and is the default — no need to list it. Picking none is fine: the part stays
+                    fixed and only its colour is the job's to choose.
+                  </div>
+                </div>
+              )}
 
               <label className="field-label">Only for sizes in this range (optional)</label>
               <div className="grid-2" style={{ marginBottom: 8 }}>

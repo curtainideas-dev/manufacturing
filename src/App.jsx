@@ -543,6 +543,8 @@ export default function App() {
       active_max_drop:   formData.active_max_drop ?? null,
       drop_limit:        formData.drop_limit && Object.keys(formData.drop_limit).length ? formData.drop_limit : null,
       drop_limit_mode:   formData.drop_limit_mode || 'above',
+      job_role:          formData.job_role || null,
+      job_alternatives:  formData.job_alternatives || [],
       sort_order:        sortOrder,
     })
     if (error) showToast(error.message || 'Failed to add', 'error')
@@ -569,6 +571,8 @@ export default function App() {
       active_max_drop:   formData.active_max_drop ?? null,
       drop_limit:        formData.drop_limit && Object.keys(formData.drop_limit).length ? formData.drop_limit : null,
       drop_limit_mode:   formData.drop_limit_mode || 'above',
+      job_role:          formData.job_role || null,
+      job_alternatives:  formData.job_alternatives || [],
     }).eq('id', id)
     showToast('Updated ✓', 'success')
     await loadAll()
@@ -802,12 +806,17 @@ export default function App() {
         drop_mm:      Number(winData.drop_mm),
         sort_order:   sortOrder,
         bom_overrides: {},
-        substitutions: {},
+        substitutions: winData.substitutions || {},
         config:        winData.config || {},
       })
       .select().single()
     if (error) { showToast('Failed to add window', 'error'); return }
-    const newWin = { ...data, bom_overrides: {}, substitutions: {}, config: data.config || {} }
+    const newWin = {
+      ...data,
+      bom_overrides: {},
+      substitutions: data.substitutions || {},
+      config:        data.config || {},
+    }
     const updated = { ...currentJob, windows: [...(currentJob.windows || []), newWin] }
     setCurrentJob(updated)
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
@@ -1301,6 +1310,7 @@ export default function App() {
           allComponents={components}
           fabricCategories={fabricCategories}
           stockMap={stockMap}
+          suppliers={suppliers}
           nestedFabricQty={liveNestedFabricQty[win.id]}
           onBack={() => setCurrentWindow(null)}
           onUpdate={(updates) => handleWindowUpdate(currentWindow.idx, updates)}
@@ -1550,6 +1560,9 @@ export default function App() {
         productOptions={productOptions}
         allComponents={components}
         fabricCategories={fabricCategories}
+        jobSubMap={substitutionsFor(currentJob, null, components)}
+        stockMap={stockMap}
+        suppliers={suppliers}
         onClose={() => setAddWindowOpen(false)}
         onAdd={handleAddWindow}
       />

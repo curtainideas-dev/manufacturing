@@ -19,6 +19,18 @@
  * anything derivable from the recipe, and getting either the wrong way round
  * is a remake, so they print alongside the dimensions.
  *
+ * Under each row runs the SPEC LINE — the parts the job was asked about when
+ * it was entered: base rail, winder, bracket, whatever the recipe named as
+ * job-customisable (see supabase_job_role_slots.sql). It prints on every
+ * window, not only the ones that changed, because "same as always" is only
+ * reassuring when it is stated; a bench that has to remember which windows
+ * were called out is a bench that fits the wrong base rail. Anything that
+ * DID move off the recipe is marked, so the exceptions still stand out.
+ *
+ * The spec line is a line rather than more columns because the roles are
+ * whatever the recipes name them — there is no fixed set to reserve width
+ * for, and the eight columns above are already the width of the page.
+ *
  * Behind the table come the CUT CHARTS — one per fabric, colour and roll
  * width, showing how the job's blinds nest side by side across the roll. A
  * blind can't be railroaded, so the drop always runs down the roll, but the
@@ -33,7 +45,7 @@
 
 import { printPDF } from './printPDF'
 import { nestPieces, nestSummary } from './fabricEngine'
-import { resolveAnswers } from './bomEngine'
+import { resolveAnswers, roleSpecs } from './bomEngine'
 
 const ACCENT_DARK = [28, 46, 15]
 const WARM_100    = [241, 245, 249]
@@ -134,6 +146,10 @@ export function cutSheetRow(win, optionDefs = []) {
   return {
     window:      win.label || DASH,
     tube:        bars.length ? bars.map(l => l.component?.name || DASH).join(' / ') : DASH,
+    // The job-customisable parts as they were actually answered. Empty on a
+    // product whose recipe names none, which is every product until one is
+    // tagged — so the sheet is unchanged until there's something to say.
+    specs:       roleSpecs(bom),
     roll:        optionAnswer(win, optionDefs, ROLL_CODE, ROLL_PATTERN) || DASH,
     control:     optionAnswer(win, optionDefs, CONTROL_CODE, CONTROL_PATTERN, CONTROL_EXCLUDE) || DASH,
     fabric:      fabric
@@ -380,6 +396,7 @@ export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor =
   const PW = 297, MX = 12, MXR = 285, CW = MXR - MX
   const MB = 196            // start a new page before this
   const ROW_H = 8
+  const SPEC_H = 5.6        // the spec line under a row, when it has one
   let y = 0, pageNum = 1
 
   const setColor = rgb => doc.setTextColor(...rgb)
@@ -434,16 +451,19 @@ export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor =
   drawTableHeader()
 
   windowsWithBOM.forEach((win, i) => {
-    if (y + ROW_H > MB) {
+    const r = cutSheetRow(win, optionDefsFor(win.product_id))
+    const specH = r.specs.length > 0 ? SPEC_H : 0
+
+    // Break before the row, counting its spec line — a spec stranded at the
+    // top of the next page belongs to a window nobody can see.
+    if (y + ROW_H + specH > MB) {
       doc.addPage(); pageNum++
       y = drawPageHeader()
       drawTableHeader()
     }
 
-    const r = cutSheetRow(win, optionDefsFor(win.product_id))
-
     setFill(i % 2 === 0 ? WARM_100 : WHITE)
-    doc.rect(MX, y, CW, ROW_H, 'F')
+    doc.rect(MX, y, CW, ROW_H + specH, 'F')
 
     COLS.forEach(c => {
       // What gets acted on carries the weight — the window name, the two cut
@@ -458,11 +478,36 @@ export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor =
       doc.text(clip(r[c.key], c.w - 4), tx, y + ROW_H / 2 + 1.4, { align: c.align || 'left' })
     })
 
+    // The spec line, indented under the window name it belongs to. A part
+    // that moved off the recipe is bold and carries its role in full; the
+    // rest stay light, so the eye lands on the exceptions without having to
+    // read the line to find them.
+    if (specH) {
+      let x = COLS[1].x + 2
+      doc.setFontSize(7)
+      r.specs.forEach((spec, n) => {
+        if (n > 0) {
+          setColor(WARM_300); doc.setFont('helvetica', 'normal')
+          doc.text('·', x, y + ROW_H + 3.6)
+          x += 3
+        }
+        const text = `${spec.role}: ${spec.value}`
+        doc.setFont('helvetica', spec.changed ? 'bold' : 'normal')
+        setColor(spec.changed ? INK : WARM_300)
+        doc.text(text, x, y + ROW_H + 3.6)
+        x += doc.getTextWidth(text) + 2
+      })
+      if (r.specs.some(sp => sp.changed)) {
+        setColor(WARM_300); doc.setFont('helvetica', 'normal')
+        doc.text('(bold = not the standard part)', x + 2, y + ROW_H + 3.6)
+      }
+    }
+
     // Hairline between rows, so a finger tracking across a wide row stays put.
     doc.setDrawColor(...WARM_200); doc.setLineWidth(0.1)
-    doc.line(MX, y + ROW_H, MXR, y + ROW_H)
+    doc.line(MX, y + ROW_H + specH, MXR, y + ROW_H + specH)
 
-    y += ROW_H
+    y += ROW_H + specH
   })
 
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7)

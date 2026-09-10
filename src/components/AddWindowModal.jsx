@@ -16,7 +16,8 @@ const TYPES = [
  */
 export default function AddWindowModal({
   open, windowNumber, products, productComponentsMap = {}, productOptions = {},
-  allComponents = [], fabricCategories = [],
+  allComponents = [], fabricCategories = [], jobSubMap = null,
+  stockMap = {}, suppliers = [],
   onClose, onAdd,
 }) {
   const [form, setForm]     = useState(DEFAULT)
@@ -39,10 +40,19 @@ export default function AddWindowModal({
 
   const canContinue = form.product_id && form.width_mm && form.drop_mm
   // Blinds always need the fabric picked in step 2, even with zero options.
-  const needsCustomise = optionDefs.length > 0 || selected?.product_type === 'blind'
+  // So does any product whose recipe names a part the job gets a say in —
+  // skipping step 2 would silently take the specced base rail every time.
+  const needsCustomise = optionDefs.length > 0
+    || selected?.product_type === 'blind'
+    || recipe.some(pc => pc.job_role)
 
-  const handleSave = (config) => {
-    onAdd({ ...form, label: form.label || `Window ${windowNumber}`, config })
+  const handleSave = (config, substitutions) => {
+    onAdd({
+      ...form,
+      label: form.label || `Window ${windowNumber}`,
+      config,
+      substitutions: substitutions || {},
+    })
     reset()
     onClose()
   }
@@ -60,6 +70,10 @@ export default function AddWindowModal({
         optionDefs={optionDefs}
         allComponents={allComponents}
         categories={fabricCategories}
+        subMap={jobSubMap}
+        substitutions={null}
+        stockMap={stockMap}
+        suppliers={suppliers}
         widthMm={form.width_mm}
         dropMm={form.drop_mm}
         config={null}
