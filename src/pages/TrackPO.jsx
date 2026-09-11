@@ -75,7 +75,28 @@ function StockLine({ l, last }) {
         <span style={{ color: 'var(--warm-300)' }}>This job needs</span>
         <span style={{ fontWeight: 600 }}>{qty(l.jobQty, l.unit)}</span>
         <span style={{ color: 'var(--warm-300)' }}>In stock</span>
-        <span style={{ fontWeight: 600 }}>{qty(l.onHand, l.unit)}</span>
+        <span style={{ fontWeight: 600 }}>
+          {qty(l.onHand, l.unit)}
+          {/* A bar's stock is whole bars plus loose offcuts. Saying so lets
+              the figure be checked against the rack, and flags that part of
+              it is offcuts, which will not all fit every cut. */}
+          {l.fullBars != null && (
+            <span style={{ fontWeight: 400, color: 'var(--warm-300)' }}>
+              {' '}—{' '}
+              {l.fullBars > 0
+                ? `${l.fullBars} full bar${l.fullBars !== 1 ? 's' : ''} × ${(l.barMm / 1000).toFixed(1)} m`
+                : 'no full bars'}
+              {l.pieces > 0
+                ? `${l.fullBars > 0 ? ' + ' : ', '}${l.pieces} offcut${l.pieces !== 1 ? 's' : ''} (${qty(l.piecesIn, l.unit)})`
+                : ''}
+            </span>
+          )}
+          {l.fullBars == null && l.pieces > 0 && (
+            <span style={{ fontWeight: 400, color: 'var(--warm-300)' }}>
+              {' '}— {l.pieces} roll{l.pieces !== 1 ? 's' : ''}
+            </span>
+          )}
+        </span>
         {l.otherJobs > 0 && (
           <>
             <span style={{ color: 'var(--warm-300)' }}>Also wanted by</span>

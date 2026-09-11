@@ -1017,8 +1017,10 @@ export default function App({ route = 'manufacturing' }) {
     const entries = jobs
       .filter(j => j.status === 'in_progress')
       .map(job => ({ jobId: job.id, summary: calcJobSummary(buildJobWindows(job, true)) }))
-    return stockPositions(entries, stockMap)
-  }, [route, jobs, buildJobWindows, stockMap])
+    // stockBars carries the loose pieces — offcuts and rolls — which are real
+    // stock for a bar or fabric and were being left out of the count.
+    return stockPositions(entries, stockMap, stockBars)
+  }, [route, jobs, buildJobWindows, stockMap, stockBars])
 
   // Compute the price snapshot + locked total for a job from current recipes
   const computeJobLock = useCallback((job) => {
@@ -1425,8 +1427,9 @@ export default function App({ route = 'manufacturing' }) {
       ),
     ])
 
-    // Check for low stock and auto-generate PO if needed
-    await checkAndGeneratePOs(deductions)
+    // Check for low stock and auto-generate PO if needed. Passes the movements
+    // so the check can use what each deduction really took off the stock row.
+    await checkAndGeneratePOs(deductions, movements)
 
     if (offcutInserts.length > 0) {
       await supabase.from('stock_bars').insert(offcutInserts)
@@ -1439,13 +1442,28 @@ export default function App({ route = 'manufacturing' }) {
   }
 
   // Auto-generate draft POs for components that fall below minimum after deduction
-  const checkAndGeneratePOs = async (deductions) => {
+  /**
+   * Raise draft POs for anything a deduction pushed under its minimum.
+   *
+   * qtyAfter has to be in the stock row's OWN unit, because that is what the
+   * minimum is in. For a bar that is whole bars, while d.qty is the length the
+   * BOM asked for — so subtracting d.qty took metres off a bar count, read ten
+   * bars minus 17.74m as "-7.74, reorder", and ordered bars by the metre.
+   *
+   * The deduction already worked out what it really took off the row and
+   * recorded it as qty_on_hand_delta (whole bars for a bar, the count for a
+   * pack, nothing for fabric). movements is built one per deduction, in order,
+   * so it lines up by index. The BOM qty is only a fallback for a movement
+   * that somehow carries no delta.
+   */
+  const checkAndGeneratePOs = async (deductions, movements = []) => {
     const alerts = []
-    for (const d of deductions) {
+    for (const [i, d] of deductions.entries()) {
       const key   = stockKey(d.component.id, d.colour_variant)
       const stock = stockMap[key]
       if (!stock) continue
-      const qtyAfter = (stock.qty_on_hand || 0) - d.qty
+      const delta    = movements[i]?.qty_on_hand_delta
+      const qtyAfter = (stock.qty_on_hand || 0) + (delta ?? -d.qty)
       if (qtyAfter < (stock.qty_minimum || 0)) {
         alerts.push({ component: d.component, colour_variant: d.colour_variant, stock, qtyAfter })
       }
