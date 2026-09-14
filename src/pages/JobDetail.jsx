@@ -2,7 +2,7 @@ import { useState, useMemo, useRef } from 'react'
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon, GripIcon } from '../components/Icons'
 import { buildWindowBOM, calcJobSummary, applyFabricNesting, missingAnswers, fabricSelectionFor, substitutionsFor, fmt, fmtQty } from '../lib/bomEngine'
 import { describeCombo } from '../lib/pricingCombos'
-import { exportJobPDF } from '../lib/exportPDF'
+import { exportJobPack } from '../lib/exportJobPack'
 import { exportCutSheetPDF, copyFabricSummary } from '../lib/exportCutSheet'
 import { exportPackagingLabels, exportTrackLabels, exportPartsLabels } from '../lib/exportLabels'
 import PartsListModal from '../components/PartsListModal'
@@ -95,10 +95,35 @@ export default function JobDetail({
   const canReorder = !isCompleted && (job.windows || []).length > 1
   const { listRef, drag, startDrag } = useDragReorder(onReorderWindows, canReorder)
 
+  /**
+   * The job pack — bill of materials, cut sheet, and the customer's own PO
+   * merged on the end.
+   *
+   * The PO is checked BEFORE anything is generated, because a pack that
+   * silently comes out without it looks complete and isn't: the whole point of
+   * appending it is that the floor can check the build against what was
+   * actually ordered. So the gap is stated, and going ahead anyway is a
+   * decision rather than an accident.
+   */
   const handleExport = async () => {
+    if (!job.po_pdf_url && !window.confirm(
+      'This job has no PO attached, so the pack will end after the cut sheet '
+      + 'with nothing to check the build against.\n\nGenerate it anyway?'
+    )) return
+
     setExporting(true)
     try {
-      await exportJobPDF(job, windowsWithBOM, jobSummary, products)
+      const res = await exportJobPack(job, windowsWithBOM, {
+        products, optionDefsFor, suppliers, kinds,
+      })
+      // Attached but unreachable is a different problem from never attached,
+      // and the person who just downloaded a short pack needs to know which.
+      if (job.po_pdf_url && !res.merged) {
+        window.alert(
+          'The pack was saved, but the attached PO could not be read and is not in it.\n\n'
+          + 'Open the PO from the job to check it is still there.'
+        )
+      }
     } finally {
       setExporting(false)
     }
@@ -107,7 +132,7 @@ export default function JobDetail({
   const handleCutSheet = async () => {
     setCutting(true)
     try {
-      await exportCutSheetPDF(job, windowsWithBOM, optionDefsFor, suppliers, kinds)
+      await exportCutSheetPDF(job, windowsWithBOM, optionDefsFor, suppliers, kinds, products)
     } finally {
       setCutting(false)
     }
@@ -210,6 +235,7 @@ export default function JobDetail({
             <button
               onClick={handleExport}
               disabled={exporting}
+              title="Download the job pack — bill of materials, cut sheet, and the original PO"
               style={{
                 padding: '6px 12px', fontSize: 13, fontWeight: 600,
                 background: 'rgba(255,255,255,0.15)', color: '#fff',

@@ -45,25 +45,16 @@
 
 import { printPDF } from './printPDF'
 import { nestPieces, nestSummary } from './fabricEngine'
-import { resolveAnswers, roleSpecs } from './bomEngine'
+import { resolveAnswers, roleSpecs, jobProductType } from './bomEngine'
+import { drawTrackCutSheet } from './cutSheetTrack'
+import {
+  ACCENT_DARK, WARM_100, WARM_200, WARM_300, INK, WHITE, DASH,
+  loadJsPDF, headerDrawer, clip as clipText, customerLastName, jobFilename,
+} from './pdfKit'
 
-const ACCENT_DARK = [28, 46, 15]
-const WARM_100    = [245, 243, 240]  // --warm-100 #F5F3F0
-const WARM_200    = [231, 226, 219]  // --warm-200 #E7E2DB
-const WARM_300    = [140, 130, 121]  // --warm-300 #8C8279
-const INK         = [31, 27, 22]     // --ink #1F1B16
-const WHITE       = [255, 255, 255]
-
-const loadJsPDF = () => new Promise((resolve, reject) => {
-  if (window.jspdf) return resolve(window.jspdf.jsPDF)
-  const s = document.createElement('script')
-  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'
-  s.onload = () => resolve(window.jspdf.jsPDF)
-  s.onerror = reject
-  document.head.appendChild(s)
-})
-
-const DASH = '—'
+// Re-exported because they were part of this module's surface before the
+// filename helpers moved into pdfKit, and a rename buys nothing here.
+export { customerLastName }
 
 /* --------------------------------------------------------------------------
  * Assembly options
@@ -382,59 +373,37 @@ const COLS = [
 ]
 
 /**
- * Build the document without sending it anywhere. Split out from the export
- * so the rendered sheet can be inspected — or previewed — without a print
- * dialog being the only way to see it.
+ * Draw the blind cut sheet into an existing landscape document.
+ *
+ * Takes the document rather than making one so the same sheet can be both a
+ * standalone print and a section of the job pack without being written twice.
+ * `drawHeader(title, pageNum)` and the starting page number come from the
+ * caller, so numbering runs continuously through a document that has other
+ * sections in front of it.
  *
  * `optionDefsFor` is App.jsx's product-id → option definitions lookup, the
  * same one the BOM builder gets; the sheet needs it to turn a window's stored
  * option answers into the roll and control-side labels a maker reads.
+ *
+ * Returns the page number it finished on.
  */
-export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = []) {
-  const jsPDF = await loadJsPDF()
-  const doc   = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
-
-  const PW = 297, MX = 12, MXR = 285, CW = MXR - MX
+export function drawBlindCutSheet(doc, {
+  windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = [],
+  drawHeader, pageNum = 1, startOnNewPage = false,
+}) {
+  const MX = 12, MXR = 285, CW = MXR - MX
   const MB = 196            // start a new page before this
   const ROW_H = 8
   const SPEC_H = 5.6        // the spec line under a row, when it has one
-  let y = 0, pageNum = 1
+  let y = 0
 
   const setColor = rgb => doc.setTextColor(...rgb)
   const setFill  = rgb => doc.setFillColor(...rgb)
 
   // Trim a cell to its column so a long fabric name can't run into the next.
-  const clip = (text, maxW) => {
-    let t = String(text ?? DASH)
-    if (doc.getTextWidth(t) <= maxW) return t
-    while (t.length > 1 && doc.getTextWidth(t + '…') > maxW) t = t.slice(0, -1)
-    return t + '…'
-  }
+  const clip = (text, maxW) => clipText(doc, text, maxW)
 
-  const drawPageHeader = (title = 'Cut Sheet') => {
-    setFill(ACCENT_DARK)
-    doc.rect(0, 0, PW, 16, 'F')
-    setColor(WHITE)
-    doc.setFontSize(12); doc.setFont('helvetica', 'bold')
-    doc.text(title, MX, 10.5)
-    const titleW = doc.getTextWidth(title)
-
-    doc.setFontSize(9); doc.setFont('helvetica', 'normal')
-    setColor([180, 210, 120])
-    doc.text(job.customer_name || 'Untitled Job', MX + titleW + 6, 10.5)
-
-    setColor(WHITE); doc.setFontSize(8)
-    const dateStr = new Date().toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })
-    const meta = [
-      job.job_number ? `Job #${job.job_number}` : null,
-      `${windowsWithBOM.length} window${windowsWithBOM.length !== 1 ? 's' : ''}`,
-      dateStr,
-      `Page ${pageNum}`,
-    ].filter(Boolean).join('   ·   ')
-    doc.text(meta, MXR, 10.5, { align: 'right' })
-
-    return 22
-  }
+  const drawPageHeader = (title = 'Cut Sheet · Blinds') => drawHeader(title, pageNum)
 
   const drawTableHeader = () => {
     setFill(ACCENT_DARK)
@@ -448,6 +417,7 @@ export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor =
     y += 7
   }
 
+  if (startOnNewPage) { doc.addPage(); pageNum++ }
   y = drawPageHeader()
   drawTableHeader()
 
@@ -733,36 +703,59 @@ export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor =
     )
   }
 
-  return doc
+  return pageNum
+}
+
+/* ==========================================================================
+ * Which sheet
+ *
+ * A job holds one product type (see bomEngine.jobProductType), so the sheet is
+ * chosen once for the whole job rather than per window. A track job and a
+ * blind job get genuinely different documents — different columns, and cuts
+ * packed along a bar instead of nested across a roll — because they are cut
+ * from different things and get ruined in different ways.
+ * ========================================================================== */
+
+/**
+ * Draw whichever cut sheet this job calls for, into an existing landscape
+ * document. Shared by the standalone print and the job pack.
+ */
+export function drawCutSheet(doc, ctx) {
+  const type = jobProductType(ctx.job, ctx.windowsWithBOM, ctx.products)
+  return type === 'track'
+    ? drawTrackCutSheet(doc, ctx)
+    : drawBlindCutSheet(doc, ctx)
 }
 
 /**
- * The customer's last name, for the filename.
- *
- * The last whitespace-separated word — which is the surname for a name typed
- * "Tracy Thomas", and simply the whole thing for a one-word account like
- * "Maloney". A name entered surname-first ("Dimond Karen") therefore files
- * under the given name; that's a data-entry inconsistency rather than
- * something a rule can tell apart, and guessing either way would be wrong
- * half the time. Punctuation is dropped so the result is safe on any
- * filesystem, but spaces in the rest of the name are left alone.
+ * Build the cut sheet as a document of its own, without sending it anywhere.
+ * Split out from the export so the rendered sheet can be inspected — or
+ * previewed — without a print dialog being the only way to see it.
  */
-export function customerLastName(customerName) {
-  const cleaned = String(customerName || '')
-    .replace(/[^\p{L}\p{N}\s'-]+/gu, ' ')   // keep letters, digits, apostrophes, hyphens
-    .trim()
-  if (!cleaned) return 'Customer'
-  return cleaned.split(/\s+/).pop()
+export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = [], products = []) {
+  const jsPDF = await loadJsPDF()
+  const doc   = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
+
+  const drawHeader = headerDrawer(doc, {
+    job,
+    subtitle: `${windowsWithBOM.length} window${windowsWithBOM.length !== 1 ? 's' : ''}`,
+    pageWidth: 297, marginX: 12, marginRight: 285,
+  })
+
+  drawCutSheet(doc, {
+    job, windowsWithBOM, optionDefsFor, suppliers, kinds, products,
+    drawHeader, pageNum: 1,
+  })
+  return doc
 }
 
 /** `<order number>_<last name>_Cut Sheet.pdf` */
 export function cutSheetFilename(job) {
-  const orderNo = String(job?.job_number || '').replace(/[^\w.-]+/g, '_') || 'NoOrderNo'
-  return `${orderNo}_${customerLastName(job?.customer_name)}_Cut Sheet.pdf`
+  return jobFilename(job, 'Cut Sheet')
 }
 
-export async function exportCutSheetPDF(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = []) {
-  const doc = await buildCutSheetDoc(job, windowsWithBOM, optionDefsFor, suppliers, kinds)
+export async function exportCutSheetPDF(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = [], products = []) {
+  const doc = await buildCutSheetDoc(job, windowsWithBOM, optionDefsFor, suppliers, kinds, products)
   printPDF(doc, cutSheetFilename(job))
   return { rowCount: windowsWithBOM.length }
 }
