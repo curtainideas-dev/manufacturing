@@ -1049,6 +1049,101 @@ export function calcJobSummary(windowsWithBOM) {
     .sort((a, b) => a.component.name.localeCompare(b.component.name))
 }
 
+/**
+ * What kind of job this is — 'track' or 'blind'.
+ *
+ * A job holds one product type. That is a rule of the business rather than a
+ * constraint of the schema: the type is chosen when the order is submitted,
+ * and an order containing both is split into two jobs there. So this returns
+ * one answer, and every document that has to pick a shape — which cut sheet to
+ * print, which products the Add Window picker offers — asks here.
+ *
+ * The DECLARED type wins (mfg_jobs.product_type, what the order was sent in
+ * as). Jobs submitted before that column existed have none, so they fall back
+ * to what their windows actually are; a job with neither is treated as a track
+ * job, which is what all eight original products were.
+ */
+export function jobProductType(job, windowsOrWindows = [], products = []) {
+  const declared = job?.product_type
+  if (declared === 'track' || declared === 'blind') return declared
+
+  const wins = windowsOrWindows.length ? windowsOrWindows : (job?.windows || [])
+  for (const win of wins) {
+    const type = products.find(p => p.id === win.product_id)?.product_type
+    if (type === 'track' || type === 'blind') return type
+  }
+  return 'track'
+}
+
+/**
+ * The job's BOM as a matrix: one row per component, one column per window.
+ *
+ * The work order used to print a summary and then repeat the whole BOM once
+ * per window, which answered "what does this window need" at the cost of the
+ * question actually asked on the floor — "how many of these do I pick, and
+ * which rooms are they for". The matrix answers both at once, on one page.
+ *
+ * Columns are the windows in their own order, headed by their label, because
+ * the label IS the room. Two rooms genuinely called "Lounge" get two columns
+ * rather than being merged: they are two windows, and a picker splitting parts
+ * between them needs to see both.
+ *
+ * `extras` are job-level ad-hoc lines — things bought for the job rather than
+ * for any one window. They have no column to sit in, so they land in the total
+ * alone, and the row is marked so the total can be explained.
+ */
+export function jobBOMMatrix(windowsWithBOM = [], extras = []) {
+  const columns = windowsWithBOM.map((win, i) => ({
+    key:   win.id || `w${i}`,
+    label: win.label || `Window ${i + 1}`,
+  }))
+
+  const rows = new Map()
+  const rowFor = (line) => {
+    const key = `${line.component_id}__${line.colour_variant?.suffix || 'none'}`
+    if (!rows.has(key)) {
+      rows.set(key, {
+        key,
+        component:      line.component,
+        colour_variant: line.colour_variant || null,
+        name: `${line.component?.name || '—'}`
+          + (line.colour_variant?.name ? ` · ${line.colour_variant.name}` : ''),
+        unit:      line.component?.unit || '—',
+        order_type: line.component?.order_type || 'pack',
+        cells:     {},
+        extra_qty: 0,
+        total:     0,
+      })
+    }
+    return rows.get(key)
+  }
+
+  windowsWithBOM.forEach((win, i) => {
+    const col = columns[i].key
+    ;(win.bom || []).forEach(line => {
+      const qty = Number(line.qty) || 0
+      if (qty === 0) return
+      const row = rowFor(line)
+      row.cells[col] = (row.cells[col] || 0) + qty
+      row.total += qty
+    })
+  })
+
+  ;(extras || []).forEach(line => {
+    const qty = Number(line.qty) || 0
+    if (qty === 0) return
+    const row = rowFor(line)
+    row.extra_qty += qty
+    row.total     += qty
+  })
+
+  return {
+    columns,
+    rows: [...rows.values()].sort((a, b) => a.name.localeCompare(b.name)),
+    hasExtras: (extras || []).length > 0,
+  }
+}
+
 export const fmt    = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 export const fmtQty = n => Number(n) % 1 === 0 ? String(Number(n)) : Number(n).toFixed(3).replace(/\.?0+$/, '')
 

@@ -15,15 +15,22 @@ const TYPES = [
  * the picker is a plain list rather than a grid of name-segment filters.
  */
 export default function AddWindowModal({
-  open, windowNumber, products, productComponentsMap = {}, productOptions = {},
+  open, windowNumber, jobType = null, products, productComponentsMap = {}, productOptions = {},
   allComponents = [], fabricCategories = [], jobSubMap = null,
   stockMap = {}, suppliers = [], kinds = [],
   onClose, onAdd,
 }) {
   const [form, setForm]     = useState(DEFAULT)
-  const [type, setType]     = useState('track')
+  const [pickedType, setPickedType] = useState('track')
   const [search, setSearch] = useState('')
   const [step, setStep]     = useState(1)
+
+  // A job holds one product type, declared when the order was submitted, and
+  // an order with both is split into two jobs there. So on a job that says
+  // which it is, the picker doesn't ask — it offers that type's products and
+  // nothing else, which is the difference between a rule and a reminder.
+  // Jobs submitted before the type was recorded have none, and still choose.
+  const type = jobType || pickedType
 
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }))
 
@@ -104,20 +111,32 @@ export default function AddWindowModal({
               placeholder={`Window ${windowNumber}`} />
           </div>
 
-          <div style={{ display: 'flex', background: 'var(--warm-100)', borderRadius: 9, padding: 3, marginBottom: 12 }}>
-            {TYPES.map(t => (
-              <button key={t.val} type="button"
-                onClick={() => { setType(t.val); set('product_id', '') }}
-                style={{
-                  flex: 1, border: 'none', padding: 8, borderRadius: 7, cursor: 'pointer',
-                  fontSize: 13, fontWeight: 600,
-                  background: type === t.val ? '#fff' : 'transparent',
-                  color: type === t.val ? 'var(--accent-dark)' : 'var(--warm-300)',
-                }}>
-                {t.label}
-              </button>
-            ))}
-          </div>
+          {jobType ? (
+            <div style={{
+              background: 'var(--warm-100)', borderRadius: 9, padding: '8px 12px',
+              marginBottom: 12, fontSize: 12.5, color: 'var(--warm-300)',
+            }}>
+              <strong style={{ color: 'var(--accent-dark)' }}>
+                {TYPES.find(t => t.val === jobType)?.label || jobType}
+              </strong>
+              {' '}job — only {jobType === 'track' ? 'tracks' : 'blinds'} can be added
+            </div>
+          ) : (
+            <div style={{ display: 'flex', background: 'var(--warm-100)', borderRadius: 9, padding: 3, marginBottom: 12 }}>
+              {TYPES.map(t => (
+                <button key={t.val} type="button"
+                  onClick={() => { setPickedType(t.val); set('product_id', '') }}
+                  style={{
+                    flex: 1, border: 'none', padding: 8, borderRadius: 7, cursor: 'pointer',
+                    fontSize: 13, fontWeight: 600,
+                    background: type === t.val ? '#fff' : 'transparent',
+                    color: type === t.val ? 'var(--accent-dark)' : 'var(--warm-300)',
+                  }}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="field">
             <label className="field-label">

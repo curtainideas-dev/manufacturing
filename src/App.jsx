@@ -1948,6 +1948,7 @@ export default function App({ route = 'manufacturing' }) {
       <AddWindowModal
         open={addWindowOpen}
         windowNumber={(currentJob?.windows || []).length + 1}
+        jobType={currentJob?.product_type || null}
         products={activeProducts}
         productComponentsMap={productComponentsMap}
         productOptions={productOptions}
