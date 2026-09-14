@@ -3,6 +3,7 @@ import { PlusIcon, ChevronRightIcon } from '../components/Icons'
 import { exportComponentsCSV } from '../lib/exportCSV'
 import { exportComponentLabels } from '../lib/exportLabels'
 import ComponentLabelsModal from '../components/ComponentLabelsModal'
+import SectionHeader, { UntaggedDivider } from '../components/SectionHeader'
 
 /**
  * The library reads two ways, and both are worth having.
@@ -34,22 +35,6 @@ const typeMeta = c =>
 
 const AVATAR_BG = {
   labour: 'var(--blue-bg)', bar: '#FFF7ED', fabric: '#FDF2F8', pack: 'var(--accent-bg)',
-}
-
-function SectionHeader({ emoji, title, count, tint }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '16px 0 8px' }}>
-      <span style={{ fontSize: 18 }}>{emoji}</span>
-      <span style={{
-        fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-        letterSpacing: '0.1em', color: tint || 'var(--warm-300)',
-      }}>{title}</span>
-      <span style={{
-        fontSize: 11, fontWeight: 600, color: 'var(--warm-300)',
-        background: 'var(--warm-100)', borderRadius: 99, padding: '1px 8px',
-      }}>{count}</span>
-    </div>
-  )
 }
 
 function ComponentRow({ c, supplierName, usedIn, showKind, onEdit }) {
@@ -282,19 +267,7 @@ export default function ComponentLibrary({ components, suppliers, componentUsage
                 )}
 
                 {anyKinds && untagged.length > 0 && (
-                  <div style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '22px 0 2px',
-                  }}>
-                    <div style={{ flex: 1, height: 1, background: 'var(--warm-200)' }} />
-                    <span style={{
-                      fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase',
-                      letterSpacing: '0.09em', color: 'var(--warm-300)',
-                    }}>
-                      no kind yet · {untagged.length}
-                    </span>
-                    <div style={{ flex: 1, height: 1, background: 'var(--warm-200)' }} />
-                  </div>
+                  <UntaggedDivider count={untagged.length} />
                 )}
               </>
             )}
