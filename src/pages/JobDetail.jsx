@@ -1,12 +1,13 @@
 import { useState, useMemo, useRef } from 'react'
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon, GripIcon } from '../components/Icons'
-import { buildWindowBOM, calcJobSummary, applyFabricNesting, missingAnswers, fabricSelectionFor, substitutionsFor, fmt, fmtQty } from '../lib/bomEngine'
+import { buildWindowBOM, calcJobSummary, applyFabricNesting, missingAnswers, fabricSelectionFor, substitutionsFor, buildJobExtraLines, fmt, fmtQty } from '../lib/bomEngine'
 import { describeCombo } from '../lib/pricingCombos'
 import { exportJobPack } from '../lib/exportJobPack'
 import { exportCutSheetPDF, copyFabricSummary } from '../lib/exportCutSheet'
 import { exportPackagingLabels, exportTrackLabels, exportPartsLabels } from '../lib/exportLabels'
 import PartsListModal from '../components/PartsListModal'
 import SwapComponentModal from '../components/SwapComponentModal'
+import AddExtraLineModal from '../components/AddExtraLineModal'
 import { useDragReorder } from '../hooks/useDragReorder'
 
 // Download icon inline since it's only used here
@@ -37,6 +38,7 @@ export default function JobDetail({
   const [labeling, setLabeling]   = useState(null) // 'pack' | 'track' | 'parts' | null
   const [partsOpen, setPartsOpen] = useState(false)
   const [swapRow, setSwapRow]     = useState(null)
+  const [addExtraOpen, setAddExtraOpen] = useState(false)
   const poFileRef = useRef(null)
 
   const handlePOFile = (e) => {
@@ -63,12 +65,22 @@ export default function JobDetail({
           job.qty_snapshot?.[win.id] || null,
           fabricSelectionFor(win, product, allComponents, fabricCategories),
           substitutionsFor(job, win, allComponents),
+          allComponents,
         ),
       }
     }))
   }, [job, productComponentsMap, optionDefsFor, products, allComponents, fabricCategories])
 
-  const jobSummary = useMemo(() => calcJobSummary(windowsWithBOM), [windowsWithBOM])
+  // Parts bought for the job rather than for any one window. They have no
+  // window to live in, so they are costed here and folded into the summary —
+  // which is also how they reach the purchase orders and the stock deduction.
+  const jobExtraLines = useMemo(
+    () => buildJobExtraLines(job, allComponents, job.price_snapshot || null),
+    [job, allComponents])
+
+  const jobSummary = useMemo(
+    () => calcJobSummary(windowsWithBOM, jobExtraLines),
+    [windowsWithBOM, jobExtraLines])
 
   // Same buckets, order and icons the Components library uses, so the picker
   // reads the BOM the way they already read the shelves. Empty groups drop out.
@@ -114,7 +126,7 @@ export default function JobDetail({
     setExporting(true)
     try {
       const res = await exportJobPack(job, windowsWithBOM, {
-        products, optionDefsFor, suppliers, kinds,
+        products, optionDefsFor, suppliers, kinds, jobExtras: jobExtraLines,
       })
       // Attached but unreachable is a different problem from never attached,
       // and the person who just downloaded a short pack needs to know which.
@@ -137,6 +149,32 @@ export default function JobDetail({
       setCutting(false)
     }
   }
+
+  /* ------------------------------------------------------------ job extras --
+   * Stored on the job as a plain list. Identity is the part plus its colour —
+   * the same pair that keys the price snapshot — so one part can appear once,
+   * and more of it is a quantity rather than a second line.
+   * -------------------------------------------------------------------------- */
+  const jobExtras = job.extra_lines || []
+
+  const handleAddJobExtra = (extra) => {
+    onUpdate({ extra_lines: [...jobExtras, extra] })
+    setAddExtraOpen(false)
+  }
+
+  const handleRemoveJobExtra = (line) => {
+    onUpdate({
+      extra_lines: jobExtras.filter(x =>
+        !(x.component_id === line.component_id
+          && (x.colour_variant?.suffix || '') === (line.colour_variant?.suffix || ''))),
+    })
+  }
+
+  // Everything already on the job — window BOMs included — so the picker can't
+  // offer a second line of a part that is already being counted somewhere.
+  const jobExtraExcludeIds = useMemo(
+    () => [...new Set(jobSummary.map(r => r.component?.id).filter(Boolean))],
+    [jobSummary])
 
   // Only offer the copy when the job actually has fabric to order.
   const hasFabric = useMemo(
@@ -767,10 +805,84 @@ export default function JobDetail({
                     </div>
                   </div>
 
+                  {/* ------------------------------------------- job extras --
+                      Parts bought for the job, not for a window — a joiner,
+                      a tin of touch-up paint, an hour of someone's time. They
+                      are already in the table above and in the total; this is
+                      where they are put there and taken away.
+
+                      Received only, like every other change to what a job is
+                      made of: confirming snapshots the price of each line, and
+                      one added afterwards would price at whatever today's cost
+                      happens to be.
+                     -------------------------------------------------------- */}
+                  <div style={{ marginTop: 20 }}>
+                    <div style={{
+                      fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                      letterSpacing: '0.06em', color: 'var(--warm-300)', marginBottom: 8,
+                    }}>
+                      Job extras
+                    </div>
+
+                    {jobExtraLines.length === 0 ? (
+                      <div style={{
+                        background: 'var(--warm-100)', borderRadius: 'var(--radius-sm)',
+                        padding: '11px 13px', fontSize: 12.5, color: 'var(--warm-300)',
+                      }}>
+                        Nothing added. Parts for the job as a whole go here — anything for a
+                        particular window belongs on that window instead.
+                      </div>
+                    ) : (
+                      <div className="card">
+                        {jobExtraLines.map(line => (
+                          <div key={`${line.component_id}__${line.colour_variant?.suffix || ''}`}
+                            style={{
+                              display: 'grid', gridTemplateColumns: '1fr 70px 75px',
+                              padding: '11px 16px', borderBottom: '1px solid var(--warm-100)',
+                              fontSize: 14, alignItems: 'center',
+                            }}>
+                            <div>
+                              <div style={{ fontWeight: 600 }}>
+                                {line.component?.name}
+                                {line.colour_variant?.name && (
+                                  <span style={{ color: 'var(--warm-300)', fontWeight: 400 }}> · {line.colour_variant.name}</span>
+                                )}
+                              </div>
+                              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
+                                {line.component?.unit}
+                                {line.display_pn ? ` · ${line.display_pn}` : ''}
+                              </div>
+                              {line.extra_note && (
+                                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2, fontStyle: 'italic' }}>
+                                  {line.extra_note}
+                                </div>
+                              )}
+                              {isReceived && (
+                                <button onClick={() => handleRemoveJobExtra(line)}
+                                  style={{ fontSize: 11, color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, padding: 0, marginTop: 4 }}>
+                                  Remove line
+                                </button>
+                              )}
+                            </div>
+                            <div style={{ textAlign: 'right', fontWeight: 500 }}>{fmtQty(line.qty)}</div>
+                            <div style={{ textAlign: 'right', fontWeight: 600 }}>${fmt(line.line_cost)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {isReceived && (
+                      <button className="btn btn-secondary btn-block" style={{ marginTop: 10 }}
+                        onClick={() => setAddExtraOpen(true)}>
+                        + Add component to the job
+                      </button>
+                    )}
+                  </div>
+
                   {/* Export button in BOM tab too */}
                   <div style={{ marginTop: 16 }}>
                     <button className="btn btn-secondary btn-block" onClick={handleExport} disabled={exporting}>
-                      <DownloadIcon /> {exporting ? 'Generating PDF...' : 'Download Work Order PDF'}
+                      <DownloadIcon /> {exporting ? 'Generating PDF...' : 'Download Job Pack PDF'}
                     </button>
                   </div>
                 </>
@@ -779,6 +891,16 @@ export default function JobDetail({
           )}
         </div>
       </div>
+
+      <AddExtraLineModal
+        open={addExtraOpen}
+        scope="job"
+        components={allComponents}
+        stockMap={stockMap}
+        excludeIds={jobExtraExcludeIds}
+        onClose={() => setAddExtraOpen(false)}
+        onSave={handleAddJobExtra}
+      />
 
       <PartsListModal
         open={partsOpen}

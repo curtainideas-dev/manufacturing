@@ -3,6 +3,7 @@ import { ChevronLeftIcon, TrashIcon } from '../components/Icons'
 import { buildWindowBOM, missingAnswers, resolveAnswers, fabricSelectionFor, substitutionsFor, fmt, fmtQty } from '../lib/bomEngine'
 import CustomiseWindowModal from '../components/CustomiseWindowModal'
 import SwapComponentModal from '../components/SwapComponentModal'
+import AddExtraLineModal from '../components/AddExtraLineModal'
 
 export default function WindowDetail({
   window: win, windowIndex, totalWindows, job, product, productComponents, optionDefs = [],
@@ -11,6 +12,7 @@ export default function WindowDetail({
 }) {
   const [overrides, setOverrides] = useState(win.bom_overrides || {})
   const [swapLine, setSwapLine]   = useState(null)
+  const [addExtraOpen, setAddExtraOpen] = useState(false)
 
   // Recalculate BOM whenever dimensions or the window's answers change —
   // both feed recipe resolution, not just the quantity formulas.
@@ -32,7 +34,7 @@ export default function WindowDetail({
 
   const bom = useMemo(() => {
     const lines = buildWindowBOM(productComponents, win, optionDefs, null, null,
-      fabricSelectionFor(win, product, allComponents, fabricCategories), subMap)
+      fabricSelectionFor(win, product, allComponents, fabricCategories), subMap, allComponents)
     if (nestedFabricQty === undefined) return lines
     return lines.map(line => line.fabric_cut
       ? Object.defineProperties({}, {
@@ -109,6 +111,41 @@ export default function WindowDetail({
   const swapExcludeIds = useMemo(
     () => bom.filter(l => l.component_id !== swapLine?.component_id).map(l => l.component_id),
     [bom, swapLine])
+
+  /* ---------------------------------------------------------------- extras --
+   * Parts this window needs that its recipe never named. They sit in the BOM
+   * like any other line — costed, picked and deducted the same — so the only
+   * thing this page does differently is let them be added and taken away.
+   *
+   * Quantity is left to the ordinary override input above: an extra's stored
+   * quantity is what that input calls "calculated", and overriding it works
+   * exactly as it does on a recipe line, Reset included.
+   * ------------------------------------------------------------------------ */
+  const winExtras = win.extra_lines || []
+
+  const sameExtra = (x, line) =>
+    x.component_id === line.component_id
+    && (x.colour_variant?.suffix || '') === (line.colour_variant?.suffix || '')
+
+  const handleAddExtra = (extra) => {
+    onUpdate({ extra_lines: [...winExtras, extra] })
+    setAddExtraOpen(false)
+  }
+
+  const handleRemoveExtra = (line) => {
+    // The override goes with it — a stored adjustment to a line that no longer
+    // exists would silently apply again if the same part were added later.
+    const nextOverrides = { ...overrides }
+    delete nextOverrides[line.component_id]
+    setOverrides(nextOverrides)
+    onUpdate({
+      extra_lines:   winExtras.filter(x => !sameExtra(x, line)),
+      bom_overrides: nextOverrides,
+    })
+  }
+
+  // Anything already on the BOM, so the picker can't offer a second line of it.
+  const extraExcludeIds = useMemo(() => bom.map(l => l.component_id), [bom])
 
   return (
     <>
@@ -242,8 +279,9 @@ export default function WindowDetail({
                 // is filed under, whether or not one is in force yet.
                 const recipeId = line.substituted_from?.component_id || line.component_id
                 const ownSwap  = !!winSubs[recipeId]
-                // Fabric is chosen in Customise, not swapped here.
-                const canSwap  = !readOnly && !line.fabric_cut
+                // Fabric is chosen in Customise, not swapped here; an ad-hoc
+                // line has no recipe part to swap away from — it is removed.
+                const canSwap  = !readOnly && !line.fabric_cut && !line.is_extra
                 return (
                   <div key={line.component_id} style={{ padding: '10px 16px', borderBottom: '1px solid var(--warm-100)' }}>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 75px', alignItems: 'center', gap: 8 }}>
@@ -256,6 +294,12 @@ export default function WindowDetail({
                               borderRadius: 4, background: 'var(--blue-bg)', color: 'var(--blue)',
                             }}>{ownSwap ? 'swapped' : 'job swap'}</span>
                           )}
+                          {line.is_extra && (
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, marginLeft: 6, padding: '1px 6px',
+                              borderRadius: 4, background: 'var(--accent-bg)', color: 'var(--accent-dark)',
+                            }}>added</span>
+                          )}
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
                           {line.component?.unit}
@@ -265,6 +309,11 @@ export default function WindowDetail({
                         {line.substituted_from && (
                           <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
                             Recipe: {line.substituted_from.component?.name}
+                          </div>
+                        )}
+                        {line.extra_note && (
+                          <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2, fontStyle: 'italic' }}>
+                            {line.extra_note}
                           </div>
                         )}
                       </div>
@@ -319,6 +368,15 @@ export default function WindowDetail({
                         )}
                       </div>
                     )}
+
+                    {line.is_extra && !readOnly && (
+                      <div style={{ marginTop: 5 }}>
+                        <button onClick={() => handleRemoveExtra(line)}
+                          style={{ fontSize: 11, color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, padding: 0 }}>
+                          Remove line
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -334,6 +392,16 @@ export default function WindowDetail({
                 <div style={{ textAlign: 'right', color: 'var(--accent-dark)' }}>${fmt(windowTotal)}</div>
               </div>
             </div>
+          )}
+
+          {/* Something the recipe never named. Received only — confirming
+              snapshots the price of every line, and one added afterwards
+              would sit outside that snapshot. */}
+          {!readOnly && (
+            <button className="btn btn-secondary btn-block" style={{ marginBottom: 16 }}
+              onClick={() => setAddExtraOpen(true)}>
+              + Add component to this window
+            </button>
           )}
 
           {!readOnly && (
@@ -376,6 +444,16 @@ export default function WindowDetail({
         excludeIds={swapExcludeIds}
         onClose={() => setSwapLine(null)}
         onSave={handleSwap}
+      />
+
+      <AddExtraLineModal
+        open={addExtraOpen}
+        scope="window"
+        components={allComponents}
+        stockMap={stockMap}
+        excludeIds={extraExcludeIds}
+        onClose={() => setAddExtraOpen(false)}
+        onSave={handleAddExtra}
       />
     </>
   )

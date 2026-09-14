@@ -572,6 +572,69 @@ export function substitutionsFor(job, win, allComponents = []) {
   return out
 }
 
+/* ==========================================================================
+ * Ad-hoc lines
+ *
+ * A recipe says what a product is made of. A job sometimes needs something the
+ * recipe never mentions — a joiner for a track that has to be spliced, a tin
+ * of touch-up paint, an hour of someone's time — and the alternative to
+ * putting it on the BOM has always been to leave it off and remember it, which
+ * means it is never costed, never picked and never taken out of stock.
+ *
+ * So a window, or the job itself, can carry extra lines:
+ *
+ *   mfg_windows.extra_lines   parts for that window, quantity per window.
+ *   mfg_jobs.extra_lines      parts for the job, belonging to no one window.
+ *
+ * They are turned into recipe-shaped rows here and then costed by exactly the
+ * same code as everything else, so nothing downstream — the summary, the PDF,
+ * the purchase orders, the stock deduction — needs to know they are different.
+ * A fixed quantity is all they are: the number someone typed, not a formula,
+ * because the reason a part is ad hoc is that no formula produced it.
+ *
+ * Editable only while a job is Received, like substitutions and for the same
+ * reason: confirming snapshots the price of every line, and a line added
+ * afterwards would sit outside that snapshot.
+ * ========================================================================== */
+
+/**
+ * Stored extras → recipe-shaped rows, resolved against the component library.
+ *
+ * An extra naming a component that has since been deleted is dropped rather
+ * than crashing the BOM, the same way a substitution pointing at a missing
+ * part is dropped.
+ */
+export function extraRecipeLines(extras = [], allComponents = []) {
+  return (extras || []).reduce((out, x) => {
+    const component = allComponents.find(c => c.id === x?.component_id)
+    const qty       = Number(x?.qty) || 0
+    if (!component || qty <= 0) return out
+    out.push({
+      // Distinct from any product_components row, and stable for the same part
+      // in the same colour, so it keys the snapshots the way a recipe line does.
+      id:             `extra:${priceKey(x.component_id, x.colour_variant)}`,
+      component_id:   x.component_id,
+      component,
+      colour_variant: x.colour_variant || null,
+      cost_type:      'fixed',
+      formula_buffer: qty,
+      is_extra:       true,
+      extra_note:     x.note || null,
+    })
+    return out
+  }, [])
+}
+
+/**
+ * The job's own extras, costed — the ones that belong to no window.
+ *
+ * Built at zero width and drop because nothing about them is dimensional; they
+ * are a quantity of a part, and that is the whole of it.
+ */
+export function buildJobExtraLines(job, allComponents = [], priceMap = null) {
+  return calcWindowBOM(extraRecipeLines(job?.extra_lines, allComponents), 0, 0, priceMap, null)
+}
+
 /**
  * Swap components into resolved recipe lines. A line keeps its formula, bands
  * and sort order — only the part it points at changes — and carries
@@ -782,12 +845,17 @@ export function roleSpecs(bomLines = [], kinds = []) {
  * Resolve then cost, in one call. Every BOM in the app goes through here so
  * a call site can't accidentally skip resolution and cost the whole recipe.
  */
-export function buildWindowBOM(productComponents, win, optionDefs = [], priceMap = null, qtyMap = null, fabricSelection = null, subMap = null) {
+export function buildWindowBOM(productComponents, win, optionDefs = [], priceMap = null, qtyMap = null, fabricSelection = null, subMap = null, allComponents = []) {
   const widthMm = Number(win.width_mm), dropMm = Number(win.drop_mm)
   const resolved = resolveRecipe(productComponents, win.config, optionDefs, widthMm, dropMm)
   const lines = applySubstitutions(resolved, subMap)
   const fabricLine = fabricLineFor(fabricSelection, win.label || null)
-  return calcWindowBOM(fabricLine ? [fabricLine, ...lines] : lines, widthMm, dropMm, priceMap, qtyMap)
+  // Extras last, so they read as additions to the recipe rather than as part
+  // of it — on the screen, and in every document built off this order.
+  const extras = extraRecipeLines(win.extra_lines, allComponents)
+  return calcWindowBOM(
+    [...(fabricLine ? [fabricLine] : []), ...lines, ...extras],
+    widthMm, dropMm, priceMap, qtyMap)
 }
 
 // Key used for snapshotted unit costs — component + colour variant.
@@ -799,9 +867,12 @@ export function priceKey(componentId, colourVariant) {
  * Snapshot the current discounted unit cost of every component in a job's
  * recipes, so a confirmed job keeps the pricing it was confirmed at.
  */
-export function buildPriceSnapshot(windowsWithBOM) {
+export function buildPriceSnapshot(windowsWithBOM, jobExtraLines = []) {
   const snap = {}
-  windowsWithBOM.forEach(win => {
+  const sources = jobExtraLines.length > 0
+    ? [...windowsWithBOM, { bom: jobExtraLines }]
+    : windowsWithBOM
+  sources.forEach(win => {
     (win.bom || []).forEach(line => {
       const base     = Number(line.component?.unit_cost) || 0
       const discount = Number(line.component?.discount) || 0
@@ -873,6 +944,11 @@ export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = nul
       // "Winder" — or null on a line nobody is asked about. Rides along so the
       // cut sheet can print the spec without re-reading the recipe.
       job_role:             pc.job_role || null,
+      // Added to this job by hand rather than named by the recipe. Costed and
+      // stocked identically; flagged only so a screen can say where it came
+      // from, and so it can be taken off again.
+      is_extra:             !!pc.is_extra,
+      extra_note:           pc.extra_note || null,
       display_pn,
       calculated_qty,
       qty_frozen,
@@ -996,10 +1072,16 @@ function reQuantify(line, calculated_qty) {
   })
 }
 
-export function calcJobSummary(windowsWithBOM) {
+export function calcJobSummary(windowsWithBOM, jobExtraLines = []) {
   // Group by component_id + colour_variant so different colours are separate lines
   const map = {}
-  windowsWithBOM.forEach((win, idx) => {
+  // Job-level extras belong to no window, but they are still picked, costed
+  // and taken out of stock, so they walk through the same aggregation under a
+  // label that says where they came from.
+  const sources = jobExtraLines.length > 0
+    ? [...windowsWithBOM, { label: 'Job extras', bom: jobExtraLines }]
+    : windowsWithBOM
+  sources.forEach((win, idx) => {
     const windowLabel = win.label || `Window ${idx + 1}`
     win.bom.forEach(line => {
       const colourKey = line.colour_variant?.suffix || 'none'
