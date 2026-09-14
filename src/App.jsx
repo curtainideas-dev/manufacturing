@@ -1839,6 +1839,7 @@ export default function App({ route = 'manufacturing' }) {
           components={components}
           stockMap={stockMap}
           stockBars={stockBars}
+          kinds={componentKinds}
           onEditStock={handleOpenStockEdit}
           onReceiveBars={handleReceiveBars}
           onAddOffcut={handleAddBar}

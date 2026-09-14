@@ -3,6 +3,8 @@ import { PlusIcon, ChevronRightIcon } from '../components/Icons'
 import { getStock, stockValue, fabricStockValue } from '../lib/stockEngine'
 import { fabricPieces } from '../lib/fabricEngine'
 import { exportStockTakeCSV } from '../lib/exportCSV'
+import SectionHeader, { UntaggedDivider } from '../components/SectionHeader'
+import { groupByKind } from '../lib/kindGroups'
 
 const fmtQty = n => {
   const num = Number(n)
@@ -14,7 +16,7 @@ const fmt = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits: 0, m
 const fmtMoney = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 export default function StockPage({
-  components, stockMap, stockBars,
+  components, stockMap, stockBars, kinds = [],
   onEditStock, onReceiveBars, onAddOffcut, onEditOffcut,
 }) {
   const [tab, setTab]       = useState('components')
@@ -71,6 +73,45 @@ export default function StockPage({
         b.component_id === c.id && b.status === 'available')), 0)
     return { packs, bars, fabrics, total: packs + bars + fabrics }
   }, [packComponents, barComponents, fabricComponents, stockMap, stockBars])
+
+  /**
+   * Lay a tab's components out under their kind, the way the library does.
+   *
+   * The three tabs stay — a pack, a bar and a roll are counted in different
+   * units and shown in genuinely different shapes, and one list of all three
+   * would be three layouts stacked. What the tabs never answered is the
+   * question someone standing at the shelves actually asks: not "is this
+   * bought by the pack" but "where are the carriers". So inside each tab the
+   * rows group by kind, headed exactly as they are on the components page.
+   *
+   * A tab where nothing is tagged renders flat, unchanged — the grouping
+   * appears as kinds get filled in rather than putting a "no kind yet" rule
+   * over an entire page to announce that they haven't been.
+   */
+  const renderGrouped = (list, renderItem) => {
+    const { sections, untagged } = groupByKind(list, kinds)
+    if (sections.length === 0) return list.map(renderItem)
+    // Counted in rows rather than components, because a colour is a shelf: a
+    // base rail held in three colours is three things to count, and a heading
+    // whose number disagrees with the rows beneath it is a small lie.
+    const rowCount = (items) => items.reduce((n, c) => n + getRows(c).length, 0)
+    return (
+      <>
+        {sections.map(s => (
+          <div key={s.kind}>
+            <SectionHeader emoji="🔀" title={s.kind} count={rowCount(s.list)} tint="var(--blue)" />
+            {s.list.map(renderItem)}
+          </div>
+        ))}
+        {untagged.length > 0 && (
+          <>
+            <UntaggedDivider count={rowCount(untagged)} />
+            {untagged.map(renderItem)}
+          </>
+        )}
+      </>
+    )
+  }
 
   // Status dot based on qty vs minimum
   const StatusDot = ({ qty, minimum }) => {
@@ -153,7 +194,7 @@ export default function StockPage({
                   <div className="empty-desc">Pack components will appear here</div>
                 </div>
               </div>
-            ) : filterComps(packComponents).map(c => (
+            ) : renderGrouped(filterComps(packComponents), c => (
               <div key={c.id} style={{ marginBottom: 10 }}>
                 <div className="card">
                   {getRows(c).map((row, i) => {
@@ -210,7 +251,7 @@ export default function StockPage({
                   <div className="empty-desc">Components with order type "Bar" appear here</div>
                 </div>
               </div>
-            ) : filterComps(barComponents).map(c => (
+            ) : renderGrouped(filterComps(barComponents), c => (
               <div key={c.id} style={{ marginBottom: 20 }}>
                 {getRows(c).map((row, gi) => {
                   const stock    = getStock(stockMap, c, row.colour_variant)
@@ -376,7 +417,7 @@ export default function StockPage({
                   <div className="empty-desc">Components with order type "Fabric" appear here</div>
                 </div>
               </div>
-            ) : filterComps(fabricComponents).map(c => (
+            ) : renderGrouped(filterComps(fabricComponents), c => (
               <div key={c.id} style={{ marginBottom: 20 }}>
                 {getRows(c).map((row, gi) => {
                   const pieces = fabricPieces(stockBars, c.id, row.colour_variant?.suffix || null)
