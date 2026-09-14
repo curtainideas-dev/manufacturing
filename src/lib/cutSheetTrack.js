@@ -10,7 +10,7 @@
  * off a bar: there is no width to nest, the only question along the bar is how
  * the cuts pack end to end, and what decides whether the finished track works
  * is not its length at all but what is threaded onto and screwed into it —
- * how many carriers, how many brackets, and which end it stacks to.
+ * how many carriers, how many brackets, and which way it draws.
  *
  * So the table carries:
  *
@@ -24,10 +24,12 @@
  *                 tick that prints a spec line on the blind sheet, because
  *                 "the bench needs to see this" is one question, answered in
  *                 the shape each sheet has room for.
- *   Stack side    which end the curtain stacks to, which IS the return side.
- *                 Not the control side: tracks record no control side, and
- *                 the two are different specs (they are opposite ends where
- *                 both exist), so one is never printed for the other.
+ *   Opening       how the track draws — centre open, free hanging, one way —
+ *                 and on a one-way track the direction with it, since "one
+ *                 way" without a hand is only half an instruction. The
+ *                 direction is the return answer, the only left/right a track
+ *                 records; it is never the control side, which tracks do not
+ *                 have and which is a different spec besides.
  *
  * Behind the table come the BAR CHARTS — one per track profile and colour,
  * each stock bar drawn to scale with this job's cuts laid end to end and the
@@ -46,45 +48,92 @@ import {
 } from './pdfKit'
 
 /* --------------------------------------------------------------------------
- * Stack side
+ * Opening
  *
- * The side the curtain stacks to is the side the track returns to, so this
- * reads the `return` option rather than introducing a second answer that
- * could disagree with it. The known code first, then a name pattern, so the
- * column survives the option being renamed or set up again on a future track
- * type — the same belt-and-braces the blind sheet uses for roll direction.
+ * How the track draws — centre open, one way, free hanging — and, when it is
+ * one way, which way. That is one fact in two halves: "one way" on its own
+ * tells the bench the track is handed without telling them which hand, and
+ * the second half is only ever asked on a one-way track, so it has nothing to
+ * say on the other two.
  *
- * Runs through resolveAnswers, so the three-quarters of returns that nobody is
- * ever asked about — a centre-open track returns at both ends, a free-hanging
- * one not at all — print the answer that was decided for them rather than a
- * dash.
+ * The direction is the `return` answer, because that is the only left/right
+ * this track records and, on a one-way track, the end it returns to is the
+ * end it stacks to. The other two openings force that answer rather than
+ * asking it — centre open returns at both ends, free hanging at neither — so
+ * printing it there would add a word that means nothing about the opening.
+ *
+ * Both reads go through resolveAnswers, so an answer that was decided for a
+ * window rather than picked by hand reads exactly the same.
+ *
+ * The known codes first, then a name pattern, so the column survives either
+ * option being renamed or set up again on a future track type — the same
+ * belt-and-braces the blind sheet uses for roll direction.
  * ------------------------------------------------------------------------ */
+const OPENING_CODE   = 'opening'
 const RETURN_CODE    = 'return'
-const RETURN_PATTERN = /return|stack/i
 
-export function stackSide(win, optionDefs = []) {
-  const opt = (optionDefs || []).find(o => o.code === RETURN_CODE)
-    || (optionDefs || []).find(o => RETURN_PATTERN.test(`${o?.name || ''} ${o?.code || ''}`))
-  if (!opt) return DASH
+const OPENING_PATTERN = /opening|draw/i
+const RETURN_PATTERN  = /return|stack/i
 
+const findByCodeOrName = (optionDefs, code, pattern) =>
+  (optionDefs || []).find(o => o.code === code)
+  || (optionDefs || []).find(o => pattern.test(`${o?.name || ''} ${o?.code || ''}`))
+
+/** A matched option's answer as its own label, or null when unanswered. */
+function answerLabel(win, optionDefs, opt) {
+  if (!opt) return null
   const value = resolveAnswers(optionDefs, win.config)[opt.code]
-  if (value === undefined || value === null || value === '') return DASH
+  if (value === undefined || value === null || value === '') return null
   const choice = (opt.choices || []).find(c => String(c.value) === String(value))
   return choice?.label ?? String(value)
 }
 
 /**
- * The option answers that decide the build, as a short list for the line under
- * each row — Fixing, Opening, Operation.
+ * "Centre open", "Free hanging", or "One way · Left".
  *
- * The return is left out because it is already a column, and an answer printed
- * twice in two vocabularies ("Stack side: Left" and "Return: Left") reads as
- * two different facts.
+ * The direction rides along only on a one-way track — decided by whether the
+ * return option is ASKED for this answer rather than by matching the word "one
+ * way", so a renamed choice still behaves and a setup that asks the direction
+ * on some other opening gets it too.
+ */
+export function openingSpec(win, optionDefs = []) {
+  const openingOpt = findByCodeOrName(optionDefs, OPENING_CODE, OPENING_PATTERN)
+  const opening    = answerLabel(win, optionDefs, openingOpt)
+  if (!opening) return DASH
+
+  const returnOpt = findByCodeOrName(optionDefs, RETURN_CODE, RETURN_PATTERN)
+  if (!returnOpt) return opening
+
+  // Only when this opening is the one the direction is actually asked for. On
+  // every other opening the answer is forced, and a forced "both ends" says
+  // nothing about how the track draws.
+  const answers = resolveAnswers(optionDefs, win.config)
+  const asked = returnOpt.depends_on_code
+    ? String(answers[returnOpt.depends_on_code]) === String(returnOpt.depends_on_value)
+    : false
+  if (!asked) return opening
+
+  const direction = answerLabel(win, optionDefs, returnOpt)
+  return direction ? `${opening} · ${direction}` : opening
+}
+
+/**
+ * The option answers that decide the build, as a short list for the line under
+ * each row — Fixing, Operation, and anything else a setup has added.
+ *
+ * Opening and return are left out: they are the column now, and an answer
+ * printed twice in two vocabularies ("One way · Left" above, "Return: Left"
+ * below) reads as two different facts.
  */
 export function optionSpecs(win, optionDefs = []) {
   const answers = resolveAnswers(optionDefs, win.config)
+  const inColumn = new Set([
+    findByCodeOrName(optionDefs, OPENING_CODE, OPENING_PATTERN)?.code,
+    findByCodeOrName(optionDefs, RETURN_CODE, RETURN_PATTERN)?.code,
+  ].filter(Boolean))
+
   return (optionDefs || [])
-    .filter(o => o.code !== RETURN_CODE && !RETURN_PATTERN.test(`${o?.name || ''} ${o?.code || ''}`))
+    .filter(o => !inColumn.has(o.code))
     .map(o => {
       const value  = answers[o.code]
       if (value === undefined || value === null || value === '') return null
@@ -154,16 +203,41 @@ export function trackCountKinds(windowsWithBOM = [], kinds = []) {
  * schedule's own figure — so the bench can check the number against the
  * supplier's chart instead of taking it on trust. Lines that aren't scheduled
  * (a fixed two end caps) have none, and show the quantity alone.
+ *
+ * It is only offered when it AGREES with the quantity. The label is computed
+ * live from the window's width, while a confirmed job's quantity is frozen at
+ * what it was costed at, so the two can disagree — a job confirmed before its
+ * carrier schedule existed carries the quantity it was priced with, and
+ * today's chart says something else. Printing "1×70 = 4.19" would assert an
+ * equation that is false and put the bench on the wrong side of it, so where
+ * they disagree the quantity stands alone: it is what was confirmed, ordered
+ * and costed, and it is the one to build to.
  */
 export function kindEntries(bom = [], kind) {
   return (bom || [])
     .filter(l => l.component?.kind === kind && Number(l.qty) > 0)
-    .map(l => ({
-      name: `${l.component?.name || DASH}${l.colour_variant?.name ? ` · ${l.colour_variant.name}` : ''}`,
-      formula: l.width_formula || null,
-      qty: Number(l.qty),
-      changed: !!l.substituted_from,
-    }))
+    .map(l => {
+      const qty = Number(l.qty)
+      return {
+        name: `${l.component?.name || DASH}${l.colour_variant?.name ? ` · ${l.colour_variant.name}` : ''}`,
+        formula: formulaAgrees(l.width_formula, qty) ? l.width_formula : null,
+        qty,
+        changed: !!l.substituted_from,
+      }
+    })
+}
+
+/**
+ * Does an "M×N" label multiply out to this quantity?
+ *
+ * Anything unparseable counts as disagreement, so a label shape this doesn't
+ * understand is dropped rather than printed beside a number it may not equal.
+ */
+export function formulaAgrees(label, qty) {
+  if (!label) return false
+  const [m, n] = String(label).split('×').map(Number)
+  if (!isFinite(m) || !isFinite(n)) return false
+  return Math.abs(m * n - Number(qty)) < 1e-9
 }
 
 /**
@@ -196,7 +270,7 @@ export function trackSheetRow(win, optionDefs = [], kinds = [], countKinds = [])
     orderedW: win.width_mm != null ? Number(win.width_mm).toLocaleString() : DASH,
     cutLength: bars.length ? bars.map(l => cutMm(l).toLocaleString()).join(' / ') : DASH,
     counts:   countKinds.map(kind => ({ kind, entries: kindEntries(bom, kind) })),
-    stack:    stackSide(win, optionDefs),
+    opening:  openingSpec(win, optionDefs),
     // The options that decide the build, then any ticked kind that didn't get
     // a column of its own.
     specs: [
@@ -355,8 +429,11 @@ export function drawTrackCutSheet(doc, {
    * of a page of white space.
    * ---------------------------------------------------------------------- */
   const countKinds = trackCountKinds(windowsWithBOM, kinds)
-  const W_WINDOW = 30, W_ORDERED = 24, W_CUT = 26, W_STACK = 24
-  const fixedW   = W_WINDOW + W_ORDERED + W_CUT + W_STACK
+  // The window name is a room, and rooms have names like "Rumpus A Wall to
+  // Wall". It gets the width; the track name is a short profile code and
+  // takes what is left.
+  const W_WINDOW = 44, W_ORDERED = 24, W_CUT = 26, W_OPENING = 34
+  const fixedW   = W_WINDOW + W_ORDERED + W_CUT + W_OPENING
   const countW   = countKinds.length > 0
     ? Math.min(62, (CW - fixedW - 44) / countKinds.length)
     : 0
@@ -368,7 +445,7 @@ export function drawTrackCutSheet(doc, {
     { key: 'orderedW',  title: 'Ordered W',   w: W_ORDERED, align: 'right' },
     { key: 'cutLength', title: 'Cut length',  w: W_CUT,     align: 'right' },
     ...countKinds.map(kind => ({ key: `count:${kind}`, title: kind, w: countW, count: kind })),
-    { key: 'stack',     title: 'Stack side',  w: W_STACK },
+    { key: 'opening',   title: 'Opening',     w: W_OPENING },
   ]
   let runningX = MX
   COLS.forEach(c => { c.x = runningX; runningX += c.w })
@@ -430,7 +507,7 @@ export function drawTrackCutSheet(doc, {
 
       // What gets acted on carries the weight — the window, the cut length and
       // the side it stacks to; the rest is supporting.
-      const strong = c.key === 'window' || c.key === 'cutLength' || c.key === 'stack'
+      const strong = c.key === 'window' || c.key === 'cutLength' || c.key === 'opening'
       setColor(c.key === 'orderedW' ? WARM_300 : INK)
       doc.setFontSize(strong ? 9 : 8)
       doc.setFont('helvetica', strong ? 'bold' : 'normal')
@@ -470,8 +547,8 @@ export function drawTrackCutSheet(doc, {
   })
 
   y = footnote(doc,
-    'Cut length is final — the recipe\'s deduction is already applied. Stack side is the return side, as ordered; '
-    + 'a dash means the option was never answered, not that it has no answer.',
+    'Cut length is final — the recipe\'s deduction is already applied. Opening is as ordered, with the direction '
+    + 'on a one-way track; a dash means the option was never answered, not that it has no answer.',
     MX, y + 5, CW)
 
   /* ----------------------------------------------------------- bar charts --
