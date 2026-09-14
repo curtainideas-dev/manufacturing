@@ -16,11 +16,15 @@
 -- line under each row instead, so nothing is lost by ticking one more.
 
 update component_kinds set on_cut_sheet = true
- where name in ('Carrier', 'Bracket');
+ where name in ('Carrier', 'Track Bracket');
 -- Expect: UPDATE 2
 --
--- If your kinds are named differently, tick them in Admin → Component Kinds
--- instead — nothing in the code looks for these two names.
+-- Those are the kinds as they stand today: Carrier holds the 60mm S-Wave
+-- Carrier (and NOT the Wand Carrier, which is a different kind of thing), and
+-- Track Bracket holds the six fixing brackets — not Blind Bracket Cover, which
+-- is its own kind and belongs to the other product type. If you rename them,
+-- tick the new names in Admin → Component Kinds; nothing in the code looks for
+-- these two strings.
 
 -- ============================================================================
 -- VERIFY
@@ -37,7 +41,7 @@ update component_kinds set on_cut_sheet = true
 -- ROLLBACK
 -- ============================================================================
 -- update component_kinds set on_cut_sheet = false
---  where name in ('Carrier', 'Bracket');
+--  where name in ('Carrier', 'Track Bracket');
 
 -- ============================================================================
 -- COLUMN ORDER
