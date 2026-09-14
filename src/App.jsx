@@ -33,7 +33,7 @@ import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
 import { buildStockMap, stockKey, getStock, planStockRestore, stockPositions } from './lib/stockEngine'
-import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting } from './lib/bomEngine'
+import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines } from './lib/bomEngine'
 import { orderUnitInfo } from './lib/poEngine'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
 import { exportProductPricingXLSX } from './lib/exportPricing'
@@ -171,13 +171,19 @@ export default function App({ route = 'manufacturing' }) {
         useSnapshot ? (job.qty_snapshot?.[win.id] || null) : null,
         fabricSelectionFor(win, products.find(p => p.id === win.product_id), components, fabricCategories),
         substitutionsFor(job, win, components),
+        components,
       )
     })))
   }, [productComponentsMap, optionDefsFor, products, components, fabricCategories])
 
-  // Pre-compute current job's BOM summary for the deduct stock modal
+  // Pre-compute current job's BOM summary for the deduct stock modal.
+  // Job-level extras are in it: they are picked and taken out of stock like
+  // anything else, and leaving them out would deduct short every time.
   const currentJobSummary = useMemo(
-    () => calcJobSummary(buildJobWindows(currentJob, true)), [currentJob, buildJobWindows])
+    () => calcJobSummary(
+      buildJobWindows(currentJob, true),
+      buildJobExtraLines(currentJob, components, currentJob?.price_snapshot || null)),
+    [currentJob, buildJobWindows, components])
 
   // Nested fabric metres per window on the LIVE basis, for the single-window
   // page — which prices live, so a frozen quantity there would sit beside live
@@ -302,7 +308,7 @@ export default function App({ route = 'manufacturing' }) {
         ...j,
         windows: (j.mfg_windows || [])
           .sort((a, b) => a.sort_order - b.sort_order)
-          .map(w => ({ ...w, bom_overrides: w.bom_overrides || {}, substitutions: w.substitutions || {} }))
+          .map(w => ({ ...w, bom_overrides: w.bom_overrides || {}, substitutions: w.substitutions || {}, extra_lines: w.extra_lines || [] }))
       })))
     }
 
@@ -1028,13 +1034,19 @@ export default function App({ route = 'manufacturing' }) {
     // will actually pull off the roll — not the sum of its blinds' ideal
     // strips, which nobody could order against.
     const windowsWithBOM = buildJobWindows(job, false)
-    const total = calcJobSummary(windowsWithBOM).reduce((s, r) => s + r.total_cost, 0)
+    // Job extras are part of what the job costs, so they are in the total and
+    // in the price snapshot. They need no quantity snapshot: their quantity is
+    // the number someone typed and is stored on the job, so unlike a formula's
+    // output there is nothing for a later recipe change to move.
+    const jobExtraLines = buildJobExtraLines(job, components, null)
+    const total = calcJobSummary(windowsWithBOM, jobExtraLines)
+      .reduce((s, r) => s + r.total_cost, 0)
     return {
-      price_snapshot: buildPriceSnapshot(windowsWithBOM),
+      price_snapshot: buildPriceSnapshot(windowsWithBOM, jobExtraLines),
       qty_snapshot:   buildQtySnapshot(windowsWithBOM),
       locked_total:   Math.round(total * 100) / 100,
     }
-  }, [buildJobWindows])
+  }, [buildJobWindows, components])
 
   // One-off: jobs confirmed before pricing was locked have no snapshot, so their
   // value would keep moving with component costs. Lock them at current prices.
@@ -1106,6 +1118,7 @@ export default function App({ route = 'manufacturing' }) {
         sort_order:   sortOrder,
         bom_overrides: {},
         substitutions: winData.substitutions || {},
+        extra_lines:   [],
         config:        winData.config || {},
       })
       .select().single()
@@ -1114,6 +1127,7 @@ export default function App({ route = 'manufacturing' }) {
       ...data,
       bom_overrides: {},
       substitutions: data.substitutions || {},
+      extra_lines:   [],
       config:        data.config || {},
     }
     const updated = { ...currentJob, windows: [...(currentJob.windows || []), newWin] }
@@ -1149,11 +1163,14 @@ export default function App({ route = 'manufacturing' }) {
         sort_order:    sortOrder,
         bom_overrides: {},
         substitutions: source.substitutions || {},
+        // A duplicate of a window that needed a joiner needs the joiner too —
+        // the copy is for a near-identical window, extras included.
+        extra_lines:   source.extra_lines || [],
         config:        source.config || {},
       })
       .select().single()
     if (error) { showToast('Failed to duplicate window', 'error'); return }
-    const newWin = { ...data, bom_overrides: {}, substitutions: data.substitutions || {}, config: data.config || {} }
+    const newWin = { ...data, bom_overrides: {}, substitutions: data.substitutions || {}, extra_lines: data.extra_lines || [], config: data.config || {} }
     const updated = { ...currentJob, windows: [...(currentJob.windows || []), newWin] }
     setCurrentJob(updated)
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
