@@ -34,7 +34,8 @@ import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
 import { buildStockMap, stockKey, getStock, planStockRestore, stockPositions } from './lib/stockEngine'
-import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines } from './lib/bomEngine'
+import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines, resolveAnswers } from './lib/bomEngine'
+import { windowSell } from './lib/sellEngine'
 import { orderUnitInfo } from './lib/poEngine'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
 import { exportProductPricingXLSX } from './lib/exportPricing'
@@ -171,12 +172,12 @@ export default function App({ route = 'manufacturing' }) {
         optionDefsFor(win.product_id),
         useSnapshot ? (job.price_snapshot || null) : null,
         useSnapshot ? (job.qty_snapshot?.[win.id] || null) : null,
-        fabricSelectionFor(win, products.find(p => p.id === win.product_id), components, fabricCategories),
+        fabricSelectionFor(win, products.find(p => p.id === win.product_id), components),
         substitutionsFor(job, win, components),
         components,
       )
     })))
-  }, [productComponentsMap, optionDefsFor, products, components, fabricCategories])
+  }, [productComponentsMap, optionDefsFor, products, components])
 
   // Pre-compute current job's BOM summary for the deduct stock modal.
   // Job-level extras are in it: they are picked and taken out of stock like
@@ -560,15 +561,50 @@ export default function App({ route = 'manufacturing' }) {
   }
 
   // ==== FABRIC PRICING CATEGORIES ====
-  // Six fixed rows (A-F) seeded by migration — this only ever updates one,
-  // never inserts or deletes.
+  // A category is now the tier the WHOLESALER sells a fabric under, and it
+  // carries their width × drop price list. Grids arrive by upload rather than
+  // by hand: eleven grids of 121 cells is 1,331 chances to type a price wrong
+  // into a margin report. See supabase_price_grids.sql.
 
-  const handleSaveFabricCategoryPrice = async (code, max_price) => {
+  /**
+   * Load the grids a parsed workbook produced.
+   *
+   * Upserted by code, so a tier the list has and the table doesn't — Budget
+   * the first time, or whatever they add next year — arrives with its prices
+   * rather than being silently dropped.
+   */
+  const handleSaveFabricGrids = async (grids, fileName) => {
     setProdSaving(true)
-    const { error } = await supabase.from('fabric_categories')
-      .update({ max_price: Number(max_price) || 0 }).eq('code', code)
-    if (error) showToast(error.message || 'Failed to save', 'error')
-    else { showToast(`Category ${code} updated ✓`, 'success'); await loadAll() }
+    const now = new Date().toISOString()
+    const { error } = await supabase.from('fabric_categories').upsert(
+      grids.map(g => ({
+        code:             g.code,
+        name:             g.code === 'Budget' ? 'Budget' : `Category ${g.code}`,
+        widths:           g.widths,
+        drops:            g.drops,
+        prices:           g.prices,
+        price_list_label: `${fileName} · ${g.sheet}`,
+        price_list_year:  g.year || null,
+        priced_at:        now,
+      })), { onConflict: 'code' })
+    if (error) showToast(error.message || 'Failed to load price list', 'error')
+    else {
+      showToast(`${grids.length} price grid${grids.length !== 1 ? 's' : ''} loaded ✓`, 'success')
+      await loadAll()
+    }
+    setProdSaving(false)
+  }
+
+  /** Apply the workbook's unambiguous fabric → category suggestions. */
+  const handleTagFabrics = async (suggestions = []) => {
+    if (suggestions.length === 0) return
+    setProdSaving(true)
+    await Promise.all(suggestions.map(sug =>
+      supabase.from('components')
+        .update({ fabric_category: sug.suggested })
+        .eq('id', sug.component.id)))
+    showToast(`${suggestions.length} fabric${suggestions.length !== 1 ? 's' : ''} tagged ✓`, 'success')
+    await loadAll()
     setProdSaving(false)
   }
 
@@ -1043,12 +1079,33 @@ export default function App({ route = 'manufacturing' }) {
     const jobExtraLines = buildJobExtraLines(job, components, null)
     const total = calcJobSummary(windowsWithBOM, jobExtraLines)
       .reduce((s, r) => s + r.total_cost, 0)
+
+    // Sell freezes beside cost, for the same reason. Without it, loading next
+    // year's price list would silently rewrite the margin on every job ever
+    // completed — and a GP figure that changes when you restate the prices is
+    // not a figure anyone can act on. A window with no sell price yet is left
+    // OUT of the snapshot rather than frozen at null, so pricing it later
+    // still works; only a real number is worth locking.
+    const sell_snapshot = {}
+    windowsWithBOM.forEach(win => {
+      const product = products.find(p => p.id === win.product_id)
+      const optDefs = optionDefsFor(win.product_id)
+      const fabricCmp = components.find(c => c.id === win.config?.fabric?.component_id) || null
+      const { sell } = windowSell({
+        win, product, fabricComponent: fabricCmp,
+        categories: fabricCategories, optionDefs: optDefs,
+        answers: resolveAnswers(optDefs, win.config),
+      })
+      if (sell !== null && sell !== undefined) sell_snapshot[win.id] = sell
+    })
+
     return {
       price_snapshot: buildPriceSnapshot(windowsWithBOM, jobExtraLines),
       qty_snapshot:   buildQtySnapshot(windowsWithBOM),
+      sell_snapshot,
       locked_total:   Math.round(total * 100) / 100,
     }
-  }, [buildJobWindows, components])
+  }, [buildJobWindows, components, products, optionDefsFor, fabricCategories])
 
   // One-off: jobs confirmed before pricing was locked have no snapshot, so their
   // value would keep moving with component costs. Lock them at current prices.
@@ -1083,7 +1140,7 @@ export default function App({ route = 'manufacturing' }) {
   }, [loading, jobs, productComponentsMap, computeJobLock, showToast])
 
   const handleJobConfirm = async () => {
-    if (!window.confirm('Confirm this job? The BOM and its pricing will be locked.')) return
+    if (!window.confirm('Confirm this job? The BOM, its cost and its sell prices will be locked.')) return
     const updates = { status: 'in_progress', ...computeJobLock(currentJob) }
     // Default the manufacture date to today if not already set
     if (!currentJob.date_manufacture) {
@@ -1677,12 +1734,12 @@ export default function App({ route = 'manufacturing' }) {
     }
   }
 
-  const handleExportPricing = async (product) => {
+  const handleExportPricing = async (product, fabric = null) => {
     setPricingExporting(true)
     try {
       const optionDefs = productOptions[product.product_type] || []
       const { truncated } = await exportProductPricingXLSX(
-        product, productComponentsMap[product.id] || [], optionDefs, fabricCategories, Number(product.markup) || 1.6)
+        product, productComponentsMap[product.id] || [], optionDefs, fabricCategories, fabric)
       if (truncated) showToast('Too many option combinations — export was capped', 'error')
       else showToast('Pricing downloaded ✓', 'success')
     } catch (e) {
@@ -1804,7 +1861,7 @@ export default function App({ route = 'manufacturing' }) {
           onRemoveComponent={handleRemoveProductComponent}
           onDuplicate={handleDuplicate}
           onDeleteProduct={handleProductDelete}
-          onExportPricing={() => handleExportPricing(currentProduct)}
+          onExportPricing={(fabric) => handleExportPricing(currentProduct, fabric)}
           pricingExporting={pricingExporting}
           saving={prodSaving}
         />
@@ -1834,8 +1891,10 @@ export default function App({ route = 'manufacturing' }) {
       return (
         <FabricCategoriesAdmin
           categories={fabricCategories}
+          components={components}
           onBack={() => setAdminSection(null)}
-          onSave={handleSaveFabricCategoryPrice}
+          onSaveGrids={handleSaveFabricGrids}
+          onTagFabrics={handleTagFabrics}
           saving={prodSaving}
         />
       )

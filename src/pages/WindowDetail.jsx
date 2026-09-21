@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { ChevronLeftIcon, TrashIcon } from '../components/Icons'
 import { buildWindowBOM, missingAnswers, resolveAnswers, fabricSelectionFor, substitutionsFor, fmt, fmtQty } from '../lib/bomEngine'
+import { windowSell, grossProfit } from '../lib/sellEngine'
 import CustomiseWindowModal from '../components/CustomiseWindowModal'
 import SwapComponentModal from '../components/SwapComponentModal'
 import AddExtraLineModal from '../components/AddExtraLineModal'
@@ -34,7 +35,7 @@ export default function WindowDetail({
 
   const bom = useMemo(() => {
     const lines = buildWindowBOM(productComponents, win, optionDefs, null, null,
-      fabricSelectionFor(win, product, allComponents, fabricCategories), subMap, allComponents)
+      fabricSelectionFor(win, product, allComponents), subMap, allComponents)
     if (nestedFabricQty === undefined) return lines
     return lines.map(line => line.fabric_cut
       ? Object.defineProperties({}, {
@@ -42,7 +43,7 @@ export default function WindowDetail({
           calculated_qty: { value: nestedFabricQty, enumerable: true, writable: true, configurable: true },
         })
       : line)
-  }, [productComponents, optionDefs, win, product, allComponents, fabricCategories, subMap, nestedFabricQty])
+  }, [productComponents, optionDefs, win, product, allComponents, subMap, nestedFabricQty])
 
   const bomWithOverrides = bom.map(line => {
     const ov = overrides[line.component_id]
@@ -57,8 +58,39 @@ export default function WindowDetail({
 
   const windowTotal = bomWithOverrides.reduce((s, l) => s + l.line_cost, 0)
 
-  const category = fabricCategories.find(c => c.code === product?.fabric_category)
-  const fabricMissing = product?.product_type === 'blind' && !!category && !win.config?.fabric?.component_id
+  /* ------------------------------------------------------------- sell & GP --
+   * What this window is sold for, and what that leaves. A blind's list price
+   * comes from its FABRIC's category grid — the fabric decides both what the
+   * blind costs and what it sells for — and a track's has to be typed, since
+   * it has no fabric and so no list to look anything up in.
+   *
+   * A confirmed job reads its frozen figure instead, so the margin on a job
+   * doesn't move the day a new price list is loaded.
+   * ---------------------------------------------------------------------- */
+  const fabricComponent = allComponents.find(c => c.id === win.config?.fabric?.component_id) || null
+  const sell = useMemo(() => windowSell({
+    win, product, fabricComponent,
+    categories:   fabricCategories,
+    optionDefs,
+    answers:      resolveAnswers(optionDefs, win.config),
+    sellSnapshot: job?.sell_snapshot || null,
+  }), [win, product, fabricComponent, fabricCategories, optionDefs, job])
+  const gp = grossProfit(windowTotal, sell.sell)
+
+  // Why there is no price, in the words of whichever link is missing.
+  const SELL_GAP = {
+    no_fabric:       'Pick a fabric to price this blind.',
+    untagged_fabric: 'That fabric has no sell category — tag it in the component library.',
+    no_grid:         'That category has no price list loaded — load one in Admin → Fabric Categories.',
+    no_cell:         'The price list has no price at that size.',
+    oversize:        'Bigger than the price list goes (max '
+      + (sell.maxWidth ? sell.maxWidth.toLocaleString() : '—') + ' × '
+      + (sell.maxDrop ? sell.maxDrop.toLocaleString() : '—')
+      + 'mm) — enter the price you quoted.',
+    not_priced:      'Enter what this was sold for.',
+  }
+
+  const fabricMissing = product?.product_type === 'blind' && !win.config?.fabric?.component_id
   const missing = useMemo(() => {
     const base = missingAnswers(optionDefs, win.config)
     return fabricMissing ? [...base, 'Fabric'] : base
@@ -202,17 +234,85 @@ export default function WindowDetail({
             </div>
           </div>
 
-          {/* Cost banner */}
+          {/* Cost · sell · GP.
+              Three figures rather than one, because cost alone never answered
+              the question the business actually asks of a job. */}
           <div style={{
             background: 'var(--accent-dark)', color: '#fff', borderRadius: 'var(--radius)',
             padding: '12px 16px', marginBottom: 16,
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center'
           }}>
-            <div style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7 }}>
-              Window Cost
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7 }}>
+                Cost
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 700 }}>${fmt(windowTotal)}</div>
             </div>
-            <div style={{ fontSize: 22, fontWeight: 700 }}>${fmt(windowTotal)}</div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.18)' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7 }}>
+                Sell
+                {sell.source === 'grid' && (
+                  <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, marginLeft: 6, fontSize: 11 }}>
+                    {sell.category?.name || sell.category?.code} list · {sell.widthBand?.toLocaleString()}×{sell.dropBand?.toLocaleString()}
+                    {sell.surcharge > 0 ? ` + $${fmt(sell.surcharge)} options` : ''}
+                  </span>
+                )}
+                {sell.source === 'override' && (
+                  <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, marginLeft: 6, fontSize: 11 }}>
+                    entered by hand
+                  </span>
+                )}
+                {sell.source === 'snapshot' && (
+                  <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, marginLeft: 6, fontSize: 11 }}>
+                    🔒 locked at confirm
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 700, opacity: sell.sell === null ? 0.5 : 1 }}>
+                {sell.sell === null ? '—' : `$${fmt(sell.sell)}`}
+              </div>
+            </div>
+
+            {gp.priced ? (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.18)' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7 }}>
+                  Gross profit
+                </div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: gp.gp < 0 ? '#fca5a5' : '#fff' }}>
+                  ${fmt(gp.gp)}
+                  <span style={{ fontSize: 13, fontWeight: 600, opacity: 0.75, marginLeft: 8 }}>
+                    {gp.gpPct === null ? '' : `${gp.gpPct.toFixed(1)}%`}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 11.5, opacity: 0.75, marginTop: 8, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.18)', lineHeight: 1.5 }}>
+                {SELL_GAP[sell.reason] || 'No sell price yet.'}
+              </div>
+            )}
           </div>
+
+          {/* What we actually charged, when it isn't what the list says — a
+              discount, a price held from an old quote, or a track, which has
+              no list at all. Blank falls back to the list. */}
+          {(
+            <div className="card card-body" style={{ marginBottom: 16 }}>
+              <label className="field-label">Sell price override ($)</label>
+              <input className="field-input" type="number" step="0.01" min="0"
+                value={win.sell_price ?? ''}
+                onChange={e => onUpdate({ sell_price: e.target.value === '' ? null : Number(e.target.value) })}
+                placeholder={sell.source === 'grid' ? `List: ${fmt(sell.sell)}` : 'Enter the sell price'}
+                style={{ textAlign: 'right', maxWidth: '50%' }} />
+              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6, lineHeight: 1.5 }}>
+                {product?.product_type === 'blind'
+                  ? 'Leave blank to use the price list. Fill it in when what we charged differs.'
+                  : 'Tracks have no price list — enter what this was sold for.'}
+                {' '}Stays editable after the job is confirmed: the real figure is often only
+                known at invoicing, and the lock is there to stop the price LIST moving, not
+                to stop you recording what was charged.
+              </div>
+            </div>
+          )}
 
           {/* Answers live behind the same modal used when the window was
               added, so there is one place these questions are ever asked. */}

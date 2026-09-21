@@ -258,34 +258,40 @@ export function piecesFitting(rollStock = [], componentId, colourSuffix, cutWidt
 
 /* ==========================================================================
  * Pricing categories
+ *
+ * A category used to be derived from what a fabric COST — the first tier whose
+ * ceiling covered it — and used to charge a flat rate for it. Both halves of
+ * that are gone. Cost now comes from the fabric's own wholesale rate, and the
+ * category is a SELL-side fact that no arithmetic can work out: it is which
+ * group of the wholesaler's price list a fabric is sold under, and only their
+ * price list knows. So it is tagged on the fabric by hand and read, never
+ * derived. See supabase_price_grids.sql.
  * ========================================================================== */
 
-/**
- * Pricing categories (A-F), ascending by their price ceiling — used to find
- * the first tier a fabric's real cost fits under, the same way a width
- * schedule finds the first band a width fits into.
- */
+/** Categories in list order, for a dropdown. */
 export const sortedCategories = (categories = []) =>
-  categories.slice().sort((a, b) => Number(a.max_price) - Number(b.max_price))
+  categories.slice().sort((a, b) =>
+    (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0)
+    || String(a.code).localeCompare(String(b.code)))
 
-/**
- * Which pricing category a fabric's real unit cost falls into. Never stored
- * on the fabric — always derived live, so it can't go stale when an admin
- * moves a threshold. Anything pricier than every configured ceiling lands in
- * the top category, same fallback a width schedule uses past its last band.
- * Null only when no categories are configured yet.
- */
-export function categoryForPrice(categories = [], price) {
-  const sorted = sortedCategories(categories)
-  if (sorted.length === 0) return null
-  const p = Number(price) || 0
-  return sorted.find(c => p <= Number(c.max_price)) || sorted[sorted.length - 1]
+/** The category a fabric is tagged with, or null when it hasn't been tagged. */
+export function categoryForFabric(categories = [], component) {
+  const code = component?.fabric_category
+  if (!code) return null
+  return categories.find(c => c.code === code) || null
 }
 
-/** Fabrics currently classified into a pricing category, each with its colours. */
-export function fabricsInCategory(components = [], categories = [], categoryCode) {
+/**
+ * Every fabric in the library, for the window's fabric picker.
+ *
+ * All of them, deliberately. The picker used to be narrowed to the product's
+ * own category, which made sense while the product's category decided what a
+ * blind cost. It doesn't any more — any fabric can go on any roller blind, and
+ * what it costs and what it sells for both follow the fabric, not the product.
+ */
+export function allFabrics(components = []) {
   return components
-    .filter(c => c.order_type === 'fabric' && categoryForPrice(categories, c.unit_cost)?.code === categoryCode)
+    .filter(c => c.order_type === 'fabric')
     .sort((a, b) => String(a.fabric_code || a.name).localeCompare(String(b.fabric_code || b.name)))
 }
 

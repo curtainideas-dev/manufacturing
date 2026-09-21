@@ -387,28 +387,34 @@ export function calcCostAt(productComponents, widthMm, dropMm, optionDefs = [], 
 }
 
 /* ==========================================================================
- * Blind fabric pricing
+ * Blind fabric costing
  *
  * A blind's recipe (product_components) only ever holds hardware — the
  * fabric it's cut from is chosen per window, not fixed on the product, so it
  * can't live there as an ordinary line. It's synthesised instead: a
- * width_drop_based line built on demand from whatever the window picked,
- * priced at its pricing category's flat rate rather than the fabric's own
- * unit_cost — see supabase_fabric_pricing.sql for why. Being an ordinary
- * line by the time it reaches calcWindowBOM, it freezes into a confirmed
- * job's price/qty snapshot the same way every other line does.
+ * fabric_strip line built on demand from whatever the window picked, costed
+ * at that fabric's own wholesale rate. Being an ordinary line by the time it
+ * reaches calcWindowBOM, it freezes into a confirmed job's price/qty snapshot
+ * the same way every other line does.
  * ========================================================================== */
 
 /**
- * Resolve a blind window's chosen fabric into what the BOM needs: the real
- * component (for name/part no/colour/stock matching) plus the flat price its
- * category charges. Null whenever there's nothing to price yet — a track
- * window, no fabric picked, or a product with no category assigned.
+ * Resolve a blind window's chosen fabric into what the BOM needs.
+ *
+ * Nothing but the real component and the product's cutting allowances now.
+ * Fabric used to be costed at a flat rate per pricing category, which is how a
+ * RETAILER prices — it makes quoting quick and it makes every Category B
+ * fabric interchangeable at the counter. This app is not quoting. It exists to
+ * find what a blind actually costs us, so the wholesale rate on the fabric
+ * itself is the only figure that belongs here; the categories moved to the
+ * SELL side, where they are what the wholesaler's price list is organised by.
+ *
+ * Null whenever there's nothing to cost — a track window, or no fabric picked.
  */
 /**
- * The roll width the category rates were quoted against, used when a product
- * predates fabric_roll_width_mm. Matches the default the migration sets, so a
- * product nobody has opened since costs the same either way.
+ * The roll width to assume when neither the fabric nor the product says.
+ * Matches the default the migration sets, so a product nobody has opened
+ * since costs the same either way.
  */
 export const DEFAULT_ROLL_WIDTH_MM = 3000
 
@@ -441,11 +447,10 @@ export function fabricRollWidthMm(component, product) {
  * dropped the cut allowance and the roll width and quoted a different cost
  * than the window it was about to save.
  */
-export function buildFabricSelection(component, colourVariant, product, category) {
-  if (!component || !category) return null
+export function buildFabricSelection(component, colourVariant, product) {
+  if (!component) return null
   return {
     component, colour_variant: colourVariant || null,
-    categoryPrice: Number(category.max_price) || 0,
     dropAllowanceMm:    Number(product?.fabric_drop_allowance_mm) || 0,
     dropWastageMm:      Number(product?.fabric_drop_wastage_mm) || 0,
     widthDeductionMm:   Number(product?.fabric_width_deduction_mm) || 0,
@@ -454,15 +459,14 @@ export function buildFabricSelection(component, colourVariant, product, category
   }
 }
 
-export function fabricSelectionFor(win, product, components = [], categories = []) {
+export function fabricSelectionFor(win, product, components = []) {
   if (product?.product_type !== 'blind') return null
   const picked = win?.config?.fabric
   if (!picked?.component_id) return null
   return buildFabricSelection(
     components.find(c => c.id === picked.component_id),
     picked.colour_variant,
-    product,
-    categories.find(c => c.code === product.fabric_category))
+    product)
 }
 
 /**
@@ -478,9 +482,8 @@ export function fabricSelectionFor(win, product, components = [], categories = [
  * as this line did before, billed each of four blinds nested across a 3m roll
  * for the whole 3m — four times over.
  *
- * Four per-product figures, all set next to the fabric category and all kept
- * apart rather than summed, so each can be reasoned about — and argued with —
- * on its own:
+ * Four per-product figures, all kept apart rather than summed, so each can be
+ * reasoned about — and argued with — on its own:
  *   dropAllowanceMm   fabric the finished blind needs beyond its drop — hem,
  *                     pattern repeat, wrap onto the tube.
  *   dropWastageMm     fabric lost making the cut at all — trim, squaring up,
@@ -500,14 +503,18 @@ export function fabricSelectionFor(win, product, components = [], categories = [
 export function fabricLineFor(fabricSelection, windowLabel = null) {
   if (!fabricSelection?.component) return null
   const {
-    component, colour_variant, categoryPrice,
+    component, colour_variant,
     dropAllowanceMm, dropWastageMm, widthDeductionMm, widthAllowanceMm, rollWidthMm,
   } = fabricSelection
   const addedMm = (Number(dropAllowanceMm) || 0) + (Number(dropWastageMm) || 0)
   return {
     id:                 'fabric-slot',
     component_id:       component.id,
-    component:          { ...component, unit: 'metres', unit_cost: categoryPrice, discount: 0 },
+    // The fabric's own wholesale rate per linear metre, discount and all —
+    // the same figure every other line on the BOM is costed at. calcQty has
+    // already reduced the quantity to this cut's share of the roll's width,
+    // so the rate is applied to what the blind really takes off it.
+    component:          { ...component, unit: 'metres' },
     colour_variant:     colour_variant || null,
     cost_type:          'fabric_strip',
     formula_deduction:  -addedMm,
