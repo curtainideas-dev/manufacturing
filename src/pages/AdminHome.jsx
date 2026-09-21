@@ -4,9 +4,9 @@ const SECTIONS = [
   { key: 'options',           emoji: '🎛️', name: 'Options',
     desc: 'The questions asked when a window is created — one set per product type.' },
   { key: 'fabric_categories', emoji: '🎨', name: 'Fabric Categories',
-    desc: 'The A-F pricing tiers a blind is quoted at, and the price ceiling that sorts fabrics into each.' },
+    desc: 'The wholesaler’s tiers and their price lists — what a blind SELLS for. Load a price list here; tag each fabric with its tier in the component library.' },
   { key: 'component_kinds', emoji: '🔀', name: 'Component Kinds',
-    desc: 'What a part is — Tube, Winder, Base Rail. Groups the library, and lets a recipe offer one part in place of another.' },
+    desc: 'What a part is — Tube, Winder, Base Rail. Groups the library, lets a recipe offer one part in place of another, and decides what prints on the cut sheet and the label.' },
   { key: 'deleted_records', emoji: '🗑', name: 'Deleted Items',
     desc: 'Jobs and windows that were deleted, kept with their contents so they can be put back.' },
 ]
