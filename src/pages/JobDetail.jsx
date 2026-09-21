@@ -28,8 +28,8 @@ const CopyIcon = () => (
 
 export default function JobDetail({
   job, products, productComponentsMap, optionDefsFor,
-  allComponents = [], suppliers = [], fabricCategories = [], stockMap = {}, kinds = [],
-  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onReorderWindows, onConfirm, onComplete, onReopen, onBackToReceived, onAttachPO, poUploading, onDeductStock,
+  allComponents = [], suppliers = [], fabricCategories = [], stockMap = {}, stockBars = [], kinds = [],
+  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onReorderWindows, onConfirm, onComplete, onReopen, onBackToReceived, onAttachPO, poUploading, onDeductStock, onRecordOffcuts, pendingOffcutCount = 0,
 }) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(false)
@@ -127,6 +127,7 @@ export default function JobDetail({
     try {
       const res = await exportJobPack(job, windowsWithBOM, {
         products, optionDefsFor, suppliers, kinds, jobExtras: jobExtraLines,
+        stock: { stockBars, stockMap },
       })
       // Attached but unreachable is a different problem from never attached,
       // and the person who just downloaded a short pack needs to know which.
@@ -144,7 +145,7 @@ export default function JobDetail({
   const handleCutSheet = async () => {
     setCutting(true)
     try {
-      await exportCutSheetPDF(job, windowsWithBOM, optionDefsFor, suppliers, kinds, products)
+      await exportCutSheetPDF(job, windowsWithBOM, optionDefsFor, suppliers, kinds, products, { stockBars, stockMap })
     } finally {
       setCutting(false)
     }
@@ -347,6 +348,20 @@ export default function JobDetail({
               display: 'flex', alignItems: 'center', gap: 6,
             }}>
               📦 Deduct Stock
+            </button>
+          )}
+          {/* Cutting is done in bulk, so the leftovers come back after the
+              deduction, not with it. Stays up until someone answers it —
+              an offcut never entered is a bar the next plan can't use. */}
+          {pendingOffcutCount > 0 && (
+            <button onClick={onRecordOffcuts} style={{
+              padding: '6px 12px', fontSize: 13, fontWeight: 700,
+              background: '#fff', color: 'var(--accent-dark)',
+              border: '1px solid #fff',
+              borderRadius: 8, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+              ✂️ Record Offcuts ({pendingOffcutCount})
             </button>
           )}
           {/* Completed → locked, allow reopen */}

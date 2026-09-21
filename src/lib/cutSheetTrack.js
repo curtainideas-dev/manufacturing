@@ -32,14 +32,17 @@
  *                 have and which is a different spec besides.
  *
  * Behind the table come the BAR CHARTS — one per track profile and colour,
- * each stock bar drawn to scale with this job's cuts laid end to end and the
+ * each bar drawn to scale with this job's cuts laid end to end and the
  * remainder shaded, so the saw can be set up bar by bar instead of working out
- * the packing on the bench. Same first-fit packing the stock deduction uses
- * (stockEngine.packCuts), so the chart and what actually leaves the shelf
- * cannot disagree.
+ * the packing on the bench. It is the same CUT PLAN the stock deduction
+ * confirms (lib/cutPlan), so the sheet at the saw and what leaves the shelf
+ * cannot disagree — including which existing offcuts the plan pulls off the
+ * rack, which is the difference between an arrangement that reads well on
+ * paper and one that actually minimises what gets thrown away.
  */
 
-import { packCuts } from './stockEngine'
+import { stockKey, getStock } from './stockEngine'
+import { planBarCuts } from './cutPlan'
 import { resolveAnswers, roleSpecs } from './bomEngine'
 import {
   ACCENT_DARK, WARM_100, WARM_200, WARM_300, INK, WHITE,
@@ -299,7 +302,8 @@ export function trackSheetRow(win, optionDefs = [], kinds = [], countKinds = [])
  * Exported separately from the rendering so a layout can be checked without
  * generating a PDF.
  */
-export function trackCutGroups(windowsWithBOM = []) {
+export function trackCutGroups(windowsWithBOM = [], stock = {}) {
+  const { stockBars = [], stockMap = {} } = stock
   const groups = new Map()
 
   windowsWithBOM.forEach((win, i) => {
@@ -328,21 +332,43 @@ export function trackCutGroups(windowsWithBOM = []) {
 
   return [...groups.values()]
     .map(g => {
-      const bins = g.barLengthMm > 0 ? packCuts(g.cuts, g.barLengthMm) : []
-      const totalCutMm = g.cuts.reduce((s, c) => s + c.mm, 0)
-      const offcutMm   = bins.reduce((s, b) => s + Math.max(0, b.remaining), 0)
+      // Planned against the real rack when stock was handed in. Given no
+      // stock it plans against full bars alone, which is what this sheet did
+      // before offcuts were part of the arrangement — so a caller that has no
+      // stock to offer still gets a correct, if more wasteful, chart.
+      const suffix = g.colour_variant?.suffix || null
+      const plan = planBarCuts({
+        cuts:        g.cuts,
+        barLengthMm: g.barLengthMm,
+        offcuts:     stockBars.filter(b =>
+          b.component_id === g.component?.id &&
+          b.status === 'available' &&
+          (b.colour_variant?.suffix || null) === suffix),
+        fullBarsOnHand: Number(
+          getStock(stockMap, g.component, g.colour_variant)?.qty_on_hand
+          ?? stockMap[stockKey(g.component?.id, g.colour_variant)]?.qty_on_hand) || 0,
+      })
+
+      // Waste is measured against the FULL BARS opened, not against every
+      // piece touched: an offcut pulled off the rack was already waste, and
+      // counting it again would make the plan that reuses it look worse than
+      // the one that leaves it there.
+      const barMm = plan.fullBarsUsed * (g.barLengthMm || 0)
+      const barRemnantMm = plan.sources
+        .filter(s => s.kind === 'bar')
+        .reduce((s, src) => s + Math.max(0, src.remainderMm), 0)
+
       return {
         ...g,
-        bins,
+        plan,
         summary: {
-          cutCount:   g.cuts.length,
-          barCount:   bins.length,
-          totalCutMm,
-          offcutMm,
-          wastePct:   bins.length > 0 && g.barLengthMm > 0
-            ? (offcutMm / (bins.length * g.barLengthMm)) * 100
-            : 0,
-          oversized:  bins.some(b => b.oversized),
+          cutCount:    g.cuts.length,
+          barCount:    plan.fullBarsUsed,
+          offcutsUsed: plan.offcutsUsed,
+          totalCutMm:  plan.totalCutMm,
+          offcutMm:    barRemnantMm,
+          wastePct:    barMm > 0 ? (barRemnantMm / barMm) * 100 : 0,
+          oversized:   plan.oversized.length > 0,
         },
       }
     })
@@ -353,14 +379,15 @@ export function trackCutGroups(windowsWithBOM = []) {
  * One row per bar the job needs — what to pull off the rack, or put on an
  * order. The track answer to the blind sheet's fabric summary.
  */
-export function trackSummary(windowsWithBOM = [], suppliers = []) {
-  const groups = trackCutGroups(windowsWithBOM)
+export function trackSummary(windowsWithBOM = [], suppliers = [], stock = {}) {
+  const groups = trackCutGroups(windowsWithBOM, stock)
 
   const rows = groups.map(g => ({
     track: `${g.component?.name || DASH}${g.colour_variant?.name ? ` · ${g.colour_variant.name}` : ''}`,
     company: suppliers.find(s => s.id === g.component?.supplier_id)?.name || DASH,
     bars: g.barLengthMm > 0
       ? `${g.summary.barCount} × ${g.barLengthMm.toLocaleString()}mm`
+        + (g.summary.offcutsUsed ? ` + ${g.summary.offcutsUsed} offcut${g.summary.offcutsUsed !== 1 ? 's' : ''}` : '')
       : 'no bar length set',
     cut:    `${(g.summary.totalCutMm / 1000).toFixed(2)} m`,
     offcut: g.barLengthMm > 0
@@ -392,6 +419,177 @@ export const TRACK_SUMMARY_COLS = [
 const SPEC_H = 5.6
 
 /**
+ * The bar charts, drawn on their own pages.
+ *
+ * Extracted so the BLIND sheet can print them too. A blind has bar parts —
+ * its tube and its base rail — cut off exactly the same rack as a track, so
+ * the sheet that goes to the saw needs the same arrangement on it. Leaving
+ * the charts on the track sheet alone meant the person cutting tubes had the
+ * plan on screen and nothing on paper.
+ *
+ * Returns where it finished, so the caller can carry on down the page.
+ */
+export function drawBarCutCharts(doc, { groups = [], drawHeader, pageNum = 1, title = 'Cut Charts' }) {
+  const MX = 12
+  const MB = 196
+  const CHART_W  = 200                  // mm of paper one full bar maps to
+  const CHART_X  = MX + 4
+  const BAR_H    = 13
+  const LEGEND_X = CHART_X + CHART_W + 8
+
+  const setColor = rgb => doc.setTextColor(...rgb)
+  const setFill  = rgb => doc.setFillColor(...rgb)
+  const fit      = (text, maxW) => clip(doc, text, maxW)
+
+  let y = 0
+  const newPage = () => { doc.addPage(); pageNum++; y = drawHeader(title, pageNum) }
+
+
+  newPage()
+
+  y = footnote(doc,
+    'Each bar is drawn to scale along its length. This is the cutting plan the stock deduction confirms, so what you see '
+    + 'here is what will leave the rack — cut them in this order. A row marked OFFCUT is a piece already on the rack, not a new bar. '
+    + 'The shaded end of a row is what is left over; record it against the job once it is off the saw.',
+    CHART_X, y, CHART_W + 60) + 4
+
+  groups.forEach((g, gi) => {
+    const { barLengthMm, plan, summary } = g
+    const scaleX = barLengthMm > 0 ? CHART_W / barLengthMm : 0
+
+    // Group heading — keep it with at least one bar, never orphaned.
+    if (y + 16 + BAR_H > MB) newPage()
+    if (gi > 0) y += 4
+
+    const name = `${g.component?.name || DASH}${g.colour_variant?.name ? ` · ${g.colour_variant.name}` : ''}`
+    setFill(ACCENT_DARK)
+    doc.rect(CHART_X, y, CHART_W + 60, 8, 'F')
+    setColor(WHITE); doc.setFontSize(9); doc.setFont('helvetica', 'bold')
+    doc.text(fit(name, 110), CHART_X + 3, y + 5.5)
+    doc.setFontSize(7.5); doc.setFont('helvetica', 'normal')
+    doc.text(
+      barLengthMm > 0
+        ? [
+            `${barLengthMm.toLocaleString()}mm bars`,
+            `${summary.cutCount} cut${summary.cutCount !== 1 ? 's' : ''}`,
+            `${summary.barCount} bar${summary.barCount !== 1 ? 's' : ''}`
+              + (summary.offcutsUsed ? ` + ${summary.offcutsUsed} offcut${summary.offcutsUsed !== 1 ? 's' : ''}` : ''),
+            `${(summary.totalCutMm / 1000).toFixed(2)}m cut`,
+            `${summary.wastePct.toFixed(0)}% offcut`,
+          ].join('   ·   ')
+        : 'no bar length recorded — cannot be packed',
+      CHART_X + CHART_W + 57, y + 5.5, { align: 'right' })
+    y += 11
+
+    if (barLengthMm <= 0) {
+      // Nothing to draw, but the cuts still have to be readable — this is a
+      // data gap on the component, not a reason to hide the work.
+      setColor(WARM_300); doc.setFontSize(7.5); doc.setFont('helvetica', 'normal')
+      doc.text(
+        fit(`Cuts: ${g.cuts.map(c => `${c.label} ${c.mm.toLocaleString()}mm`).join('   ·   ')}`, CHART_W + 50),
+        CHART_X, y + 3)
+      y += 9
+      return
+    }
+
+    let barNo = 0
+    plan.sources.forEach((src) => {
+      if (y + BAR_H + 3 > MB) newPage()
+      const isOffcut = src.kind === 'offcut'
+      if (!isOffcut) barNo++
+
+      // Every row is drawn against the FULL BAR width, so a short offcut
+      // reads as short. Scaling each row to its own length would draw a
+      // 1,200mm offcut the same size as a 6,000mm bar and make a plan that
+      // reuses scrap look like one that opens bars.
+      setFill(WARM_100)
+      doc.rect(CHART_X, y, CHART_W, BAR_H, 'F')
+      // The part of the row that does not physically exist on an offcut.
+      if (isOffcut && src.capacityMm < barLengthMm) {
+        const ux = CHART_X + src.capacityMm * scaleX
+        setFill(WHITE)
+        doc.rect(ux, y, CHART_W - src.capacityMm * scaleX, BAR_H, 'F')
+      }
+
+      let offsetMm = 0
+      src.cuts.forEach(cut => {
+        const px = CHART_X + offsetMm * scaleX
+        const pw = cut.mm * scaleX
+
+        setFill(GREEN_BG)
+        doc.rect(px, y, pw, BAR_H, 'F')
+        doc.setDrawColor(...ACCENT_DARK); doc.setLineWidth(0.35)
+        doc.rect(px, y, pw, BAR_H, 'S')
+
+        setColor(ACCENT_DARK)
+        if (pw >= 24) {
+          doc.setFontSize(8); doc.setFont('helvetica', 'bold')
+          doc.text(fit(cut.label || DASH, pw - 3), px + 1.8, y + BAR_H / 2 - 0.4)
+          doc.setFontSize(6.8); doc.setFont('helvetica', 'normal')
+          doc.text(fit(`${cut.mm.toLocaleString()}mm`, pw - 3), px + 1.8, y + BAR_H / 2 + 3.6)
+        } else if (pw >= 5) {
+          // Too narrow to read across — stand the label up rather than clip
+          // it away to nothing.
+          doc.setFontSize(6.2); doc.setFont('helvetica', 'bold')
+          doc.text(fit(`${cut.label || DASH} ${cut.mm}`, BAR_H - 2),
+            px + pw / 2 + 2, y + BAR_H - 1, { angle: 90 })
+        }
+        offsetMm += cut.mm
+      })
+
+      // What's left on the end of the bar — the piece worth putting back on
+      // the rack rather than in the bin.
+      if (src.remainderMm > 0) {
+        const ox = CHART_X + offsetMm * scaleX
+        const ow = src.remainderMm * scaleX
+        setFill([248, 250, 245])
+        doc.rect(ox, y, ow, BAR_H, 'F')
+        doc.setDrawColor(...WARM_300); doc.setLineWidth(0.25)
+        doc.setLineDashPattern([1, 1], 0)
+        doc.rect(ox, y, ow, BAR_H, 'S')
+        doc.setLineDashPattern([], 0)
+        if (ow >= 22) {
+          setColor(WARM_300); doc.setFontSize(6.8); doc.setFont('helvetica', 'normal')
+          doc.text(fit(`left over ${Math.round(src.remainderMm).toLocaleString()}mm`, ow - 3),
+            ox + 1.8, y + BAR_H / 2 + 1.2)
+        }
+      }
+
+      setColor(INK); doc.setFontSize(7.5); doc.setFont('helvetica', 'bold')
+      doc.text(isOffcut ? `OFFCUT ${src.label}` : `Bar ${barNo}`, LEGEND_X, y + BAR_H / 2 - 0.6)
+      setColor(WARM_300); doc.setFontSize(7); doc.setFont('helvetica', 'normal')
+      doc.text(
+        `${isOffcut ? `${Math.round(src.capacityMm).toLocaleString()}mm · ` : ''}`
+        + `${src.cuts.length} cut${src.cuts.length !== 1 ? 's' : ''} · ${Math.round(src.remainderMm).toLocaleString()}mm left`,
+        LEGEND_X, y + BAR_H / 2 + 3.4)
+
+      y += BAR_H + 2.5
+    })
+
+    if (plan.oversized.length > 0) {
+      if (y + 8 > MB) newPage()
+      setFill(DANGER_BG)
+      doc.rect(CHART_X, y, CHART_W + 60, 7, 'F')
+      setColor(DANGER); doc.setFontSize(7.5); doc.setFont('helvetica', 'bold')
+      doc.text(fit(
+        `NOT IN THE PLAN — longer than a ${barLengthMm.toLocaleString()}mm bar: `
+        + plan.oversized.map(c => `${c.label || DASH} ${c.mm.toLocaleString()}mm`).join('   ·   '),
+        CHART_W + 54), CHART_X + 3, y + 4.8)
+      y += 9
+    }
+
+    y += 3
+  })
+
+  y = footnote(doc,
+    'Lengths are to scale along the bar. Cuts are shown in packing order, not the order they are listed above — '
+    + 'always cut to the figures, not the drawing, and allow for your own blade width between cuts.',
+    CHART_X, y + 2, CHART_W + 50) + 6
+
+  return { y, pageNum, CHART_X, CHART_W }
+}
+
+/**
  * Draw the track cut sheet into an existing landscape document.
  *
  * Takes the document rather than making one so the same sheet can be a
@@ -403,7 +601,7 @@ const SPEC_H = 5.6
  */
 export function drawTrackCutSheet(doc, {
   windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = [],
-  drawHeader, pageNum = 1, startOnNewPage = false,
+  drawHeader, pageNum = 1, startOnNewPage = false, stock = {},
 }) {
   const MX = 12, MXR = 285, CW = MXR - MX
   const MB = 196            // start a new page before this
@@ -556,130 +754,12 @@ export function drawTrackCutSheet(doc, {
    * the only axis a track has and it is exactly the axis that decides how many
    * bars come off the rack.
    * ---------------------------------------------------------------------- */
-  const groups = trackCutGroups(windowsWithBOM)
+  const groups = trackCutGroups(windowsWithBOM, stock)
 
   if (groups.length > 0) {
-    const CHART_W  = 200                  // mm of paper one full bar maps to
-    const CHART_X  = MX + 4
-    const BAR_H    = 13
-    const LEGEND_X = CHART_X + CHART_W + 8
-
-    newPage('Track Cut Charts')
-
-    y = footnote(doc,
-      'Each bar is drawn to scale along its length. Cuts are packed longest-first, the same way stock deduction packs them, '
-      + 'so what you see here is what will leave the rack. The shaded end of a bar is reusable offcut.',
-      CHART_X, y, CHART_W + 60) + 4
-
-    groups.forEach((g, gi) => {
-      const { barLengthMm, bins, summary } = g
-      const scaleX = barLengthMm > 0 ? CHART_W / barLengthMm : 0
-
-      // Group heading — keep it with at least one bar, never orphaned.
-      if (y + 16 + BAR_H > MB) newPage('Track Cut Charts')
-      if (gi > 0) y += 4
-
-      const name = `${g.component?.name || DASH}${g.colour_variant?.name ? ` · ${g.colour_variant.name}` : ''}`
-      setFill(ACCENT_DARK)
-      doc.rect(CHART_X, y, CHART_W + 60, 8, 'F')
-      setColor(WHITE); doc.setFontSize(9); doc.setFont('helvetica', 'bold')
-      doc.text(fit(name, 110), CHART_X + 3, y + 5.5)
-      doc.setFontSize(7.5); doc.setFont('helvetica', 'normal')
-      doc.text(
-        barLengthMm > 0
-          ? [
-              `${barLengthMm.toLocaleString()}mm bars`,
-              `${summary.cutCount} cut${summary.cutCount !== 1 ? 's' : ''}`,
-              `${summary.barCount} bar${summary.barCount !== 1 ? 's' : ''}`,
-              `${(summary.totalCutMm / 1000).toFixed(2)}m cut`,
-              `${summary.wastePct.toFixed(0)}% offcut`,
-            ].join('   ·   ')
-          : 'no bar length recorded — cannot be packed',
-        CHART_X + CHART_W + 57, y + 5.5, { align: 'right' })
-      y += 11
-
-      if (barLengthMm <= 0) {
-        // Nothing to draw, but the cuts still have to be readable — this is a
-        // data gap on the component, not a reason to hide the work.
-        setColor(WARM_300); doc.setFontSize(7.5); doc.setFont('helvetica', 'normal')
-        doc.text(
-          fit(`Cuts: ${g.cuts.map(c => `${c.label} ${c.mm.toLocaleString()}mm`).join('   ·   ')}`, CHART_W + 50),
-          CHART_X, y + 3)
-        y += 9
-        return
-      }
-
-      bins.forEach((bin, bi) => {
-        if (y + BAR_H + 3 > MB) newPage('Track Cut Charts')
-
-        // The full bar, as the ground everything sits on.
-        setFill(WARM_100)
-        doc.rect(CHART_X, y, CHART_W, BAR_H, 'F')
-
-        let offsetMm = 0
-        bin.cuts.forEach(cut => {
-          const px = CHART_X + offsetMm * scaleX
-          const pw = cut.mm * scaleX
-          const tooLong = bin.oversized
-
-          setFill(tooLong ? DANGER_BG : GREEN_BG)
-          doc.rect(px, y, pw, BAR_H, 'F')
-          doc.setDrawColor(...(tooLong ? DANGER : ACCENT_DARK)); doc.setLineWidth(0.35)
-          doc.rect(px, y, pw, BAR_H, 'S')
-
-          setColor(tooLong ? DANGER : ACCENT_DARK)
-          if (pw >= 24) {
-            doc.setFontSize(8); doc.setFont('helvetica', 'bold')
-            doc.text(fit(cut.label || DASH, pw - 3), px + 1.8, y + BAR_H / 2 - 0.4)
-            doc.setFontSize(6.8); doc.setFont('helvetica', 'normal')
-            doc.text(fit(`${cut.mm.toLocaleString()}mm`, pw - 3), px + 1.8, y + BAR_H / 2 + 3.6)
-          } else if (pw >= 5) {
-            // Too narrow to read across — stand the label up rather than clip
-            // it away to nothing.
-            doc.setFontSize(6.2); doc.setFont('helvetica', 'bold')
-            doc.text(fit(`${cut.label || DASH} ${cut.mm}`, BAR_H - 2),
-              px + pw / 2 + 2, y + BAR_H - 1, { angle: 90 })
-          }
-          offsetMm += cut.mm
-        })
-
-        // What's left on the end of the bar — the piece worth putting back on
-        // the rack rather than in the bin.
-        if (!bin.oversized && bin.remaining > 0) {
-          const ox = CHART_X + offsetMm * scaleX
-          const ow = bin.remaining * scaleX
-          setFill([248, 250, 245])
-          doc.rect(ox, y, ow, BAR_H, 'F')
-          doc.setDrawColor(...WARM_300); doc.setLineWidth(0.25)
-          doc.setLineDashPattern([1, 1], 0)
-          doc.rect(ox, y, ow, BAR_H, 'S')
-          doc.setLineDashPattern([], 0)
-          if (ow >= 22) {
-            setColor(WARM_300); doc.setFontSize(6.8); doc.setFont('helvetica', 'normal')
-            doc.text(fit(`offcut ${Math.round(bin.remaining).toLocaleString()}mm`, ow - 3),
-              ox + 1.8, y + BAR_H / 2 + 1.2)
-          }
-        }
-
-        setColor(INK); doc.setFontSize(7.5); doc.setFont('helvetica', 'bold')
-        doc.text(`Bar ${bi + 1}`, LEGEND_X, y + BAR_H / 2 - 0.6)
-        setColor(WARM_300); doc.setFontSize(7); doc.setFont('helvetica', 'normal')
-        doc.text(
-          bin.oversized
-            ? 'CUT LONGER THAN THE BAR'
-            : `${bin.cuts.length} cut${bin.cuts.length !== 1 ? 's' : ''} · ${Math.round(bin.remaining).toLocaleString()}mm left`,
-          LEGEND_X, y + BAR_H / 2 + 3.4)
-
-        y += BAR_H + 2.5
-      })
-
-      y += 3
-    })
-
-    y = footnote(doc,
-      'Lengths are to scale along the bar. Cuts are shown in packing order, not the order they are listed above — '
-      + 'always cut to the figures, not the drawing, and allow for your own blade width between cuts.',
-      CHART_X, y + 2, CHART_W + 50) + 6
+    const charts = drawBarCutCharts(doc, { groups, drawHeader, pageNum, title: 'Track Cut Charts' })
+    y = charts.y; pageNum = charts.pageNum
+    const CHART_X = charts.CHART_X, CHART_W = charts.CHART_W
 
     /* ------------------------------------------------------------ summary --
      * The charts say how to cut; this says what to pull off the rack or put on
@@ -692,7 +772,7 @@ export function drawTrackCutSheet(doc, {
     const SUM_W = TRACK_SUMMARY_COLS.reduce((s, c) => s + c.w, 0)
     const SUM_ROW_H = 8
 
-    const { rows: sumRows, barCount, totalCutM } = trackSummary(windowsWithBOM, suppliers)
+    const { rows: sumRows, barCount, totalCutM } = trackSummary(windowsWithBOM, suppliers, stock)
 
     const drawSumHeader = () => {
       setFill(ACCENT_DARK)

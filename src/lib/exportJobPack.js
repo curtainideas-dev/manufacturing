@@ -214,7 +214,7 @@ export function jobPackFilename(job) {
  */
 export async function exportJobPack(job, windowsWithBOM = [], {
   products = [], optionDefsFor = () => [], suppliers = [], kinds = [],
-  jobExtras = [], includePO = true,
+  jobExtras = [], includePO = true, stock = {},
 } = {}) {
   const jsPDF = await loadJsPDF()
   const doc   = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
@@ -229,7 +229,7 @@ export async function exportJobPack(job, windowsWithBOM = [], {
   const pageNum = drawBOMMatrix(doc, { windowsWithBOM, jobExtras, drawHeader, pageNum: 1 })
 
   drawCutSheet(doc, {
-    job, windowsWithBOM, optionDefsFor, suppliers, kinds, products,
+    job, windowsWithBOM, optionDefsFor, suppliers, kinds, products, stock,
     drawHeader, pageNum, startOnNewPage: true,
   })
 

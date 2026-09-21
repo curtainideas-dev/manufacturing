@@ -26,6 +26,7 @@ import StockEditModal        from './components/StockEditModal'
 import BarModal              from './components/BarModal'
 import ReceiveBarsModal      from './components/ReceiveBarsModal'
 import DeductStockModal      from './components/DeductStockModal'
+import RecordOffcutsModal    from './components/RecordOffcutsModal'
 import SupplierModal         from './components/SupplierModal'
 import AddWindowModal        from './components/AddWindowModal'
 import PurchaseOrderModal    from './components/PurchaseOrderModal'
@@ -115,6 +116,7 @@ export default function App({ route = 'manufacturing' }) {
 
   const [deductOpen, setDeductOpen]               = useState(false)
   const [deductSaving, setDeductSaving]           = useState(false)
+  const [recordOffcutsOpen, setRecordOffcutsOpen] = useState(false)
   const [jobMovements, setJobMovements]           = useState([])
 
   // ---- Purchase order state ----
@@ -1344,6 +1346,69 @@ export default function App({ route = 'manufacturing' }) {
     setDeductOpen(true)
   }
 
+  /* ------------------------------------------------------------------------
+   * Offcuts still owed
+   *
+   * A bar deduction takes the bars the cutting plan called for and records
+   * what it EXPECTS to be left over, but puts nothing on the shelf — the real
+   * lengths are only known once the cutting is done. So a job can sit in a
+   * state where stock has gone out and the leftovers have not come back, and
+   * the job page has to say so, or the offcuts quietly never get entered and
+   * the next job plans against a shelf that is emptier than it really is.
+   *
+   * Movements are therefore loaded whenever a job is open, not only when the
+   * deduct modal is, since the prompt has to appear without being asked for.
+   * ---------------------------------------------------------------------- */
+  useEffect(() => {
+    if (currentJob?.id) loadJobMovements(currentJob.id)
+    else setJobMovements([])
+  }, [currentJob?.id, loadJobMovements])
+
+  const pendingOffcuts = useMemo(() => (jobMovements || [])
+    .filter(m => Array.isArray(m.planned_offcuts) && m.planned_offcuts.length > 0
+      && !m.offcuts_recorded_at)
+    .map(m => ({
+      movement_id:    m.id,
+      component_id:   m.component_id,
+      component:      components.find(c => c.id === m.component_id) || null,
+      colour_variant: m.colour_variant || null,
+      offcuts:        m.planned_offcuts,
+    })), [jobMovements, components])
+
+  /**
+   * Put the recorded leftovers on the shelf and stop the job asking.
+   *
+   * The pieces are stamped with the job, the same as any offcut a job created,
+   * so deleting the job can still take back what it made (planStockRestore
+   * tells them from the pieces it consumed by status). The movements are
+   * stamped whether or not anything was kept — "it all went in the bin" is an
+   * answer, and a job that has been answered should stop prompting.
+   */
+  const handleRecordOffcuts = async ({ pieces = [], movementIds = [] }) => {
+    setDeductSaving(true)
+    if (pieces.length > 0) {
+      await supabase.from('stock_bars').insert(pieces.map(p => ({
+        component_id:   p.component_id,
+        colour_variant: p.colour_variant || null,
+        label:          p.label,
+        length_mm:      p.length_mm,
+        status:         'available',
+        job_id:         currentJob.id,
+      })))
+    }
+    if (movementIds.length > 0) {
+      await supabase.from('stock_movements')
+        .update({ offcuts_recorded_at: new Date().toISOString() })
+        .in('id', movementIds)
+    }
+    showToast(pieces.length > 0
+      ? `${pieces.length} offcut${pieces.length !== 1 ? 's' : ''} on the shelf ✓`
+      : 'Offcuts recorded — nothing kept', 'success')
+    setRecordOffcutsOpen(false)
+    await Promise.all([loadAll(), loadJobMovements(currentJob.id)])
+    setDeductSaving(false)
+  }
+
   // Deduct stock line by line after job confirmation
   const handleDeductStock = async (deductions) => {
     setDeductSaving(true)
@@ -1367,6 +1432,11 @@ export default function App({ route = 'manufacturing' }) {
         movement_type:  'deduct',
         qty:            -d.qty,
         qty_on_hand_delta: 0,
+        // What the cutting plan expects to survive the saw. Held rather than
+        // written to stock, because the real lengths are only known once the
+        // cutting is done — see supabase_cut_plan_offcuts.sql and the Record
+        // Offcuts step. Absent on pack and fabric lines, which have no plan.
+        planned_offcuts: d.planned_offcuts || null,
       }
       movements.push(movement)
 
@@ -1688,6 +1758,7 @@ export default function App({ route = 'manufacturing' }) {
           kinds={componentKinds}
           fabricCategories={fabricCategories}
           stockMap={stockMap}
+          stockBars={stockBars}
           onBack={() => setCurrentJob(null)}
           onUpdate={handleJobUpdate}
           onDelete={handleJobDeleteRequest}
@@ -1702,6 +1773,8 @@ export default function App({ route = 'manufacturing' }) {
           onAttachPO={handleAttachPO}
           poUploading={poUploading}
           onDeductStock={handleOpenDeductModal}
+          onRecordOffcuts={() => setRecordOffcutsOpen(true)}
+          pendingOffcutCount={pendingOffcuts.length}
         />
       )
     }
@@ -2040,6 +2113,17 @@ export default function App({ route = 'manufacturing' }) {
           stockBars={stockBars}
           onClose={() => setDeductOpen(false)}
           onDeduct={handleDeductStock}
+          saving={deductSaving}
+        />
+      )}
+
+      {currentJob && (
+        <RecordOffcutsModal
+          open={recordOffcutsOpen}
+          job={currentJob}
+          pending={pendingOffcuts}
+          onClose={() => setRecordOffcutsOpen(false)}
+          onSave={handleRecordOffcuts}
           saving={deductSaving}
         />
       )}
