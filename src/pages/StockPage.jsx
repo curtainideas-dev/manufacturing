@@ -17,7 +17,7 @@ const fmtMoney = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits:
 
 export default function StockPage({
   components, stockMap, stockBars, kinds = [],
-  onEditStock, onReceiveBars, onAddOffcut, onEditOffcut,
+  onEditStock, onReceiveBars, onStocktake, onAddOffcut, onEditOffcut,
 }) {
   const [tab, setTab]       = useState('components')
   const [search, setSearch] = useState('')
@@ -256,7 +256,13 @@ export default function StockPage({
                 {getRows(c).map((row, gi) => {
                   const stock    = getStock(stockMap, c, row.colour_variant)
                   const fullBars = Number(stock?.qty_on_hand) || 0
-                  const barLenMm = Number(c.bar_length_mm) || 6000
+                  // NOT defaulted to 6000. Bar lengths differ per component —
+                  // 5,000 / 5,400 / 6,000 all in use here — so inventing one
+                  // prints a length nobody buys as though it were a fact, and
+                  // the metres worked out from it are fiction. Unknown is a
+                  // thing this page can say.
+                  const barLenMm = Number(c.bar_length_mm) || 0
+                  const knownLen = barLenMm > 0
                   const minimum  = Number(stock?.qty_minimum) || 0
 
                   // Offcuts for this component + colour
@@ -266,9 +272,9 @@ export default function StockPage({
                     (b.colour_variant?.suffix || null) === (row.colour_variant?.suffix || null)
                   ).sort((a, b) => b.length_mm - a.length_mm)
 
-                  const totalFullLengthMm  = fullBars * barLenMm
+                  const totalFullLengthMm   = fullBars * barLenMm
                   const totalOffcutLengthMm = offcuts.reduce((s, b) => s + b.length_mm, 0)
-                  const totalAvailableMm    = totalFullLengthMm + totalOffcutLengthMm
+                  const totalAvailableMm     = totalFullLengthMm + totalOffcutLengthMm
 
                   const colourLabel = row.colour_variant ? ` · ${row.colour_variant.name}` : ''
                   const pn = c.supplier_pn
@@ -290,10 +296,15 @@ export default function StockPage({
                           {pn && <div style={{ fontSize: 11, opacity: 0.65, marginTop: 2 }}>{pn}</div>}
                         </div>
                         <div style={{ textAlign: 'right' }}>
+                          {/* With no bar length the full bars contribute an
+                              unknown amount, so the total is only honest for
+                              the offcuts — say which it is. */}
                           <div style={{ fontSize: 13, fontWeight: 700 }}>
-                            {fmt(totalAvailableMm)}mm
+                            {knownLen || fullBars === 0 ? `${fmt(totalAvailableMm)}mm` : '—'}
                           </div>
-                          <div style={{ fontSize: 10, opacity: 0.65 }}>total available</div>
+                          <div style={{ fontSize: 10, opacity: 0.65 }}>
+                            {knownLen || fullBars === 0 ? 'total available' : 'needs a bar length'}
+                          </div>
                         </div>
                       </div>
 
@@ -305,7 +316,9 @@ export default function StockPage({
                       }}>
                         <div>
                           <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--warm-300)', marginBottom: 4 }}>
-                            Full Bars ({barLenMm.toLocaleString()}mm each)
+                            Full Bars {knownLen
+                              ? `(${barLenMm.toLocaleString()}mm each)`
+                              : '· no bar length set'}
                           </div>
                           <div style={{ fontSize: 11, color: 'var(--warm-300)' }}>
                             Min: {minimum} bars
@@ -323,10 +336,19 @@ export default function StockPage({
                             </div>
                             <div style={{ fontSize: 11, color: 'var(--warm-300)' }}>bars</div>
                           </div>
-                          <button className="btn btn-secondary btn-sm"
-                            onClick={() => onReceiveBars(c, row.colour_variant, stock)}>
-                            + Receive
-                          </button>
+                          {/* Receiving adds; a stocktake SETS. Bars only ever
+                              had the first, so a count that came back short
+                              had no way into the system. */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                            <button className="btn btn-secondary btn-sm"
+                              onClick={() => onReceiveBars(c, row.colour_variant, stock)}>
+                              + Receive
+                            </button>
+                            <button className="btn btn-secondary btn-sm"
+                              onClick={() => onStocktake(c, row.colour_variant, stock)}>
+                              Count
+                            </button>
+                          </div>
                         </div>
                       </div>
 

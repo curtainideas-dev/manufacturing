@@ -27,6 +27,7 @@ import BarModal              from './components/BarModal'
 import ReceiveBarsModal      from './components/ReceiveBarsModal'
 import DeductStockModal      from './components/DeductStockModal'
 import RecordOffcutsModal    from './components/RecordOffcutsModal'
+import StocktakeModal        from './components/StocktakeModal'
 import SupplierModal         from './components/SupplierModal'
 import AddWindowModal        from './components/AddWindowModal'
 import PurchaseOrderModal    from './components/PurchaseOrderModal'
@@ -110,6 +111,10 @@ export default function App({ route = 'manufacturing' }) {
   const [barModalColour, setBarModalColour]       = useState(null)
   const [editingBar, setEditingBar]               = useState(null)
 
+  const [stocktakeOpen, setStocktakeOpen]         = useState(false)
+  const [stocktakeComp, setStocktakeComp]         = useState(null)
+  const [stocktakeColour, setStocktakeColour]     = useState(null)
+  const [stocktakeStock, setStocktakeStock]       = useState(null)
   const [receiveBarsOpen, setReceiveBarsOpen]     = useState(false)
   const [receiveBarsComp, setReceiveBarsComp]     = useState(null)
   const [receiveBarsColour, setReceiveBarsColour] = useState(null)
@@ -1300,6 +1305,65 @@ export default function App({ route = 'manufacturing' }) {
     setStockSaving(false)
   }
 
+  /* ---------------------------------------------------------- stocktake --
+   * Bars could only ever go up. Receiving added to the count and nothing took
+   * away from it, so the one correction a stocktake exists to make had no way
+   * in — and a bar count that is too high is worse than one that is too low,
+   * because the cut planner will confidently plan against bars that are not
+   * on the rack.
+   *
+   * The count is set, not nudged, and the difference is written to
+   * stock_movements as an 'adjust' so the change can be accounted for later.
+   * planStockRestore only ever reads 'deduct' rows, so an adjustment cannot be
+   * picked up and "returned" by deleting a job.
+   * --------------------------------------------------------------------- */
+  const handleStocktake = (component, colourVariant, stock) => {
+    setStocktakeComp(component)
+    setStocktakeColour(colourVariant)
+    setStocktakeStock(stock)
+    setStocktakeOpen(true)
+  }
+
+  const handleSaveStocktake = async ({ counted, qty_minimum }) => {
+    setStockSaving(true)
+    const before = Number(stocktakeStock?.qty_on_hand) || 0
+    const after  = Number(counted) || 0
+    const delta  = after - before
+
+    if (stocktakeStock?.id) {
+      await supabase.from('stock')
+        .update({ qty_on_hand: after, qty_minimum })
+        .eq('id', stocktakeStock.id)
+    } else {
+      await supabase.from('stock').insert({
+        component_id:   stocktakeComp.id,
+        colour_variant: stocktakeColour || null,
+        qty_on_hand:    after,
+        qty_minimum,
+      })
+    }
+
+    // Only when something actually moved. A stocktake that confirms the count
+    // is a real and useful outcome, but it is not a stock movement.
+    if (delta !== 0) {
+      await supabase.from('stock_movements').insert({
+        component_id:      stocktakeComp.id,
+        colour_variant:    stocktakeColour || null,
+        movement_type:     'adjust',
+        qty:               delta,
+        qty_on_hand_delta: delta,
+        notes:             `Stocktake: counted ${after} bar${after !== 1 ? 's' : ''} (was ${before})`,
+      })
+    }
+
+    showToast(delta === 0
+      ? 'Count confirmed — no change'
+      : `Stock set to ${after} bar${after !== 1 ? 's' : ''} (${delta > 0 ? '+' : ''}${delta}) ✓`, 'success')
+    setStocktakeOpen(false)
+    await loadAll()
+    setStockSaving(false)
+  }
+
   const handleReceiveBars = (component, colourVariant, stock) => {
     setReceiveBarsComp(component)
     setReceiveBarsColour(colourVariant)
@@ -1974,6 +2038,7 @@ export default function App({ route = 'manufacturing' }) {
           kinds={componentKinds}
           onEditStock={handleOpenStockEdit}
           onReceiveBars={handleReceiveBars}
+          onStocktake={handleStocktake}
           onAddOffcut={handleAddBar}
           onEditOffcut={handleEditBar}
         />
@@ -2138,6 +2203,20 @@ export default function App({ route = 'manufacturing' }) {
         stock={stockEditRow}
         onClose={() => setStockEditOpen(false)}
         onSave={handleSaveStock}
+        saving={stockSaving}
+      />
+
+      <StocktakeModal
+        open={stocktakeOpen}
+        component={stocktakeComp}
+        colourVariant={stocktakeColour}
+        stock={stocktakeStock}
+        offcuts={stockBars.filter(b =>
+          b.component_id === stocktakeComp?.id &&
+          b.status === 'available' &&
+          (b.colour_variant?.suffix || null) === (stocktakeColour?.suffix || null))}
+        onClose={() => setStocktakeOpen(false)}
+        onSave={handleSaveStocktake}
         saving={stockSaving}
       />
 
