@@ -820,16 +820,23 @@ export function jobRoleSlots(resolvedLines = [], subMap = null, allComponents = 
 /**
  * The parts worth printing, as flat spec text — "Base Rail: Q-Bar · White".
  *
- * Driven by the KIND's on_cut_sheet flag rather than by what the job was asked
- * about: those are different questions. A chain length is decided by the drop
- * so nobody is asked, but the bench still has to know which one to take off
- * the rack.
+ * Driven by a tick on the KIND rather than by what the job was asked about:
+ * those are different questions. A chain length is decided by the drop so
+ * nobody is asked, but the bench still has to know which one to take off the
+ * rack.
+ *
+ * WHICH tick is the caller's business, because the audiences differ. The cut
+ * sheet prints what the bench needs while the blind is being made; the
+ * packaging label prints what whoever opens the box checks against the order.
+ * A chain length belongs to the first and not the second; a base bar colour
+ * belongs to both. One flag serving both would have made those a single
+ * decision, and they are not — see supabase_kind_on_label.sql.
  *
  * Reads the BOM AFTER substitution, so what it prints is what the line was
  * actually costed and stocked against — including a swap made on the job.
  */
-export function roleSpecs(bomLines = [], kinds = []) {
-  const printed = new Set(kinds.filter(k => k?.on_cut_sheet).map(k => k.name))
+export function roleSpecs(bomLines = [], kinds = [], flag = 'on_cut_sheet') {
+  const printed = new Set(kinds.filter(k => k?.[flag]).map(k => k.name))
   if (printed.size === 0) return []
 
   const seen = new Set()
@@ -847,6 +854,10 @@ export function roleSpecs(bomLines = [], kinds = []) {
     return out
   }, [])
 }
+
+/** The same, for the packaging label's own tick. */
+export const labelSpecs = (bomLines = [], kinds = []) =>
+  roleSpecs(bomLines, kinds, 'on_label')
 
 /**
  * Resolve then cost, in one call. Every BOM in the app goes through here so

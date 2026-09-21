@@ -3,10 +3,25 @@
  *
  * Thermal-label PDFs for a job:
  *   - exportPackagingLabels: 62 x 40 mm, one per window, goes on the packaging.
- *     Logo, item i/n, customer, job #, window, product, W×H, DOM/DOI.
+ *     A TRACK gets logo, item i/n, customer, job #, window, product, W×H and
+ *     the two dates.
+ *
+ *     A BLIND gets a different label, because a different set of facts is
+ *     what gets checked against the order when the box is opened — and the
+ *     ones that are wrong are remakes, not annoyances. It carries the finished
+ *     size, the fabric and its colour, the base bar colour, the control side
+ *     and whether it is an over or under roll. The product name and the two
+ *     dates come off to make room: on a 62 x 40mm label something has to, and
+ *     of everything there those are what nobody at the other end is checking.
+ *
+ *     Which parts print as spec is the on_label tick on the KIND (see
+ *     supabase_kind_on_label.sql), not a hard-coded search for "base rail" —
+ *     the same shape as the cut sheet's own tick, and for the same reason.
  *   - exportTrackLabels: 62 x 15 mm strip, one per window, on the track/tube.
  *     Job # and window as the main lines; item i/n + year of manufacture
- *     in fine print.
+ *     in fine print. TRACKS ONLY — a blind does not get one. Its tube label
+ *     would go on the tube itself, and a sticker under the rolled fabric is
+ *     enough to cone the blind.
  *   - exportPartsLabels: 62 x 40 mm, for a separately-packaged parts bag. Logo,
  *     customer + job #, then a selected list of parts and quantities. Splits
  *     across multiple stickers when the list is long.
@@ -26,6 +41,8 @@
  */
 
 import { printPDF } from './printPDF'
+import { labelSpecs, jobProductType } from './bomEngine'
+import { assemblySpec } from './exportCutSheet'
 
 // ---- Sizes (mm) ----
 const PKG_W = 62, PKG_H = 40   // packaging label
@@ -143,8 +160,24 @@ function saveName(prefix, job) {
   return `${prefix}_${customer}${jobNo}.pdf`
 }
 
+// The fabric a blind window was made in, off its own BOM line, so it reads
+// exactly what the cut sheet and the stock deduction read.
+function fabricOf(win) {
+  const line = (win.bom || []).find(l => l.product_component_id === 'fabric-slot')
+  if (!line?.component) return null
+  const name = line.component.fabric_code
+    ? `${line.component.fabric_code} ${line.component.name}`
+    : line.component.name
+  return line.colour_variant?.name ? `${name} · ${line.colour_variant.name}` : name
+}
+
 // ===== Packaging label — 62 x 40 mm =====
-export async function exportPackagingLabels(job, windowsWithBOM, products) {
+//
+// optionDefsFor and kinds are only needed for blinds, and both default, so a
+// caller that only ever prints track labels is unaffected.
+export async function exportPackagingLabels(job, windowsWithBOM, products, {
+  optionDefsFor = () => [], kinds = [],
+} = {}) {
   const jsPDF = await loadJsPDF()
   const logo  = LOGO_DATA_URL ? { url: LOGO_DATA_URL, aspect: null } : await loadMonoLogo()
 
@@ -154,55 +187,87 @@ export async function exportPackagingLabels(job, windowsWithBOM, products) {
   const textW = PW - M * 2
 
   const windows = windowsWithBOM || []
+  const isBlindJob = jobProductType(job, windows, products) === 'blind'
+
   for (let i = 0; i < windows.length; i++) {
     if (i > 0) doc.addPage([PKG_W, PKG_H], 'landscape')
     const win     = windows[i]
     const product = products.find(p => p.id === win.product_id)
+    const headerBottom = drawLogoHeader(doc, logo, PW, `${i + 1}/${windows.length}`)
 
-    // Header: logo/wordmark + item counter (kept inside the printable safe zone)
-    const counter = `${i + 1}/${windows.length}`
-    let headerBottom
-    if (logo && logo.aspect) {
-      const fmt   = logo.url.includes('image/jpeg') ? 'JPEG' : 'PNG'
-      const logoH = Math.min(LOGO_MAX_H, LOGO_MAX_W / logo.aspect) // fit within the box
-      const logoW = logoH * logo.aspect
-      doc.addImage(logo.url, fmt, M, SAFE, logoW, logoH)
-      headerBottom = SAFE + Math.max(logoH, 5.5)
-    } else if (logo) {
-      const fmt = logo.url.includes('image/jpeg') ? 'JPEG' : 'PNG'
-      doc.addImage(logo.url, fmt, M, SAFE, 0, LOGO_MAX_H)
-      headerBottom = SAFE + LOGO_MAX_H
+    // A blind fits six lines between the rule and the QL's unprintable
+    // bottom margin, and only just: the last baseline lands at ~35.3mm on a
+    // 40mm label. The leading below is measured to that, so a line added here
+    // does not quietly print off the bottom edge.
+    let y = headerBottom + (isBlindJob ? 3.8 : 4)
+
+    if (isBlindJob) {
+      /* ---------------------------------------------------------- a blind --
+       * Ordered top to bottom by what gets checked first when the box is
+       * opened: whose it is, which window, then the size, then the three
+       * specs that decide whether the blind is right or is a remake.
+       * ------------------------------------------------------------------ */
+      const jobNo = job.job_number ? `#${job.job_number}` : 'No job #'
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5)
+      const jobW = doc.getTextWidth(jobNo)
+      doc.text(fitText(doc, job.customer_name || 'Untitled', textW - jobW - 3), M, y)
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8)
+      doc.text(jobNo, PW - M, y, { align: 'right' })
+      y += 4.3
+
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10)
+      doc.text(fitText(doc, win.label || `Window ${i + 1}`, textW), M, y)
+      y += 4.9
+
+      // The size, and the biggest thing on the label. Finished, as ordered —
+      // never the cut size, which is a different number and belongs at the
+      // saw, not on a box going to a customer.
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(13)
+      doc.text(fitText(doc, `${win.width_mm} × ${win.drop_mm}`, textW - 16), M, y)
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7)
+      doc.text('W × H mm', PW - M, y, { align: 'right' })
+      y += 4.3
+
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5)
+      doc.text(fitText(doc, fabricOf(win) || 'Fabric —', textW), M, y)
+      y += 3.2
+
+      // Whatever kinds are ticked for the label — the base bar and its colour
+      // on the standard setup.
+      const specs = labelSpecs(win.bom || [], kinds)
+      if (specs.length > 0) {
+        doc.text(fitText(doc, specs.map(sp => `${sp.role}: ${sp.value}`).join('   '), textW), M, y)
+      }
+      y += 3.3
+
+      // The two that are a remake if they are the wrong way round, so they
+      // print bold and last, where the eye lands.
+      const { roll, control } = assemblySpec(win, optionDefsFor(win.product_id))
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9)
+      doc.text(fitText(doc, [
+        control ? `Control ${control}` : 'Control —',
+        roll || 'Roll —',
+      ].join('   ·   '), textW), M, y)
     } else {
-      doc.setTextColor(0, 0, 0)
+      /* ---------------------------------------------------------- a track -- */
       doc.setFont('helvetica', 'bold'); doc.setFontSize(11)
-      doc.text('Curtain Ideas', M, SAFE + 4)
-      headerBottom = SAFE + 6
+      doc.text(fitText(doc, job.customer_name || 'Untitled', textW), M, y); y += 4
+
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8)
+      doc.text(fitText(doc, job.job_number ? `Job #${job.job_number}` : 'No job #', textW), M, y); y += 4.5
+
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10)
+      doc.text(fitText(doc, win.label || `Window ${i + 1}`, textW), M, y); y += 3.5
+
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8)
+      doc.text(fitText(doc, product?.name || '—', textW), M, y); y += 4
+
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(10)
+      doc.text(fitText(doc, `${win.width_mm} × ${win.drop_mm} mm  (W × H)`, textW), M, y); y += 4
+
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5)
+      doc.text(fitText(doc, `DOM ${fmtDate(job.date_manufacture)}    DOI ${fmtDate(job.date_invoice)}`, textW), M, y)
     }
-    doc.setTextColor(0, 0, 0)
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(11)
-    doc.text(counter, PW - M, SAFE + 3.5, { align: 'right' })
-
-    doc.setDrawColor(0, 0, 0); doc.setLineWidth(0.2)
-    doc.line(M, headerBottom, PW - M, headerBottom)
-
-    let y = headerBottom + 4
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(11)
-    doc.text(fitText(doc, job.customer_name || 'Untitled', textW), M, y); y += 4
-
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8)
-    doc.text(fitText(doc, job.job_number ? `Job #${job.job_number}` : 'No job #', textW), M, y); y += 4.5
-
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(10)
-    doc.text(fitText(doc, win.label || `Window ${i + 1}`, textW), M, y); y += 3.5
-
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8)
-    doc.text(fitText(doc, product?.name || '—', textW), M, y); y += 4
-
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(10)
-    doc.text(fitText(doc, `${win.width_mm} × ${win.drop_mm} mm  (W × H)`, textW), M, y); y += 4
-
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5)
-    doc.text(fitText(doc, `DOM ${fmtDate(job.date_manufacture)}    DOI ${fmtDate(job.date_invoice)}`, textW), M, y)
   }
 
   printPDF(doc, saveName('PackagingLabels', job))

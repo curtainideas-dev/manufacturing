@@ -109,6 +109,22 @@ function optionAnswer(win, optionDefs, code, pattern, exclude = null) {
 }
 
 /**
+ * How a blind is assembled: which way it rolls, and which end the control is.
+ *
+ * Exported because the packaging LABEL needs the same two answers, found the
+ * same way. Both are per-window options rather than anything derivable from
+ * the recipe, and getting either the wrong way round is a remake — so having
+ * the label look them up its own way, with its own idea of what the options
+ * are called, would be two chances to be wrong instead of one.
+ */
+export function assemblySpec(win, optionDefs = []) {
+  return {
+    roll:    optionAnswer(win, optionDefs, ROLL_CODE, ROLL_PATTERN),
+    control: optionAnswer(win, optionDefs, CONTROL_CODE, CONTROL_PATTERN, CONTROL_EXCLUDE),
+  }
+}
+
+/**
  * The cut-sheet row for one window. Exported separately from the rendering so
  * the numbers can be checked without generating a PDF.
  *

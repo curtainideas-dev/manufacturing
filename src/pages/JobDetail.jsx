@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef } from 'react'
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon, GripIcon } from '../components/Icons'
-import { buildWindowBOM, calcJobSummary, applyFabricNesting, missingAnswers, fabricSelectionFor, substitutionsFor, buildJobExtraLines, resolveAnswers, fmt, fmtQty } from '../lib/bomEngine'
+import { buildWindowBOM, calcJobSummary, applyFabricNesting, missingAnswers, fabricSelectionFor, substitutionsFor, buildJobExtraLines, resolveAnswers, jobProductType, fmt, fmtQty } from '../lib/bomEngine'
 import { describeCombo } from '../lib/pricingCombos'
 import { windowSell, grossProfit, jobGrossProfit } from '../lib/sellEngine'
 import { exportJobPack } from '../lib/exportJobPack'
@@ -210,6 +210,9 @@ export default function JobDetail({
     () => [...new Set(jobSummary.map(r => r.component?.id).filter(Boolean))],
     [jobSummary])
 
+  // One product type per job, so this is asked once rather than per window.
+  const isBlindJob = jobProductType(job, windowsWithBOM, products) === 'blind'
+
   // Only offer the copy when the job actually has fabric to order.
   const hasFabric = useMemo(
     () => windowsWithBOM.some(w => (w.bom || []).some(l => l.fabric_cut)),
@@ -225,7 +228,7 @@ export default function JobDetail({
   const handlePackagingLabels = async () => {
     setLabeling('pack')
     try {
-      await exportPackagingLabels(job, windowsWithBOM, products)
+      await exportPackagingLabels(job, windowsWithBOM, products, { optionDefsFor, kinds })
     } finally {
       setLabeling(null)
     }
@@ -635,13 +638,22 @@ export default function JobDetail({
                   <div className="section-title" style={{ padding: '0 2px 8px' }}>Print labels</div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button className="btn btn-secondary" style={{ flex: '1 1 30%' }}
-                      onClick={handlePackagingLabels} disabled={!!labeling} title="Packing label (62×40mm), one per track">
+                      onClick={handlePackagingLabels} disabled={!!labeling}
+                      title={isBlindJob
+                        ? 'Packing label (62×40mm) — size, fabric, base bar, control side and roll direction'
+                        : 'Packing label (62×40mm), one per track'}>
                       🏷️ {labeling === 'pack' ? '…' : 'Packing'}
                     </button>
-                    <button className="btn btn-secondary" style={{ flex: '1 1 30%' }}
-                      onClick={handleTrackLabels} disabled={!!labeling} title="Product label (62×15mm), one per track">
-                      🏷️ {labeling === 'track' ? '…' : 'Product'}
-                    </button>
+                    {/* Tracks only. The blind version of this sticker would
+                        go on the tube, under the rolled fabric, and that is
+                        enough to cone the blind — so it isn't offered rather
+                        than being offered and regretted. */}
+                    {!isBlindJob && (
+                      <button className="btn btn-secondary" style={{ flex: '1 1 30%' }}
+                        onClick={handleTrackLabels} disabled={!!labeling} title="Product label (62×15mm), one per track">
+                        🏷️ {labeling === 'track' ? '…' : 'Product'}
+                      </button>
+                    )}
                     <button className="btn btn-secondary" style={{ flex: '1 1 30%' }}
                       onClick={() => setPartsOpen(true)} disabled={!!labeling} title="Parts-list label (62×40mm) — pick parts + quantities">
                       🏷️ {labeling === 'parts' ? '…' : 'Parts'}
