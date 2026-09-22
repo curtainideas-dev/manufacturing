@@ -11,6 +11,41 @@ const fmtQty = n => {
   return num % 1 === 0 ? String(num) : num.toFixed(2)
 }
 
+import { addToPOState } from '../lib/poEngine'
+
+/**
+ * The reorder button for one stock line.
+ *
+ * It says why it can't be used rather than going quietly dead: a part with no
+ * supplier has nothing to raise an order against, and one already on the open
+ * draft is changed on the order itself, where the rest of that order is
+ * visible, not from a button elsewhere that can only ever add more.
+ */
+const AddToPOButton = ({ component, colourVariant, purchaseOrders, poLinesMap, onAddToPO }) => {
+  const state = addToPOState({ component, colourVariant, purchaseOrders, poLinesMap })
+  const label = state.ok ? '+ PO' : state.reason === 'on_po' ? 'On PO' : 'No supplier'
+  const title = state.ok
+    ? (state.willCreate ? 'Add to a new draft order for this supplier' : 'Add to this supplier\u2019s open draft order')
+    : state.reason === 'on_po'
+      ? 'Already on the open draft order \u2014 change the quantity there'
+      : 'This component has no supplier, so it cannot go on an order'
+
+  return (
+    <button
+      className="btn btn-secondary btn-sm"
+      title={title}
+      disabled={!state.ok}
+      onClick={e => { e.stopPropagation(); onAddToPO(component, colourVariant) }}
+      style={{
+        flexShrink: 0, whiteSpace: 'nowrap',
+        opacity: state.ok ? 1 : 0.45,
+        cursor: state.ok ? 'pointer' : 'not-allowed',
+      }}>
+      {label}
+    </button>
+  )
+}
+
 const fmt = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
 
 const fmtMoney = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -18,6 +53,7 @@ const fmtMoney = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits:
 export default function StockPage({
   components, stockMap, stockBars, kinds = [],
   onEditStock, onReceiveBars, onStocktake, onAddOffcut, onEditOffcut,
+  purchaseOrders = [], poLinesMap = {}, onAddToPO,
 }) {
   const [tab, setTab]       = useState('components')
   const [search, setSearch] = useState('')
@@ -230,6 +266,12 @@ export default function StockPage({
                           </div>
                           <div style={{ fontSize: 11, color: 'var(--warm-300)' }}>{c.unit}</div>
                         </div>
+                        <AddToPOButton
+                          component={c}
+                          colourVariant={row.colour_variant}
+                          purchaseOrders={purchaseOrders}
+                          poLinesMap={poLinesMap}
+                          onAddToPO={onAddToPO} />
                         <ChevronRightIcon size={16} color="var(--warm-200)" style={{ flexShrink: 0 }} />
                       </div>
                     )
@@ -348,6 +390,12 @@ export default function StockPage({
                               onClick={() => onStocktake(c, row.colour_variant, stock)}>
                               Count
                             </button>
+                            <AddToPOButton
+                              component={c}
+                              colourVariant={row.colour_variant}
+                              purchaseOrders={purchaseOrders}
+                              poLinesMap={poLinesMap}
+                              onAddToPO={onAddToPO} />
                           </div>
                         </div>
                       </div>

@@ -28,6 +28,7 @@ import ReceiveBarsModal      from './components/ReceiveBarsModal'
 import DeductStockModal      from './components/DeductStockModal'
 import RecordOffcutsModal    from './components/RecordOffcutsModal'
 import StocktakeModal        from './components/StocktakeModal'
+import AddToPOModal          from './components/AddToPOModal'
 import SupplierModal         from './components/SupplierModal'
 import AddWindowModal        from './components/AddWindowModal'
 import PurchaseOrderModal    from './components/PurchaseOrderModal'
@@ -37,7 +38,7 @@ import { useToast, ToastContainer } from './hooks/useToast.jsx'
 import { buildStockMap, stockKey, getStock, planStockRestore, stockPositions } from './lib/stockEngine'
 import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines, resolveAnswers } from './lib/bomEngine'
 import { windowSell } from './lib/sellEngine'
-import { orderUnitInfo } from './lib/poEngine'
+import { orderUnitInfo, openPOFor, poDisplayNumber } from './lib/poEngine'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
 import { exportProductPricingXLSX } from './lib/exportPricing'
 import './index.css'
@@ -111,6 +112,9 @@ export default function App({ route = 'manufacturing' }) {
   const [barModalColour, setBarModalColour]       = useState(null)
   const [editingBar, setEditingBar]               = useState(null)
 
+  const [addToPOOpen, setAddToPOOpen]             = useState(false)
+  const [addToPOComp, setAddToPOComp]             = useState(null)
+  const [addToPOColour, setAddToPOColour]         = useState(null)
   const [stocktakeOpen, setStocktakeOpen]         = useState(false)
   const [stocktakeComp, setStocktakeComp]         = useState(null)
   const [stocktakeColour, setStocktakeColour]     = useState(null)
@@ -1305,6 +1309,64 @@ export default function App({ route = 'manufacturing' }) {
     setStockSaving(false)
   }
 
+  /* -------------------------------------------------------- add to a PO --
+   * Reordering from the shelf, where you notice you are short, rather than
+   * three screens away in Orders.
+   *
+   * The order is the supplier's most recent DRAFT, and when they have none —
+   * which is the usual case, not the exception — one is started. Draft only:
+   * a 'sent' order has gone to the supplier and appending to it would add a
+   * line nobody is going to send.
+   * --------------------------------------------------------------------- */
+  const handleAddToPO = (component, colourVariant) => {
+    setAddToPOComp(component)
+    setAddToPOColour(colourVariant)
+    setAddToPOOpen(true)
+  }
+
+  const handleSaveAddToPO = async ({ qty }) => {
+    setPoCreating(true)
+    const component = addToPOComp
+    const supplierId = component.supplier_id
+    let po = openPOFor(purchaseOrders, supplierId)
+    let created = false
+
+    if (!po) {
+      const { data, error } = await supabase
+        .from('purchase_orders')
+        .insert({ supplier_id: supplierId, status: 'draft', notes: null })
+        .select('*, supplier:suppliers(*)').single()
+      if (error || !data) {
+        showToast(error?.message || 'Could not start an order', 'error')
+        setPoCreating(false)
+        return
+      }
+      po = data
+      created = true
+    }
+
+    const info = orderUnitInfo(component)
+    const { error } = await supabase.from('purchase_order_lines').insert({
+      po_id:          po.id,
+      component_id:   component.id,
+      colour_variant: addToPOColour || null,
+      qty_ordered:    Number(qty) || 0,
+      unit_cost:      info.price,
+    })
+
+    if (error) {
+      showToast(error.message || 'Could not add to the order', 'error')
+    } else {
+      const unit = component.order_type === 'bar' ? 'bar' : 'pack'
+      showToast(
+        `${qty} ${unit}${qty !== 1 ? 's' : ''} → ${poDisplayNumber(po)}${created ? ' (new draft)' : ''} ✓`,
+        'success')
+      setAddToPOOpen(false)
+      await loadAll()
+    }
+    setPoCreating(false)
+  }
+
   /* ---------------------------------------------------------- stocktake --
    * Bars could only ever go up. Receiving added to the count and nothing took
    * away from it, so the one correction a stocktake exists to make had no way
@@ -2041,6 +2103,9 @@ export default function App({ route = 'manufacturing' }) {
           onStocktake={handleStocktake}
           onAddOffcut={handleAddBar}
           onEditOffcut={handleEditBar}
+          purchaseOrders={purchaseOrders}
+          poLinesMap={poLinesMap}
+          onAddToPO={handleAddToPO}
         />
       )
     }
@@ -2204,6 +2269,19 @@ export default function App({ route = 'manufacturing' }) {
         onClose={() => setStockEditOpen(false)}
         onSave={handleSaveStock}
         saving={stockSaving}
+      />
+
+      <AddToPOModal
+        open={addToPOOpen}
+        component={addToPOComp}
+        colourVariant={addToPOColour}
+        supplier={suppliers.find(s => s.id === addToPOComp?.supplier_id) || null}
+        po={openPOFor(purchaseOrders, addToPOComp?.supplier_id)}
+        willCreate={!openPOFor(purchaseOrders, addToPOComp?.supplier_id)}
+        stockMap={stockMap}
+        onClose={() => setAddToPOOpen(false)}
+        onAdd={handleSaveAddToPO}
+        saving={poCreating}
       />
 
       <StocktakeModal

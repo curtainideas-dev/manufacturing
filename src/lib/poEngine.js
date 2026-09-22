@@ -55,3 +55,57 @@ export function poLineTotal(line) {
 export function poGrandTotal(lines) {
   return (lines || []).reduce((s, l) => s + poLineTotal(l), 0)
 }
+
+/* ==========================================================================
+ * Ordering straight off the stock page
+ *
+ * Reordering used to mean going to Orders, finding or starting the right
+ * supplier's draft, then picking the part out of a list — which is three
+ * screens away from the moment you actually notice you are short, standing in
+ * front of the rack. These let the shelf itself put a line on an order.
+ * ========================================================================== */
+
+/**
+ * The order a stock line would be added to: this supplier's most recent DRAFT.
+ *
+ * Draft only. 'sent' has gone to the supplier and 'received' is history, so
+ * appending to either would add something nobody is going to send — and on
+ * this data that is not hypothetical: one supplier's only order is already
+ * sent. Null means there is nothing open and one has to be started.
+ */
+export function openPOFor(purchaseOrders = [], supplierId) {
+  if (!supplierId) return null
+  return purchaseOrders
+    .filter(po => po.supplier_id === supplierId && po.status === 'draft')
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0] || null
+}
+
+/** Component + colour, the same key purchase order lines are compared on. */
+export function poLineKey(componentId, colourVariant) {
+  return `${componentId}__${colourVariant?.suffix || ''}`
+}
+
+/**
+ * Whether a part can be put on an order right now, and if not, why.
+ *
+ * Returned as a reason rather than a bare false so the button can say what is
+ * wrong instead of being mysteriously dead:
+ *
+ *   no_supplier  nothing to raise an order against — the part has no supplier.
+ *   on_po        already a line on the open draft. Changing a quantity belongs
+ *                on the order, where the rest of it is visible, not behind a
+ *                button on a different screen that can only ever add.
+ */
+export function addToPOState({ component, colourVariant, purchaseOrders = [], poLinesMap = {} }) {
+  if (!component?.supplier_id) return { ok: false, reason: 'no_supplier' }
+
+  const po = openPOFor(purchaseOrders, component.supplier_id)
+  if (!po) return { ok: true, po: null, willCreate: true }
+
+  const key   = poLineKey(component.id, colourVariant)
+  const lines = poLinesMap[po.id] || []
+  const hit   = lines.find(l => poLineKey(l.component_id, l.colour_variant) === key)
+  if (hit) return { ok: false, reason: 'on_po', po, line: hit }
+
+  return { ok: true, po, willCreate: false }
+}
