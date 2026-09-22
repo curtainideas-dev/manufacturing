@@ -27,3 +27,8 @@ dist-ssr
 backups/
 
 .vercel
+
+# Supabase CLI local state. supabase/.temp/pooler-url holds a database
+# connection string WITH THE PASSWORD in it — never commit this directory.
+# Migrations under supabase/migrations/ are meant to be committed.
+supabase/.temp/

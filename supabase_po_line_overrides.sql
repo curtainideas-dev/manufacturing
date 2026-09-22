@@ -1,4 +1,9 @@
 -- ============================================================================
+-- APPLIED 2026-09-22 via the Supabase CLI — see
+-- supabase/migrations/20260922023800_po_line_overrides.sql, which is the copy
+-- that actually ran. This file is the annotated record of WHY; that one is the
+-- executable statement. Change both or neither.
+--
 -- Purchase order lines: say it the supplier's way
 --
 -- A line's description and order unit were both derived from the component —
