@@ -1977,6 +1977,11 @@ export default function App({ route = 'manufacturing' }) {
     const payload = {}
     if (updates.qty_ordered !== undefined) payload.qty_ordered = Number(updates.qty_ordered) || 0
     if (updates.unit_cost !== undefined) payload.unit_cost = Number(updates.unit_cost) || 0
+    // Blank is not a description — it means "use the component's own wording",
+    // so it goes back as null rather than as an empty string that would print
+    // a blank line on the order.
+    if (updates.description !== undefined) payload.description = updates.description.trim() === '' ? null : updates.description
+    if (updates.order_unit !== undefined)  payload.order_unit  = updates.order_unit.trim()  === '' ? null : updates.order_unit
     setPoLinesMap(prev => ({
       ...prev,
       [currentPO.id]: (prev[currentPO.id] || []).map(l => l.id === lineId ? { ...l, ...payload } : l),

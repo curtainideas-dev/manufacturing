@@ -21,7 +21,10 @@ import {
   ACCENT_DARK, WARM_100, WARM_200, WARM_300, INK, WHITE,
   loadJsPDF, downloadPDF, clip, wrap,
 } from './pdfKit'
-import { displayPN, orderUnitInfo, poDisplayNumber, poLineTotal, poGrandTotal, priceBreakdown } from './poEngine'
+import {
+  displayPN, poDisplayNumber, poLineTotal, poGrandTotal, priceBreakdown,
+  lineDescription, lineOrderUnit,
+} from './poEngine'
 
 const money = n => Number(n || 0).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
@@ -52,11 +55,13 @@ const COLS_PLAIN = [
 
 export function poRows(lines = [], supplier = null, showPricing = true) {
   return lines.map(l => {
-    const info = l.component ? orderUnitInfo(l.component, supplier) : null
+    // Whatever the line says, which is the component's wording unless someone
+    // has typed over it — so the sheet the supplier receives is the sheet that
+    // was on screen.
     const row = {
       pn:   displayPN(l.component, l.colour_variant) || '—',
-      desc: `${l.component?.name || 'Component'}${l.colour_variant?.name ? ` · ${l.colour_variant.name}` : ''}`,
-      unit: info?.label || '—',
+      desc: lineDescription(l),
+      unit: lineOrderUnit(l, supplier) || '—',
       qty:  String(Number(l.qty_ordered) || 0),
     }
     if (!showPricing) return row

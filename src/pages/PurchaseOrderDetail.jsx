@@ -1,7 +1,8 @@
+import { useState, useEffect } from 'react'
 import { ChevronLeftIcon, TrashIcon, PlusIcon } from '../components/Icons'
 import {
   orderUnitInfo, displayPN, poDisplayNumber, poLineTotal, poGrandTotal,
-  priceBreakdown, outstandingQty, isFullyReceived,
+  priceBreakdown, outstandingQty, isFullyReceived, derivedDescription,
 } from '../lib/poEngine'
 
 const STATUS_META = {
@@ -12,6 +13,36 @@ const STATUS_META = {
 }
 
 const fmtMoney = n => Number(n || 0).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+/**
+ * A text cell that commits on blur rather than on every keystroke.
+ *
+ * Writing per letter would be a round trip per character and, worse, would
+ * hand the input a value the parent had already trimmed — so a trailing space
+ * disappeared as you typed and the next letter landed against the wrong word.
+ * The draft is local until focus leaves; Enter commits, Escape abandons.
+ */
+function TextCell({ value, placeholder, disabled, onCommit, style }) {
+  const [draft, setDraft] = useState(value || '')
+  useEffect(() => { setDraft(value || '') }, [value])
+
+  const commit = () => { if (draft !== (value || '')) onCommit(draft) }
+
+  return (
+    <input
+      className="field-input"
+      value={draft}
+      placeholder={placeholder}
+      disabled={disabled}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+        if (e.key === 'Escape') { setDraft(value || ''); e.currentTarget.blur() }
+      }}
+      style={style} />
+  )
+}
 
 export default function PurchaseOrderDetail({
   po, lines, onBack, onDelete, onAddLines, onUpdateLine, onRemoveLine,
@@ -29,9 +60,11 @@ export default function PurchaseOrderDetail({
 
   // Columns change shape rather than blanking out: with no money to show, the
   // description takes back the width it was using.
+  // The PDF's columns, in the PDF's order. Part No. and Description lead
+  // because that is what a supplier scans for; the money trails behind them.
   const grid = showPricing
-    ? '1fr 52px 64px 70px 26px'
-    : '1fr 64px 26px'
+    ? '92px minmax(150px,1fr) 104px 56px 60px 44px 74px 74px 26px'
+    : '110px minmax(190px,1fr) 120px 64px 26px'
 
   const outstanding = lines.reduce((n, l) => n + (outstandingQty(l) > 0 ? 1 : 0), 0)
   const allIn       = isFullyReceived(lines)
@@ -134,98 +167,140 @@ export default function PurchaseOrderDetail({
                 )}
               </div>
             ) : (
-              <>
-                <div style={{
-                  display: 'grid', gridTemplateColumns: grid,
-                  padding: '10px 16px', background: 'var(--warm-100)',
-                  borderBottom: '1px solid var(--warm-200)',
-                  fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-                  letterSpacing: '0.06em', color: 'var(--warm-300)',
-                }}>
-                  <div>Component</div>
-                  <div style={{ textAlign: 'right' }}>Qty</div>
-                  {showPricing && <div style={{ textAlign: 'right' }}>Unit $</div>}
-                  {showPricing && <div style={{ textAlign: 'right' }}>Total</div>}
-                  <div />
-                </div>
+              /* Same columns, same order, same wording as the PDF. The screen
+                 and the sheet the supplier receives were two different tables
+                 before, so checking one against the other meant translating
+                 between them.
 
-                {lines.map(l => {
-                  const info = l.component ? orderUnitInfo(l.component, supplier) : null
-                  const b    = l.component ? priceBreakdown(l, l.component, supplier) : null
-                  const out  = outstandingQty(l)
-                  const received = Number(l.qty_received) || 0
-                  return (
-                    <div key={l.id} style={{
-                      display: 'grid', gridTemplateColumns: grid,
-                      padding: '10px 16px', borderBottom: '1px solid var(--warm-100)',
-                      fontSize: 14, alignItems: 'center', gap: 6,
-                    }}>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 600 }}>
-                          {l.component?.name || 'Component removed'}
-                          {l.colour_variant?.name ? ` · ${l.colour_variant.name}` : ''}
-                        </div>
-                        <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
-                          {[
-                            displayPN(l.component, l.colour_variant),
-                            info ? `per ${info.label}` : null,
-                            // The working behind the price, when there is one.
-                            showPricing && b && b.discount > 0
-                              ? `$${fmtMoney(b.list)} less ${b.discount}%`
-                              : null,
-                          ].filter(Boolean).join(' · ')}
-                        </div>
-                        {/* Recomputed from today's component, so it can drift
-                            from what the order was actually sent at. */}
-                        {showPricing && b?.drifted && (
-                          <div style={{ fontSize: 10.5, color: 'var(--warning)', marginTop: 2 }}>
-                            Component now prices at ${fmtMoney(b.currentNet)} — this line keeps ${fmtMoney(b.net)}
-                          </div>
-                        )}
-                        {!isDraft && (
-                          <div style={{ fontSize: 10.5, marginTop: 2, color: out > 0 ? 'var(--warning)' : 'var(--success)', fontWeight: 600 }}>
-                            {out > 0
-                              ? `${received} of ${l.qty_ordered} received · ${out} outstanding`
-                              : `all ${l.qty_ordered} received`}
-                          </div>
-                        )}
-                      </div>
-                      <input type="number" step="1" min="0" value={l.qty_ordered} disabled={!isDraft}
-                        onChange={e => onUpdateLine(l.id, { qty_ordered: e.target.value })}
-                        className="field-input"
-                        style={{ textAlign: 'right', padding: '5px 6px', fontSize: 13 }} />
-                      {showPricing && (
-                        <input type="number" step="0.01" min="0" value={l.unit_cost} disabled={!isDraft}
-                          onChange={e => onUpdateLine(l.id, { unit_cost: e.target.value })}
-                          className="field-input"
-                          style={{ textAlign: 'right', padding: '5px 6px', fontSize: 13 }} />
-                      )}
-                      {showPricing && (
-                        <div style={{ textAlign: 'right', fontWeight: 600 }}>${fmtMoney(poLineTotal(l))}</div>
-                      )}
-                      {isDraft ? (
-                        <button onClick={() => onRemoveLine(l.id)}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--warm-300)', padding: 4, justifySelf: 'end' }}>
-                          <TrashIcon size={14} />
-                        </button>
-                      ) : <div />}
-                    </div>
-                  )
-                })}
-
-                {showPricing && (
+                 It scrolls sideways rather than reflowing: eight columns do not
+                 fit a phone, and squeezing them makes the numbers unreadable —
+                 which on the one screen where a price is proof-read is worse
+                 than a scroll. Part No. and Description stay pinned left so a
+                 row stays identifiable while the money scrolls past. */
+              <div style={{ overflowX: 'auto' }}>
+                <div style={{ minWidth: showPricing ? 760 : 460 }}>
                   <div style={{
                     display: 'grid', gridTemplateColumns: grid,
-                    padding: '12px 16px', background: 'var(--accent-bg)',
-                    fontSize: 14, fontWeight: 700,
+                    padding: '10px 16px', background: 'var(--warm-100)',
+                    borderBottom: '1px solid var(--warm-200)',
+                    fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                    letterSpacing: '0.06em', color: 'var(--warm-300)', gap: 8,
                   }}>
-                    <div style={{ color: 'var(--accent-dark)' }}>Estimated Total</div>
-                    <div /><div />
-                    <div style={{ textAlign: 'right', color: 'var(--accent-dark)' }}>${fmtMoney(total)}</div>
+                    <div>Part No.</div>
+                    <div>Description</div>
+                    <div>Order unit</div>
+                    <div style={{ textAlign: 'right' }}>Qty</div>
+                    {showPricing && <div style={{ textAlign: 'right' }}>List</div>}
+                    {showPricing && <div style={{ textAlign: 'right' }}>Disc</div>}
+                    {showPricing && <div style={{ textAlign: 'right' }}>Unit</div>}
+                    {showPricing && <div style={{ textAlign: 'right' }}>Total</div>}
                     <div />
                   </div>
-                )}
-              </>
+
+                  {lines.map(l => {
+                    const b   = l.component ? priceBreakdown(l, l.component, supplier) : null
+                    const out = outstandingQty(l)
+                    const received = Number(l.qty_received) || 0
+                    // Placeholders show what the line WOULD say, so an empty
+                    // box reads as "using the component's own wording" rather
+                    // than as missing data.
+                    const descPlaceholder = derivedDescription(l)
+                    const unitPlaceholder = l.component ? orderUnitInfo(l.component, supplier).label : ''
+                    return (
+                      <div key={l.id} style={{
+                        display: 'grid', gridTemplateColumns: grid,
+                        padding: '10px 16px', borderBottom: '1px solid var(--warm-100)',
+                        fontSize: 14, alignItems: 'center', gap: 8,
+                      }}>
+                        <div style={{ minWidth: 0, fontSize: 12, color: 'var(--warm-300)', fontFamily: 'ui-monospace, monospace' }}>
+                          {displayPN(l.component, l.colour_variant) || '—'}
+                        </div>
+
+                        <div style={{ minWidth: 0 }}>
+                          <TextCell
+                            value={l.description}
+                            placeholder={descPlaceholder}
+                            disabled={!isDraft}
+                            onCommit={v => onUpdateLine(l.id, { description: v })}
+                            style={{ padding: '5px 7px', fontSize: 13, fontWeight: 600, width: '100%' }} />
+                          {/* What is really being ordered, when the wording no
+                              longer says so. */}
+                          {l.description?.trim() && l.description.trim() !== descPlaceholder && (
+                            <div style={{ fontSize: 10.5, color: 'var(--warm-300)', marginTop: 2 }}>
+                              {descPlaceholder}
+                            </div>
+                          )}
+                          {!isDraft && (
+                            <div style={{ fontSize: 10.5, marginTop: 2, color: out > 0 ? 'var(--warning)' : 'var(--success)', fontWeight: 600 }}>
+                              {out > 0
+                                ? `${received} of ${l.qty_ordered} received · ${out} outstanding`
+                                : `all ${l.qty_ordered} received`}
+                            </div>
+                          )}
+                        </div>
+
+                        <TextCell
+                          value={l.order_unit}
+                          placeholder={unitPlaceholder}
+                          disabled={!isDraft}
+                          onCommit={v => onUpdateLine(l.id, { order_unit: v })}
+                          style={{ padding: '5px 7px', fontSize: 12.5, width: '100%' }} />
+
+                        <input type="number" step="1" min="0" value={l.qty_ordered} disabled={!isDraft}
+                          onChange={e => onUpdateLine(l.id, { qty_ordered: e.target.value })}
+                          className="field-input"
+                          style={{ textAlign: 'right', padding: '5px 6px', fontSize: 13 }} />
+
+                        {showPricing && (
+                          <div style={{ textAlign: 'right', fontSize: 12.5, color: 'var(--warm-300)' }}>
+                            {b && b.discount > 0 ? `$${fmtMoney(b.list)}` : '—'}
+                          </div>
+                        )}
+                        {showPricing && (
+                          <div style={{ textAlign: 'right', fontSize: 12.5, color: 'var(--warm-300)' }}>
+                            {b && b.discount > 0 ? `${b.discount}%` : '—'}
+                          </div>
+                        )}
+                        {showPricing && (
+                          <div>
+                            <input type="number" step="0.01" min="0" value={l.unit_cost} disabled={!isDraft}
+                              onChange={e => onUpdateLine(l.id, { unit_cost: e.target.value })}
+                              className="field-input"
+                              style={{ textAlign: 'right', padding: '5px 6px', fontSize: 13, width: '100%' }} />
+                            {b?.drifted && (
+                              <div style={{ fontSize: 10, color: 'var(--warning)', marginTop: 2, textAlign: 'right' }}>
+                                now ${fmtMoney(b.currentNet)}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {showPricing && (
+                          <div style={{ textAlign: 'right', fontWeight: 700 }}>${fmtMoney(poLineTotal(l))}</div>
+                        )}
+
+                        {isDraft ? (
+                          <button onClick={() => onRemoveLine(l.id)}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--warm-300)', padding: 4, justifySelf: 'end' }}>
+                            <TrashIcon size={14} />
+                          </button>
+                        ) : <div />}
+                      </div>
+                    )
+                  })}
+
+                  {showPricing && (
+                    <div style={{
+                      display: 'grid', gridTemplateColumns: grid,
+                      padding: '12px 16px', background: 'var(--accent-bg)',
+                      fontSize: 14, fontWeight: 700, gap: 8,
+                    }}>
+                      <div style={{ color: 'var(--accent-dark)', gridColumn: '1 / 8' }}>Estimated Total</div>
+                      <div style={{ textAlign: 'right', color: 'var(--accent-dark)' }}>${fmtMoney(total)}</div>
+                      <div />
+                    </div>
+                  )}
+                </div>
+              </div>
             )}
           </div>
 

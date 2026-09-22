@@ -200,3 +200,32 @@ export function addToPOState({ component, colourVariant, purchaseOrders = [], po
 
   return { ok: true, po, willCreate: false }
 }
+
+/* ==========================================================================
+ * What a line SAYS
+ *
+ * Both of these are derived from the component unless the line overrides them.
+ * Every document that shows a line — the screen, the PDF, the spreadsheet —
+ * goes through these, so an order cannot read one way on screen and another
+ * way on the sheet the supplier receives.
+ * ========================================================================== */
+
+/** The component's own wording for a line, before any override. */
+export function derivedDescription(line) {
+  const name   = line?.component?.name || 'Component'
+  const colour = line?.colour_variant?.name
+  return colour ? `${name} · ${colour}` : name
+}
+
+/** What the line says, the supplier's words winning over ours. */
+export function lineDescription(line) {
+  const override = (line?.description || '').trim()
+  return override || derivedDescription(line)
+}
+
+/** What the line is ordered by — 'bar', 'pack of 50', or whatever was typed. */
+export function lineOrderUnit(line, supplier = null) {
+  const override = (line?.order_unit || '').trim()
+  if (override) return override
+  return line?.component ? orderUnitInfo(line.component, supplier).label : ''
+}
