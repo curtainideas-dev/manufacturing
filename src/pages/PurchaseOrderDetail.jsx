@@ -1,5 +1,8 @@
 import { ChevronLeftIcon, TrashIcon, PlusIcon } from '../components/Icons'
-import { orderUnitInfo, displayPN, poDisplayNumber, poLineTotal, poGrandTotal } from '../lib/poEngine'
+import {
+  orderUnitInfo, displayPN, poDisplayNumber, poLineTotal, poGrandTotal,
+  priceBreakdown, outstandingQty, isFullyReceived,
+} from '../lib/poEngine'
 
 const STATUS_META = {
   draft:     { label: 'Draft',     pill: 'pill-orange' },
@@ -12,12 +15,26 @@ const fmtMoney = n => Number(n || 0).toLocaleString('en-AU', { minimumFractionDi
 
 export default function PurchaseOrderDetail({
   po, lines, onBack, onDelete, onAddLines, onUpdateLine, onRemoveLine,
-  onStatusChange, onExport, exporting,
+  onStatusChange, onExport, onExportPdf, onTogglePricing, onReceive, exporting,
 }) {
   const supplier = po.supplier
   const total    = poGrandTotal(lines)
   const isDraft  = po.status === 'draft'
+  const isSent   = po.status === 'sent'
   const meta     = STATUS_META[po.status] || STATUS_META.draft
+
+  // Quantities-only is a property of the ORDER, not a view toggle, so the
+  // screen and every PDF of it say the same thing.
+  const showPricing = !po.hide_pricing
+
+  // Columns change shape rather than blanking out: with no money to show, the
+  // description takes back the width it was using.
+  const grid = showPricing
+    ? '1fr 52px 64px 70px 26px'
+    : '1fr 64px 26px'
+
+  const outstanding = lines.reduce((n, l) => n + (outstandingQty(l) > 0 ? 1 : 0), 0)
+  const allIn       = isFullyReceived(lines)
 
   return (
     <>
@@ -26,19 +43,25 @@ export default function PurchaseOrderDetail({
           <ChevronLeftIcon size={18} /> Orders
         </button>
         <div className="header-title" style={{ fontSize: 15 }}>{supplier?.name || 'Purchase Order'}</div>
-        <div className="header-actions">
-          <button
-            onClick={onExport}
-            disabled={exporting || lines.length === 0}
-            style={{
-              padding: '6px 12px', fontSize: 13, fontWeight: 600,
-              background: 'rgba(255,255,255,0.15)', color: '#fff',
-              border: '1px solid rgba(255,255,255,0.3)', borderRadius: 8, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: 6,
-              opacity: (exporting || lines.length === 0) ? 0.6 : 1,
-            }}>
-            ⬇ {exporting ? 'Generating…' : 'Excel'}
-          </button>
+<div className="header-actions" style={{ display: 'flex', gap: 6 }}>
+          {[
+            { label: 'PDF',   onClick: onExportPdf, primary: true },
+            { label: 'Excel', onClick: onExport,    primary: false },
+          ].map(b => (
+            <button key={b.label}
+              onClick={b.onClick}
+              disabled={exporting || lines.length === 0}
+              style={{
+                padding: '6px 12px', fontSize: 13, fontWeight: 600,
+                background: b.primary ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.15)',
+                color: '#fff',
+                border: '1px solid rgba(255,255,255,0.3)', borderRadius: 8, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6,
+                opacity: (exporting || lines.length === 0) ? 0.6 : 1,
+              }}>
+              ⬇ {b.label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -61,8 +84,42 @@ export default function PurchaseOrderDetail({
             )}
           </div>
 
+          {/* What the supplier sees. Saved on the order, so the PDF cannot
+              disagree with the screen. */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            gap: 12, padding: '10px 14px', marginBottom: 16,
+            background: showPricing ? '#fff' : 'var(--warm-100)',
+            border: '1px solid var(--warm-200)', borderRadius: 'var(--radius-sm)',
+          }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>
+                {showPricing ? 'Showing prices and discounts' : 'Quantities only'}
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginTop: 2, lineHeight: 1.4 }}>
+                {showPricing
+                  ? 'List price, discount and line totals appear here and on the PDF.'
+                  : 'No money on the order or the PDF — part numbers and quantities only.'}
+              </div>
+            </div>
+            <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+              onClick={() => onTogglePricing(!po.hide_pricing)}>
+              {showPricing ? 'Hide pricing' : 'Show pricing'}
+            </button>
+          </div>
+
           <div className="section-title" style={{ padding: '0 0 8px' }}>
             Items ({lines.length})
+            {!isDraft && outstanding > 0 && (
+              <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--warning)', marginLeft: 8 }}>
+                · {outstanding} outstanding
+              </span>
+            )}
+            {!isDraft && allIn && (
+              <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--success)', marginLeft: 8 }}>
+                · all received
+              </span>
+            )}
           </div>
 
           <div className="card" style={{ marginBottom: 12 }}>
@@ -79,7 +136,7 @@ export default function PurchaseOrderDetail({
             ) : (
               <>
                 <div style={{
-                  display: 'grid', gridTemplateColumns: '1fr 56px 70px 75px 26px',
+                  display: 'grid', gridTemplateColumns: grid,
                   padding: '10px 16px', background: 'var(--warm-100)',
                   borderBottom: '1px solid var(--warm-200)',
                   fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
@@ -87,16 +144,19 @@ export default function PurchaseOrderDetail({
                 }}>
                   <div>Component</div>
                   <div style={{ textAlign: 'right' }}>Qty</div>
-                  <div style={{ textAlign: 'right' }}>Unit $</div>
-                  <div style={{ textAlign: 'right' }}>Total</div>
+                  {showPricing && <div style={{ textAlign: 'right' }}>Unit $</div>}
+                  {showPricing && <div style={{ textAlign: 'right' }}>Total</div>}
                   <div />
                 </div>
 
                 {lines.map(l => {
-                  const info = l.component ? orderUnitInfo(l.component) : null
+                  const info = l.component ? orderUnitInfo(l.component, supplier) : null
+                  const b    = l.component ? priceBreakdown(l, l.component, supplier) : null
+                  const out  = outstandingQty(l)
+                  const received = Number(l.qty_received) || 0
                   return (
                     <div key={l.id} style={{
-                      display: 'grid', gridTemplateColumns: '1fr 56px 70px 75px 26px',
+                      display: 'grid', gridTemplateColumns: grid,
                       padding: '10px 16px', borderBottom: '1px solid var(--warm-100)',
                       fontSize: 14, alignItems: 'center', gap: 6,
                     }}>
@@ -106,18 +166,43 @@ export default function PurchaseOrderDetail({
                           {l.colour_variant?.name ? ` · ${l.colour_variant.name}` : ''}
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 2 }}>
-                          {[displayPN(l.component, l.colour_variant), info ? `per ${info.label}` : null].filter(Boolean).join(' · ')}
+                          {[
+                            displayPN(l.component, l.colour_variant),
+                            info ? `per ${info.label}` : null,
+                            // The working behind the price, when there is one.
+                            showPricing && b && b.discount > 0
+                              ? `$${fmtMoney(b.list)} less ${b.discount}%`
+                              : null,
+                          ].filter(Boolean).join(' · ')}
                         </div>
+                        {/* Recomputed from today's component, so it can drift
+                            from what the order was actually sent at. */}
+                        {showPricing && b?.drifted && (
+                          <div style={{ fontSize: 10.5, color: 'var(--warning)', marginTop: 2 }}>
+                            Component now prices at ${fmtMoney(b.currentNet)} — this line keeps ${fmtMoney(b.net)}
+                          </div>
+                        )}
+                        {!isDraft && (
+                          <div style={{ fontSize: 10.5, marginTop: 2, color: out > 0 ? 'var(--warning)' : 'var(--success)', fontWeight: 600 }}>
+                            {out > 0
+                              ? `${received} of ${l.qty_ordered} received · ${out} outstanding`
+                              : `all ${l.qty_ordered} received`}
+                          </div>
+                        )}
                       </div>
                       <input type="number" step="1" min="0" value={l.qty_ordered} disabled={!isDraft}
                         onChange={e => onUpdateLine(l.id, { qty_ordered: e.target.value })}
                         className="field-input"
                         style={{ textAlign: 'right', padding: '5px 6px', fontSize: 13 }} />
-                      <input type="number" step="0.01" min="0" value={l.unit_cost} disabled={!isDraft}
-                        onChange={e => onUpdateLine(l.id, { unit_cost: e.target.value })}
-                        className="field-input"
-                        style={{ textAlign: 'right', padding: '5px 6px', fontSize: 13 }} />
-                      <div style={{ textAlign: 'right', fontWeight: 600 }}>${fmtMoney(poLineTotal(l))}</div>
+                      {showPricing && (
+                        <input type="number" step="0.01" min="0" value={l.unit_cost} disabled={!isDraft}
+                          onChange={e => onUpdateLine(l.id, { unit_cost: e.target.value })}
+                          className="field-input"
+                          style={{ textAlign: 'right', padding: '5px 6px', fontSize: 13 }} />
+                      )}
+                      {showPricing && (
+                        <div style={{ textAlign: 'right', fontWeight: 600 }}>${fmtMoney(poLineTotal(l))}</div>
+                      )}
                       {isDraft ? (
                         <button onClick={() => onRemoveLine(l.id)}
                           style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--warm-300)', padding: 4, justifySelf: 'end' }}>
@@ -128,16 +213,18 @@ export default function PurchaseOrderDetail({
                   )
                 })}
 
-                <div style={{
-                  display: 'grid', gridTemplateColumns: '1fr 56px 70px 75px 26px',
-                  padding: '12px 16px', background: 'var(--accent-bg)',
-                  fontSize: 14, fontWeight: 700,
-                }}>
-                  <div style={{ color: 'var(--accent-dark)' }}>Estimated Total</div>
-                  <div /><div />
-                  <div style={{ textAlign: 'right', color: 'var(--accent-dark)' }}>${fmtMoney(total)}</div>
-                  <div />
-                </div>
+                {showPricing && (
+                  <div style={{
+                    display: 'grid', gridTemplateColumns: grid,
+                    padding: '12px 16px', background: 'var(--accent-bg)',
+                    fontSize: 14, fontWeight: 700,
+                  }}>
+                    <div style={{ color: 'var(--accent-dark)' }}>Estimated Total</div>
+                    <div /><div />
+                    <div style={{ textAlign: 'right', color: 'var(--accent-dark)' }}>${fmtMoney(total)}</div>
+                    <div />
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -157,16 +244,28 @@ export default function PurchaseOrderDetail({
               Mark as Sent to Supplier
             </button>
           )}
-          {po.status === 'sent' && (
-            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-              <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => onStatusChange('draft')}>
-                Reopen
+          {isSent && (
+            <>
+              {/* Receiving is per line and puts the goods straight into stock.
+                  "Mark Received" is left as the way to close an order off
+                  without booking anything in — a delivery that was already
+                  put away by hand, say. */}
+              <button className="btn btn-block"
+                style={{ background: 'var(--success)', color: '#fff', border: 'none', marginTop: 12 }}
+                disabled={lines.length === 0 || allIn}
+                onClick={onReceive}>
+                📥 {allIn ? 'Everything received' : `Receive Delivery${outstanding ? ` (${outstanding} outstanding)` : ''}`}
               </button>
-              <button className="btn" style={{ flex: 1, background: 'var(--success)', color: '#fff', border: 'none' }}
-                onClick={() => onStatusChange('received')}>
-                Mark Received
-              </button>
-            </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => onStatusChange('draft')}>
+                  Reopen
+                </button>
+                <button className="btn btn-secondary" style={{ flex: 1 }}
+                  onClick={() => onStatusChange('received')}>
+                  Close without receiving
+                </button>
+              </div>
+            </>
           )}
           {po.status === 'received' && (
             <button className="btn btn-secondary btn-block" style={{ marginTop: 12 }} onClick={() => onStatusChange('sent')}>
