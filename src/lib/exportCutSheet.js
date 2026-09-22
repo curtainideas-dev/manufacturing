@@ -46,7 +46,7 @@
 import { printPDF } from './printPDF'
 import { nestPieces, nestSummary } from './fabricEngine'
 import { resolveAnswers, roleSpecs, jobProductType } from './bomEngine'
-import { drawTrackCutSheet } from './cutSheetTrack'
+import { drawTrackCutSheet, drawBarCutCharts, trackCutGroups } from './cutSheetTrack'
 import {
   ACCENT_DARK, WARM_100, WARM_200, WARM_300, INK, WHITE, DASH,
   loadJsPDF, headerDrawer, clip as clipText, customerLastName, jobFilename,
@@ -106,6 +106,22 @@ function optionAnswer(win, optionDefs, code, pattern, exclude = null) {
   if (value === undefined || value === null || value === '') return null
   const choice = (opt.choices || []).find(c => String(c.value) === String(value))
   return choice?.label ?? String(value)
+}
+
+/**
+ * How a blind is assembled: which way it rolls, and which end the control is.
+ *
+ * Exported because the packaging LABEL needs the same two answers, found the
+ * same way. Both are per-window options rather than anything derivable from
+ * the recipe, and getting either the wrong way round is a remake — so having
+ * the label look them up its own way, with its own idea of what the options
+ * are called, would be two chances to be wrong instead of one.
+ */
+export function assemblySpec(win, optionDefs = []) {
+  return {
+    roll:    optionAnswer(win, optionDefs, ROLL_CODE, ROLL_PATTERN),
+    control: optionAnswer(win, optionDefs, CONTROL_CODE, CONTROL_PATTERN, CONTROL_EXCLUDE),
+  }
 }
 
 /**
@@ -389,7 +405,7 @@ const COLS = [
  */
 export function drawBlindCutSheet(doc, {
   windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = [],
-  drawHeader, pageNum = 1, startOnNewPage = false,
+  drawHeader, pageNum = 1, startOnNewPage = false, stock = {},
 }) {
   const MX = 12, MXR = 285, CW = MXR - MX
   const MB = 196            // start a new page before this
@@ -703,6 +719,20 @@ export function drawBlindCutSheet(doc, {
     )
   }
 
+  /* ------------------------------------------------------------ bar charts --
+   * A blind is not only fabric. Its tube and its base rail are lengths sawn
+   * off the same rack a track comes off, cut in the same bulk session, and
+   * they waste material in exactly the same way — so the cutting plan belongs
+   * on this sheet too, drawn by the same renderer as the track sheet.
+   * ---------------------------------------------------------------------- */
+  const barGroups = trackCutGroups(windowsWithBOM, stock)
+  if (barGroups.length > 0) {
+    const charts = drawBarCutCharts(doc, {
+      groups: barGroups, drawHeader, pageNum, title: 'Tube & Base Rail Cut Charts',
+    })
+    pageNum = charts.pageNum
+  }
+
   return pageNum
 }
 
@@ -732,7 +762,7 @@ export function drawCutSheet(doc, ctx) {
  * Split out from the export so the rendered sheet can be inspected — or
  * previewed — without a print dialog being the only way to see it.
  */
-export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = [], products = []) {
+export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = [], products = [], stock = {}) {
   const jsPDF = await loadJsPDF()
   const doc   = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
 
@@ -743,7 +773,7 @@ export async function buildCutSheetDoc(job, windowsWithBOM = [], optionDefsFor =
   })
 
   drawCutSheet(doc, {
-    job, windowsWithBOM, optionDefsFor, suppliers, kinds, products,
+    job, windowsWithBOM, optionDefsFor, suppliers, kinds, products, stock,
     drawHeader, pageNum: 1,
   })
   return doc
@@ -754,8 +784,8 @@ export function cutSheetFilename(job) {
   return jobFilename(job, 'Cut Sheet')
 }
 
-export async function exportCutSheetPDF(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = [], products = []) {
-  const doc = await buildCutSheetDoc(job, windowsWithBOM, optionDefsFor, suppliers, kinds, products)
+export async function exportCutSheetPDF(job, windowsWithBOM = [], optionDefsFor = () => [], suppliers = [], kinds = [], products = [], stock = {}) {
+  const doc = await buildCutSheetDoc(job, windowsWithBOM, optionDefsFor, suppliers, kinds, products, stock)
   printPDF(doc, cutSheetFilename(job))
   return { rowCount: windowsWithBOM.length }
 }

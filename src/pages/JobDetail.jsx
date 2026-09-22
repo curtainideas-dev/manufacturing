@@ -1,7 +1,8 @@
 import { useState, useMemo, useRef } from 'react'
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon, GripIcon } from '../components/Icons'
-import { buildWindowBOM, calcJobSummary, applyFabricNesting, missingAnswers, fabricSelectionFor, substitutionsFor, buildJobExtraLines, fmt, fmtQty } from '../lib/bomEngine'
+import { buildWindowBOM, calcJobSummary, applyFabricNesting, missingAnswers, fabricSelectionFor, substitutionsFor, buildJobExtraLines, resolveAnswers, jobProductType, fmt, fmtQty } from '../lib/bomEngine'
 import { describeCombo } from '../lib/pricingCombos'
+import { windowSell, grossProfit, jobGrossProfit } from '../lib/sellEngine'
 import { exportJobPack } from '../lib/exportJobPack'
 import { exportCutSheetPDF, copyFabricSummary } from '../lib/exportCutSheet'
 import { exportPackagingLabels, exportTrackLabels, exportPartsLabels } from '../lib/exportLabels'
@@ -28,8 +29,8 @@ const CopyIcon = () => (
 
 export default function JobDetail({
   job, products, productComponentsMap, optionDefsFor,
-  allComponents = [], suppliers = [], fabricCategories = [], stockMap = {}, kinds = [],
-  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onReorderWindows, onConfirm, onComplete, onReopen, onBackToReceived, onAttachPO, poUploading, onDeductStock,
+  allComponents = [], suppliers = [], fabricCategories = [], stockMap = {}, stockBars = [], kinds = [],
+  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onReorderWindows, onConfirm, onComplete, onReopen, onBackToReceived, onAttachPO, poUploading, onDeductStock, onRecordOffcuts, pendingOffcutCount = 0,
 }) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(false)
@@ -63,13 +64,13 @@ export default function JobDetail({
           recipe, win, optionDefsFor(win.product_id),
           job.price_snapshot || null,
           job.qty_snapshot?.[win.id] || null,
-          fabricSelectionFor(win, product, allComponents, fabricCategories),
+          fabricSelectionFor(win, product, allComponents),
           substitutionsFor(job, win, allComponents),
           allComponents,
         ),
       }
     }))
-  }, [job, productComponentsMap, optionDefsFor, products, allComponents, fabricCategories])
+  }, [job, productComponentsMap, optionDefsFor, products, allComponents])
 
   // Parts bought for the job rather than for any one window. They have no
   // window to live in, so they are costed here and folded into the summary —
@@ -94,6 +95,38 @@ export default function JobDetail({
     ].filter(g => g.rows.length > 0)
   }, [jobSummary])
   const jobTotal   = jobSummary.reduce((s, r) => s + r.total_cost, 0)
+
+  /* ---------------------------------------------------------- sell and GP --
+   * The order's gross profit, built window by window.
+   *
+   * Windows with no sell price are counted, not costed in: folding their cost
+   * into the total while contributing no revenue would report a loss the
+   * business isn't making. So the headline is the GP of what IS priced, with
+   * the gap stated next to it.
+   *
+   * Job-level extras — a delivery, a bracket bought for the job — are real
+   * cost with no window to sell through, so they come straight off the margin.
+   * That is the point of showing them: they are invisible per window and they
+   * are exactly what erodes the profit on an order.
+   * -------------------------------------------------------------------- */
+  const sellLines = useMemo(() => windowsWithBOM.map(win => {
+    const product   = products.find(p => p.id === win.product_id)
+    const optDefs   = optionDefsFor(win.product_id)
+    const fabricCmp = allComponents.find(c => c.id === win.config?.fabric?.component_id) || null
+    const cost      = win.bom.reduce((t, l) => t + l.line_cost, 0)
+    const sell      = windowSell({
+      win, product, fabricComponent: fabricCmp,
+      categories: fabricCategories, optionDefs: optDefs,
+      answers: resolveAnswers(optDefs, win.config),
+      sellSnapshot: job.sell_snapshot || null,
+    })
+    return { win, product, cost, sell: sell.sell, source: sell.source, reason: sell.reason }
+  }), [windowsWithBOM, products, optionDefsFor, allComponents, fabricCategories, job])
+
+  const extrasCost = jobExtraLines.reduce((t, l) => t + (Number(l.line_cost) || 0), 0)
+  const jobGP = useMemo(
+    () => jobGrossProfit(sellLines, extrasCost),
+    [sellLines, extrasCost])
   const isReceived   = job.status === 'received'
   const isInProgress = job.status === 'in_progress'
   const isCompleted  = job.status === 'completed'
@@ -127,6 +160,7 @@ export default function JobDetail({
     try {
       const res = await exportJobPack(job, windowsWithBOM, {
         products, optionDefsFor, suppliers, kinds, jobExtras: jobExtraLines,
+        stock: { stockBars, stockMap },
       })
       // Attached but unreachable is a different problem from never attached,
       // and the person who just downloaded a short pack needs to know which.
@@ -144,7 +178,7 @@ export default function JobDetail({
   const handleCutSheet = async () => {
     setCutting(true)
     try {
-      await exportCutSheetPDF(job, windowsWithBOM, optionDefsFor, suppliers, kinds, products)
+      await exportCutSheetPDF(job, windowsWithBOM, optionDefsFor, suppliers, kinds, products, { stockBars, stockMap })
     } finally {
       setCutting(false)
     }
@@ -176,6 +210,9 @@ export default function JobDetail({
     () => [...new Set(jobSummary.map(r => r.component?.id).filter(Boolean))],
     [jobSummary])
 
+  // One product type per job, so this is asked once rather than per window.
+  const isBlindJob = jobProductType(job, windowsWithBOM, products) === 'blind'
+
   // Only offer the copy when the job actually has fabric to order.
   const hasFabric = useMemo(
     () => windowsWithBOM.some(w => (w.bom || []).some(l => l.fabric_cut)),
@@ -191,7 +228,7 @@ export default function JobDetail({
   const handlePackagingLabels = async () => {
     setLabeling('pack')
     try {
-      await exportPackagingLabels(job, windowsWithBOM, products)
+      await exportPackagingLabels(job, windowsWithBOM, products, { optionDefsFor, kinds })
     } finally {
       setLabeling(null)
     }
@@ -347,6 +384,20 @@ export default function JobDetail({
               display: 'flex', alignItems: 'center', gap: 6,
             }}>
               📦 Deduct Stock
+            </button>
+          )}
+          {/* Cutting is done in bulk, so the leftovers come back after the
+              deduction, not with it. Stays up until someone answers it —
+              an offcut never entered is a bar the next plan can't use. */}
+          {pendingOffcutCount > 0 && (
+            <button onClick={onRecordOffcuts} style={{
+              padding: '6px 12px', fontSize: 13, fontWeight: 700,
+              background: '#fff', color: 'var(--accent-dark)',
+              border: '1px solid #fff',
+              borderRadius: 8, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+              ✂️ Record Offcuts ({pendingOffcutCount})
             </button>
           )}
           {/* Completed → locked, allow reopen */}
@@ -587,13 +638,22 @@ export default function JobDetail({
                   <div className="section-title" style={{ padding: '0 2px 8px' }}>Print labels</div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button className="btn btn-secondary" style={{ flex: '1 1 30%' }}
-                      onClick={handlePackagingLabels} disabled={!!labeling} title="Packing label (62×40mm), one per track">
+                      onClick={handlePackagingLabels} disabled={!!labeling}
+                      title={isBlindJob
+                        ? 'Packing label (62×40mm) — size, fabric, base bar, control side and roll direction'
+                        : 'Packing label (62×40mm), one per track'}>
                       🏷️ {labeling === 'pack' ? '…' : 'Packing'}
                     </button>
-                    <button className="btn btn-secondary" style={{ flex: '1 1 30%' }}
-                      onClick={handleTrackLabels} disabled={!!labeling} title="Product label (62×15mm), one per track">
-                      🏷️ {labeling === 'track' ? '…' : 'Product'}
-                    </button>
+                    {/* Tracks only. The blind version of this sticker would
+                        go on the tube, under the rolled fabric, and that is
+                        enough to cone the blind — so it isn't offered rather
+                        than being offered and regretted. */}
+                    {!isBlindJob && (
+                      <button className="btn btn-secondary" style={{ flex: '1 1 30%' }}
+                        onClick={handleTrackLabels} disabled={!!labeling} title="Product label (62×15mm), one per track">
+                        🏷️ {labeling === 'track' ? '…' : 'Product'}
+                      </button>
+                    )}
                     <button className="btn btn-secondary" style={{ flex: '1 1 30%' }}
                       onClick={() => setPartsOpen(true)} disabled={!!labeling} title="Parts-list label (62×40mm) — pick parts + quantities">
                       🏷️ {labeling === 'parts' ? '…' : 'Parts'}
@@ -666,21 +726,113 @@ export default function JobDetail({
                 </div>
               ) : (
                 <>
+                  {/* The order, in the three figures that matter: what it
+                      costs to build, what it sells for, and what is left. */}
                   <div style={{
                     background: 'var(--accent-dark)', color: '#fff',
                     borderRadius: 'var(--radius)', padding: '16px 20px',
-                    marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+                    marginBottom: 16,
                   }}>
-                    <div>
-                      <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7, marginBottom: 4 }}>Total Job Cost</div>
-                      <div style={{ fontSize: 28, fontWeight: 700 }}>${fmt(jobTotal)}</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7, marginBottom: 4 }}>Total Job Cost</div>
+                        <div style={{ fontSize: 28, fontWeight: 700 }}>${fmt(jobTotal)}</div>
+                      </div>
+                      <div style={{ textAlign: 'right', opacity: 0.7, fontSize: 13 }}>
+                        <div>{(job.windows || []).length} window{(job.windows||[]).length !== 1 ? 's' : ''}</div>
+                        <div>{jobSummary.length} components</div>
+                        {job.price_snapshot && <div style={{ marginTop: 2 }}>🔒 Pricing locked</div>}
+                      </div>
                     </div>
-                    <div style={{ textAlign: 'right', opacity: 0.7, fontSize: 13 }}>
-                      <div>{(job.windows || []).length} window{(job.windows||[]).length !== 1 ? 's' : ''}</div>
-                      <div>{jobSummary.length} components</div>
-                      {job.price_snapshot && <div style={{ marginTop: 2 }}>🔒 Pricing locked</div>}
+
+                    <div style={{
+                      display: 'flex', gap: 24, flexWrap: 'wrap',
+                      marginTop: 14, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.18)',
+                    }}>
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7, marginBottom: 3 }}>Sell</div>
+                        <div style={{ fontSize: 20, fontWeight: 700 }}>
+                          {jobGP.pricedCount === 0 ? '—' : `$${fmt(jobGP.sell)}`}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7, marginBottom: 3 }}>Gross profit</div>
+                        <div style={{ fontSize: 20, fontWeight: 700, color: jobGP.gp < 0 ? '#fca5a5' : '#fff' }}>
+                          {jobGP.pricedCount === 0 ? '—' : `$${fmt(jobGP.gp)}`}
+                          {jobGP.pricedCount > 0 && jobGP.gpPct !== null && (
+                            <span style={{ fontSize: 13, fontWeight: 600, opacity: 0.75, marginLeft: 8 }}>
+                              {jobGP.gpPct.toFixed(1)}%
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     </div>
+
+                    {/* An incomplete answer that says it is incomplete beats a
+                        complete-looking wrong one. */}
+                    {jobGP.unpricedCount > 0 && (
+                      <div style={{ fontSize: 11.5, opacity: 0.8, marginTop: 10, lineHeight: 1.5 }}>
+                        {jobGP.unpricedCount} window{jobGP.unpricedCount !== 1 ? 's have' : ' has'} no sell price
+                        {' '}(${fmt(jobGP.unpricedCost)} of cost) — left out of the figures above.
+                        Open {jobGP.unpricedCount !== 1 ? 'them' : 'it'} to price
+                        {jobGP.unpricedCount !== 1 ? ' them' : ' it'}.
+                      </div>
+                    )}
+                    {jobGP.extrasCost > 0 && (
+                      <div style={{ fontSize: 11.5, opacity: 0.8, marginTop: 6, lineHeight: 1.5 }}>
+                        Includes ${fmt(jobGP.extrasCost)} of job-level extras, which sell through no window
+                        and so come straight off the margin.
+                      </div>
+                    )}
                   </div>
+
+                  {/* Per window, since one bad line is invisible in a total. */}
+                  {jobGP.pricedCount > 0 && (
+                    <div className="card" style={{ marginBottom: 16, overflow: 'hidden' }}>
+                      <div style={{
+                        padding: '10px 16px', background: 'var(--warm-100)',
+                        fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                        letterSpacing: '0.06em', color: 'var(--warm-300)',
+                      }}>
+                        Gross profit by window
+                      </div>
+                      {sellLines.map((line, i) => {
+                        const g = grossProfit(line.cost, line.sell)
+                        return (
+                          <div key={line.win.id || i} style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'minmax(0,1fr) 72px 72px 96px',
+                            gap: 8, alignItems: 'center',
+                            padding: '9px 16px', borderTop: '1px solid var(--warm-100)',
+                            fontSize: 13, fontVariantNumeric: 'tabular-nums',
+                          }}>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {line.win.label || `Window ${i + 1}`}
+                              </div>
+                              <div style={{ fontSize: 11, color: 'var(--warm-300)' }}>
+                                {line.win.width_mm} × {line.win.drop_mm}
+                                {line.source === 'override' ? ' · price entered by hand' : ''}
+                                {line.source === 'snapshot' ? ' · locked' : ''}
+                              </div>
+                            </div>
+                            <div style={{ textAlign: 'right', color: 'var(--warm-300)' }}>${fmt(g.cost)}</div>
+                            <div style={{ textAlign: 'right' }}>
+                              {g.priced ? `$${fmt(g.sell)}` : '—'}
+                            </div>
+                            <div style={{ textAlign: 'right', fontWeight: 700, color: !g.priced ? 'var(--warm-300)' : g.gp < 0 ? 'var(--danger)' : 'var(--accent-dark)' }}>
+                              {g.priced ? `$${fmt(g.gp)}` : 'not priced'}
+                              {g.priced && g.gpPct !== null && (
+                                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--warm-300)', marginLeft: 5 }}>
+                                  {g.gpPct.toFixed(0)}%
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
 
                   {jobSwapList.length > 0 && (
                     <div className="card card-body" style={{ marginBottom: 16 }}>

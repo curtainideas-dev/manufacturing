@@ -7,11 +7,19 @@
  * pricingCombos.js for why that happens (spec-only choices, qty options
  * never gate a recipe line).
  *
+ * A blind is exported FOR ONE FABRIC, because both halves of its economics
+ * belong to the fabric and not to the product: cost is the fabric's own
+ * wholesale rate, and sell is the wholesaler's list for the category that
+ * fabric is tagged with. The sell figures are those list prices, not cost
+ * times a markup — a markup is an assumption, and the whole point of this
+ * workbook is to show the real margin per size.
+ *
  * Same runtime-CDN SheetJS pattern as exportPO.js.
  */
 
 import { computePricingGroups } from './pricingCombos'
-import { fabricLineFor, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS } from './bomEngine'
+import { fabricLineFor, buildFabricSelection, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS } from './bomEngine'
+import { gridPrice, grossProfit } from './sellEngine'
 
 const loadXLSX = () => new Promise((resolve, reject) => {
   if (window.XLSX) return resolve(window.XLSX)
@@ -33,27 +41,24 @@ function uniqueSheetName(base, used) {
   return next
 }
 
-export async function exportProductPricingXLSX(product, productComponents, optionDefs, fabricCategories = [], markup) {
+export async function exportProductPricingXLSX(product, productComponents, optionDefs, fabricCategories = [], fabric = null) {
   const XLSX = await loadXLSX()
 
   const isBlind = (product.product_type || product.category) === 'blind'
   const isTrack = (product.product_type || product.category) === 'track'
-  const mk = Number(markup) || 1.6
 
-  // Blinds price their (per-window-chosen) fabric at the category's flat
-  // rate — same synthetic line ProductDetail folds into its own grid.
-  const fabricCategory = fabricCategories.find(c => c.code === product.fabric_category)
-  const categoryFabricLine = (isBlind && fabricCategory)
-    ? fabricLineFor({
-        component: { id: 'category-fabric', name: `Category ${fabricCategory.code} Fabric`, unit: 'metres', unit_cost: fabricCategory.max_price, discount: 0 },
-        colour_variant: null,
-        categoryPrice: Number(fabricCategory.max_price) || 0,
-        dropAllowanceMm: Number(product.fabric_drop_allowance_mm) || 0,
-        dropWastageMm: Number(product.fabric_drop_wastage_mm) || 0,
-        widthDeductionMm: Number(product.fabric_width_deduction_mm) || 0,
-      })
+  // The fabric the blind is costed in — the same synthetic line ProductDetail
+  // folds into its own grid, built from the real component so the workbook
+  // and the screen can't quote different costs.
+  const fabricLine = (isBlind && fabric)
+    ? fabricLineFor(buildFabricSelection(fabric, null, product))
     : null
-  const pricedComponents = categoryFabricLine ? [categoryFabricLine, ...productComponents] : productComponents
+  const pricedComponents = fabricLine ? [fabricLine, ...productComponents] : productComponents
+
+  // And the list it sells off, via the category that fabric is tagged with.
+  const category = isBlind && fabric?.fabric_category
+    ? fabricCategories.find(c => c.code === fabric.fabric_category) || null
+    : null
 
   const { groups, truncated } = computePricingGroups({ productComponents, optionDefs, isBlind, pricedComponents })
 
@@ -64,6 +69,11 @@ export async function exportProductPricingXLSX(product, productComponents, optio
     const primary = group.combos[0]
     const label = primary.description.join(' · ') || 'Standard'
     const rows = [[product.name || 'Product'], [label]]
+    if (isBlind && fabric) {
+      rows.push([`Fabric: ${fabric.fabric_code ? fabric.fabric_code + ' — ' : ''}${fabric.name}`
+        + ` · $${Number(fabric.unit_cost || 0).toFixed(2)}/m`
+        + (category ? ` · sells on ${category.name || category.code}` : ' · no sell category')])
+    }
 
     if (group.combos.length > 1) {
       group.combos.slice(1).forEach(c => rows.push([`Same price as: ${c.description.join(' · ') || 'Standard'}`]))
@@ -80,11 +90,25 @@ export async function exportProductPricingXLSX(product, productComponents, optio
       rows.push(['Cost ($)'])
       rows.push(['Drop \\ Width', ...GRID_BLIND_WIDTHS])
       GRID_BLIND_DROPS.forEach((d, di) => rows.push([d, ...group.grid.slice(di * cols, di * cols + cols)]))
+      // Sell and margin off the real list. A size the list doesn't reach is
+      // left blank rather than filled with the corner price — see
+      // sellEngine.bandIndex.
+      const sellAt = (w, d) => category ? gridPrice(category, w, d).price : null
+
       rows.push([])
-      rows.push(['Sell ($)'])
+      rows.push(['Sell ($)' + (category ? ` — ${category.name || category.code} list` : ' — no price list')])
+      rows.push(['Drop \\ Width', ...GRID_BLIND_WIDTHS])
+      GRID_BLIND_DROPS.forEach(d =>
+        rows.push([d, ...GRID_BLIND_WIDTHS.map(w => sellAt(w, d))]))
+
+      rows.push([])
+      rows.push(['Gross margin (%)'])
       rows.push(['Drop \\ Width', ...GRID_BLIND_WIDTHS])
       GRID_BLIND_DROPS.forEach((d, di) =>
-        rows.push([d, ...group.grid.slice(di * cols, di * cols + cols).map(c => Math.round(c * mk * 100) / 100)]))
+        rows.push([d, ...GRID_BLIND_WIDTHS.map((w, wi) => {
+          const g = grossProfit(group.grid[di * cols + wi], sellAt(w, d))
+          return g.priced && g.gpPct !== null ? Math.round(g.gpPct * 10) / 10 : null
+        })]))
     }
 
     const ws = XLSX.utils.aoa_to_sheet(rows)
@@ -93,7 +117,8 @@ export async function exportProductPricingXLSX(product, productComponents, optio
     XLSX.utils.book_append_sheet(wb, ws, uniqueSheetName(label || `Combo ${gi + 1}`, used))
   })
 
-  const safeName = (product.name || 'Product').replace(/[^a-zA-Z0-9]+/g, '_')
+  const safeName = [product.name || 'Product', isBlind && fabric ? fabric.name : null]
+    .filter(Boolean).join('_').replace(/[^a-zA-Z0-9]+/g, '_')
   XLSX.writeFile(wb, `Pricing_${safeName}.xlsx`)
 
   return { groupCount: groups.length, truncated }

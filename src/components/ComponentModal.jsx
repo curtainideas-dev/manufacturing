@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { XIcon, TrashIcon, PlusIcon } from './Icons'
-import { categoryForPrice } from '../lib/fabricEngine'
+import { sortedCategories } from '../lib/fabricEngine'
 
 const UNITS = ['each', 'metres', 'mm', 'm²', 'hours']
 
@@ -127,7 +127,6 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
     ? (Number(form.pack_qty) > 0 ? Number(form.pack_price) / Number(form.pack_qty) : 0)
     : (Number(form.bar_length_mm) > 0 ? (Number(form.bar_price) / Number(form.bar_length_mm)) * 1000 : 0)
 
-  const liveCategory = form.order_type === 'fabric' ? categoryForPrice(fabricCategories, derivedUnitCost) : null
 
   const selectedSupplier = suppliers.find(s => s.id === form.supplier_id)
   const supplierDiscount = Number(selectedSupplier?.discount) || 0
@@ -342,14 +341,19 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
                     placeholder="e.g. VIBE" />
                 </div>
                 <div>
-                  <label className="field-label">Pricing category</label>
-                  <div className="field-input" style={{
-                    display: 'flex', alignItems: 'center',
-                    color: liveCategory ? 'var(--accent-dark)' : 'var(--warm-300)',
-                    fontWeight: liveCategory ? 700 : 400, background: 'var(--warm-100)',
-                  }}>
-                    {liveCategory ? `Category ${liveCategory.code}` : 'No categories configured'}
-                  </div>
+                  {/* The tier the WHOLESALER sells this fabric under. Picked,
+                      not derived: it used to be worked out from what the
+                      fabric cost us, which only made sense while the category
+                      decided the price. It decides the SELL price now, and
+                      only the supplier's list knows which tier a fabric is in. */}
+                  <label className="field-label">Sell category</label>
+                  <select className="field-input" value={form.fabric_category || ''}
+                    onChange={e => set('fabric_category', e.target.value || null)}>
+                    <option value="">Not tagged</option>
+                    {sortedCategories(fabricCategories).map(c => (
+                      <option key={c.code} value={c.code}>{c.name || `Category ${c.code}`}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
@@ -359,8 +363,9 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
                   value={form.unit_cost} onChange={e => set('unit_cost', e.target.value)}
                   style={{ textAlign: 'right', maxWidth: '50%' }} />
                 <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
-                  Sets the pricing category above automatically — set the category
-                  thresholds in Admin → Fabric Categories.
+                  What we pay per linear metre off the roll. This is the cost side —
+                  a blind is charged the share of the roll&apos;s width its cut takes.
+                  What it SELLS for comes from the category above.
                 </div>
               </div>
 

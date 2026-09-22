@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { ChevronLeftIcon, PlusIcon, TrashIcon, XIcon } from '../components/Icons'
 import ProductComponentModal from '../components/ProductComponentModal'
-import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, fabricLineFor, DEFAULT_ROLL_WIDTH_MM, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel, groupRecipeLines, overlappingLines } from '../lib/bomEngine'
+import { allFabrics, categoryForFabric } from '../lib/fabricEngine'
+import { gridPrice, grossProfit } from '../lib/sellEngine'
+import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, fabricLineFor, buildFabricSelection, DEFAULT_ROLL_WIDTH_MM, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel, groupRecipeLines, overlappingLines } from '../lib/bomEngine'
 
 const COST_TYPE_LABELS = {
   fixed: 'Fixed qty', width_based: 'Width-based',
@@ -138,48 +140,51 @@ export default function ProductDetail({
   const isTrack = (product.product_type || product.category) === 'track'
   const isBlind = (product.product_type || product.category) === 'blind'
 
-  // The fabric is never a stored recipe line — it's picked per window — but a
-  // blind's price always assumes one at its category's flat rate, so the grid
-  // (and this page's own recipe list) has to fold that in rather than showing
-  // hardware-only numbers that understate every real quote.
-  const fabricCategory = fabricCategories.find(c => c.code === product.fabric_category)
-  const categoryFabricLine = useMemo(() => (isBlind && fabricCategory)
-    ? fabricLineFor({
-        component: { id: 'category-fabric', name: `Category ${fabricCategory.code} Fabric`, unit: 'metres', unit_cost: fabricCategory.max_price, discount: 0 },
-        colour_variant: null,
-        categoryPrice: Number(fabricCategory.max_price) || 0,
-        dropAllowanceMm: Number(product.fabric_drop_allowance_mm) || 0,
-        dropWastageMm: Number(product.fabric_drop_wastage_mm) || 0,
-        widthDeductionMm: Number(product.fabric_width_deduction_mm) || 0,
-        widthAllowanceMm: Number(product.fabric_width_cut_allowance_mm) || 0,
-        rollWidthMm: Number(product.fabric_roll_width_mm) || DEFAULT_ROLL_WIDTH_MM,
-      })
-    : null, [
-      isBlind, fabricCategory,
-      // Every figure below is a cost driver now that fabric is costed as a
-      // strip of the roll, so the grid has to rebuild when any of them moves.
-      product.fabric_drop_allowance_mm, product.fabric_drop_wastage_mm,
-      product.fabric_width_deduction_mm, product.fabric_width_cut_allowance_mm,
-      product.fabric_roll_width_mm,
-    ])
+  /* ---------------------------------------------------- the priced fabric --
+   * The grid is per FABRIC now, not per product.
+   *
+   * It used to fold in "Category B fabric" at that category's flat rate, which
+   * worked while a product was locked to one category and every fabric in it
+   * cost the same. Neither holds: the same blind can be made in any fabric,
+   * and what it costs depends on which. So the page asks which fabric to price
+   * against, and the whole grid — cost AND margin — follows that choice.
+   *
+   * Cost comes from the fabric's own wholesale rate; sell comes from the
+   * category that fabric is tagged with. One dropdown moves both, which is the
+   * point: the margin on a blind is a fact about a fabric.
+   * ---------------------------------------------------------------------- */
+  const fabrics = useMemo(() => allFabrics(allComponents), [allComponents])
+  const [gridFabricId, setGridFabricId] = useState('')
+  const gridFabric = fabrics.find(f => f.id === gridFabricId) || fabrics[0] || null
+  const gridCategory = categoryForFabric(fabricCategories, gridFabric)
 
-  const pricedComponents = categoryFabricLine ? [categoryFabricLine, ...productComponents] : productComponents
+  const fabricLine = useMemo(() => (isBlind && gridFabric)
+    ? fabricLineFor(buildFabricSelection(gridFabric, null, product))
+    // The product as a whole, not its allowance fields one by one: the
+    // selection is built from the product object, and every allowance on it
+    // is already a cost driver, so listing them separately would save no
+    // rebuild that matters on a page showing one product at a time.
+    : null, [isBlind, gridFabric, product])
+
+  const pricedComponents = fabricLine ? [fabricLine, ...productComponents] : productComponents
 
   const gridCosts = useMemo(() => isTrack
     ? GRID_WIDTHS.map(w => ({ width: w, cost: calcCostAtWidth(productComponents, w, optionDefs, previewCfg) }))
     : [], [isTrack, productComponents, optionDefs, previewCfg])
 
   // Blinds price on both axes, so the grid is a matrix rather than a row.
+  // Each cell now carries what that size COSTS in this fabric and what it
+  // SELLS for off that fabric's category list, because a cost with nothing
+  // beside it never answered the only question worth asking of a price grid.
   const blindGrid = useMemo(() => !isBlind ? [] :
     GRID_BLIND_DROPS.map(drop => ({
       drop,
-      cells: GRID_BLIND_WIDTHS.map(width => ({
-        width,
-        cost: calcCostAt(pricedComponents, width, drop, optionDefs, previewCfg),
-      })),
-    })), [isBlind, pricedComponents, optionDefs, previewCfg])
-
-  const markup = Number(product.markup) || 1.6
+      cells: GRID_BLIND_WIDTHS.map(width => {
+        const cost = calcCostAt(pricedComponents, width, drop, optionDefs, previewCfg)
+        const hit  = gridCategory ? gridPrice(gridCategory, width, drop) : { price: null }
+        return { width, cost, ...grossProfit(cost, hit.price) }
+      }),
+    })), [isBlind, pricedComponents, optionDefs, previewCfg, gridCategory])
 
 
   return (
@@ -193,7 +198,7 @@ export default function ProductDetail({
           {(isTrack || isBlind) && (
             <button
               style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.8)', background: 'none', border: 'none', cursor: 'pointer', padding: '6px 10px' }}
-              onClick={onExportPricing}
+              onClick={() => onExportPricing(gridFabric)}
               disabled={pricingExporting || productComponents.length === 0}
             >
               {pricingExporting ? 'Exporting…' : '⬇ Pricing'}
@@ -231,31 +236,17 @@ export default function ProductDetail({
           {/* Product details */}
           <div className="card card-body" style={{ marginBottom: 16 }}>
             {isBlind ? (
-              // A blind product's identity IS its pricing category — one
-              // selector sets both the name and the fabric_category, rather
-              // than a free-text name that could drift from the category
-              // that actually prices it.
+              // A blind product used to BE a pricing category, so its name was
+              // set from one. It isn't any more: a category prices the fabric,
+              // any fabric goes on any roller blind, and what the product is
+              // — the system, the tube, the hardware — is a separate thing
+              // that deserves its own name.
               <div className="field" style={{ marginBottom: 12 }}>
-                <label className="field-label">Category</label>
-                <select className="field-input" value={product.fabric_category || ''}
-                  onChange={e => {
-                    const code = e.target.value
-                    onUpdateProduct(code
-                      ? { fabric_category: code, name: `Category ${code}` }
-                      : { fabric_category: null })
-                  }}>
-                  <option value="">— Not set —</option>
-                  {fabricCategories.map(c => (
-                    <option key={c.code} value={c.code}>
-                      Category {c.code} (${Number(c.max_price).toFixed(2)}/m)
-                    </option>
-                  ))}
-                </select>
-                {!product.fabric_category && (
-                  <div style={{ fontSize: 12, color: 'var(--warning)', marginTop: 8 }}>
-                    No category set — windows on this product won't be able to pick a fabric until one is.
-                  </div>
-                )}
+                <label className="field-label">Product name</label>
+                <input className="field-input" value={nameDraft}
+                  onChange={e => setNameDraft(e.target.value)}
+                  onBlur={() => nameDraft !== product.name && onUpdateProduct({ name: nameDraft })}
+                  placeholder="e.g. Roller Blind · SYS 45" />
               </div>
             ) : (
               <>
@@ -303,16 +294,35 @@ export default function ProductDetail({
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--warm-300)', marginBottom: 8 }}>
                 Fabric
               </div>
-              {fabricCategory ? (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 600 }}>Category {fabricCategory.code} fabric</div>
-                  <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--accent-dark)' }}>
-                    ${Number(fabricCategory.max_price).toFixed(2)}/m
+              {fabrics.length > 0 ? (
+                <>
+                  {/* Which fabric the figures below are worked out against.
+                      Cost follows this fabric's own rate; sell follows the
+                      category it is tagged with. */}
+                  <select className="field-input" value={gridFabric?.id || ''}
+                    onChange={e => setGridFabricId(e.target.value)}>
+                    {fabrics.map(fb => (
+                      <option key={fb.id} value={fb.id}>
+                        {fb.fabric_code ? `${fb.fabric_code} — ` : ''}{fb.name}
+                        {fb.fabric_category ? ` · ${fb.fabric_category}` : ' · untagged'}
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+                    <div style={{ fontSize: 12.5, color: 'var(--warm-300)' }}>
+                      Costs <strong style={{ color: 'var(--ink)' }}>${Number(gridFabric?.unit_cost || 0).toFixed(2)}/m</strong>
+                      {' '}off the roll
+                    </div>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, color: gridCategory ? 'var(--accent-dark)' : 'var(--warning)' }}>
+                      {gridCategory
+                        ? `Sells on ${gridCategory.name || gridCategory.code}`
+                        : 'No sell category'}
+                    </div>
                   </div>
-                </div>
+                </>
               ) : (
                 <div style={{ fontSize: 12, color: 'var(--warm-300)' }}>
-                  Set a category above to include fabric in this product's price.
+                  No fabrics in the component library yet.
                 </div>
               )}
               <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
@@ -407,7 +417,7 @@ export default function ProductDetail({
                     occupies <strong style={{ color: 'var(--ink)' }}>{(cutW + wAllow).toLocaleString()}mm</strong> of
                     the {roll.toLocaleString()}mm roll ({(share * 100).toFixed(0)}%), and is costed at{' '}
                     <strong style={{ color: 'var(--ink)' }}>{metres.toFixed(3)}m</strong>
-                    {fabricCategory && ` = $${(metres * (Number(fabricCategory.max_price) || 0)).toFixed(2)}`}.
+                    {gridFabric && ` = $${(metres * (Number(gridFabric.unit_cost) || 0)).toFixed(2)}`}.
                     {perBand > 1 && <> {perBand} of them fit side by side on one length off the roll.</>}
                     {perBand === 0 && <> <span style={{ color: 'var(--danger)' }}>It won't fit this roll width.</span></>}
                     <div style={{ marginTop: 6 }}>
@@ -636,8 +646,15 @@ export default function ProductDetail({
                               borderTop: '1px solid var(--warm-200)', whiteSpace: 'nowrap',
                             }}>
                               ${fmt(cell.cost)}
-                              <div style={{ fontSize: 10, color: 'var(--warm-300)' }}>
-                                ${fmt(cell.cost * markup)}
+                              <div style={{
+                                fontSize: 10,
+                                color: !cell.priced ? 'var(--warm-300)'
+                                  : cell.gp < 0 ? 'var(--danger)' : 'var(--accent-dark)',
+                                fontWeight: cell.priced ? 700 : 400,
+                              }}>
+                                {cell.priced
+                                  ? `$${fmt(cell.sell)} · ${cell.gpPct === null ? '—' : `${cell.gpPct.toFixed(0)}%`}`
+                                  : '—'}
                               </div>
                             </td>
                           ))}
@@ -647,8 +664,13 @@ export default function ProductDetail({
                   </table>
                 </div>
               </div>
-              <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginBottom: 24 }}>
-                Cost on top, cost × {markup} beneath. Sizes in mm.
+              <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginBottom: 24, lineHeight: 1.6 }}>
+                Cost on top; sell price and gross margin beneath. Sizes in mm.
+                {gridCategory
+                  ? ` Sell is the ${gridCategory.name || gridCategory.code} list price for that size — a size between bands prices at the next band up.`
+                  : gridFabric
+                    ? ' No sell prices: tag this fabric with a category in the component library, and load that category\u2019s price list in Admin \u2192 Fabric Categories.'
+                    : ''}
               </div>
             </>
           )}

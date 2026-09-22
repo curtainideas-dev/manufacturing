@@ -157,11 +157,13 @@ export default function ComponentKindsAdmin({
                       </button>
                     </div>
 
-                    {/* Two different questions, deliberately two ticks. "Does
-                        someone choose this?" and "does the bench need to see
-                        it?" have different answers — a chain length is decided
-                        by the drop, so nobody is asked, but the bench still has
-                        to pick the right one off the rack. */}
+                    {/* Three different questions, deliberately three ticks.
+                        "Does someone choose this?", "does the bench need to
+                        see it?" and "does whoever opens the box need it?" have
+                        different answers — a chain length is decided by the
+                        drop so nobody is asked, the bench still has to pick
+                        the right one off the rack, and it means nothing at all
+                        printed on a carton. */}
                     <Tick
                       on={kind.ask_on_job}
                       onChange={v => onSave({ ...kind, ask_on_job: v })}
@@ -175,6 +177,12 @@ export default function ComponentKindsAdmin({
                       onChange={v => onSave({ ...kind, on_cut_sheet: v })}
                       title={`Print the ${kind.name} on the cut sheet`}
                       body={`Adds "${kind.name}: <part> · <colour>" under each window, so the bench reads it off the sheet instead of the BOM.`} />
+
+                    <Tick
+                      on={kind.on_label}
+                      onChange={v => onSave({ ...kind, on_label: v })}
+                      title={`Print the ${kind.name} on the packaging label`}
+                      body={`Puts the ${kind.name} and its colour on the box, where it is checked against the order before anything is unwrapped. Keep this to one or two kinds — a 62 × 40mm label only holds so much.`} />
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 11.5, color: 'var(--warm-300)' }}>

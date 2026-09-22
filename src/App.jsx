@@ -26,6 +26,11 @@ import StockEditModal        from './components/StockEditModal'
 import BarModal              from './components/BarModal'
 import ReceiveBarsModal      from './components/ReceiveBarsModal'
 import DeductStockModal      from './components/DeductStockModal'
+import RecordOffcutsModal    from './components/RecordOffcutsModal'
+import StocktakeModal        from './components/StocktakeModal'
+import AddToPOModal          from './components/AddToPOModal'
+import ReceivePOModal        from './components/ReceivePOModal'
+import CompanyDetailsAdmin   from './pages/CompanyDetailsAdmin'
 import SupplierModal         from './components/SupplierModal'
 import AddWindowModal        from './components/AddWindowModal'
 import PurchaseOrderModal    from './components/PurchaseOrderModal'
@@ -33,8 +38,10 @@ import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
 import { buildStockMap, stockKey, getStock, planStockRestore, stockPositions } from './lib/stockEngine'
-import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines } from './lib/bomEngine'
-import { orderUnitInfo } from './lib/poEngine'
+import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines, resolveAnswers } from './lib/bomEngine'
+import { windowSell } from './lib/sellEngine'
+import { orderUnitInfo, openPOFor, poDisplayNumber, outstandingQty, isFullyReceived, receivedToStockQty } from './lib/poEngine'
+import { exportPurchaseOrderPDF } from './lib/exportPOPdf'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
 import { exportProductPricingXLSX } from './lib/exportPricing'
 import './index.css'
@@ -108,6 +115,16 @@ export default function App({ route = 'manufacturing' }) {
   const [barModalColour, setBarModalColour]       = useState(null)
   const [editingBar, setEditingBar]               = useState(null)
 
+  const [companyDetails, setCompanyDetails]       = useState({})
+  const [receivePOOpen, setReceivePOOpen]         = useState(false)
+  const [receiving, setReceiving]                 = useState(false)
+  const [addToPOOpen, setAddToPOOpen]             = useState(false)
+  const [addToPOComp, setAddToPOComp]             = useState(null)
+  const [addToPOColour, setAddToPOColour]         = useState(null)
+  const [stocktakeOpen, setStocktakeOpen]         = useState(false)
+  const [stocktakeComp, setStocktakeComp]         = useState(null)
+  const [stocktakeColour, setStocktakeColour]     = useState(null)
+  const [stocktakeStock, setStocktakeStock]       = useState(null)
   const [receiveBarsOpen, setReceiveBarsOpen]     = useState(false)
   const [receiveBarsComp, setReceiveBarsComp]     = useState(null)
   const [receiveBarsColour, setReceiveBarsColour] = useState(null)
@@ -115,6 +132,7 @@ export default function App({ route = 'manufacturing' }) {
 
   const [deductOpen, setDeductOpen]               = useState(false)
   const [deductSaving, setDeductSaving]           = useState(false)
+  const [recordOffcutsOpen, setRecordOffcutsOpen] = useState(false)
   const [jobMovements, setJobMovements]           = useState([])
 
   // ---- Purchase order state ----
@@ -169,12 +187,12 @@ export default function App({ route = 'manufacturing' }) {
         optionDefsFor(win.product_id),
         useSnapshot ? (job.price_snapshot || null) : null,
         useSnapshot ? (job.qty_snapshot?.[win.id] || null) : null,
-        fabricSelectionFor(win, products.find(p => p.id === win.product_id), components, fabricCategories),
+        fabricSelectionFor(win, products.find(p => p.id === win.product_id), components),
         substitutionsFor(job, win, components),
         components,
       )
     })))
-  }, [productComponentsMap, optionDefsFor, products, components, fabricCategories])
+  }, [productComponentsMap, optionDefsFor, products, components])
 
   // Pre-compute current job's BOM summary for the deduct stock modal.
   // Job-level extras are in it: they are picked and taken out of stock like
@@ -225,7 +243,7 @@ export default function App({ route = 'manufacturing' }) {
 
   const loadAll = useCallback(async () => {
     if (!hasLoadedRef.current) setLoading(true)
-    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes, fcRes, ckRes, delRes] = await Promise.all([
+    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes, fcRes, ckRes, delRes, cdRes] = await Promise.all([
       supabase.from('components').select('*').order('name'),
       supabase.from('suppliers').select('*').order('name'),
       supabase.from('products').select('*').order('name'),
@@ -240,6 +258,7 @@ export default function App({ route = 'manufacturing' }) {
       supabase.from('fabric_categories').select('*').order('code'),
       supabase.from('component_kinds').select('*').order('sort_order'),
       supabase.from('deleted_records').select('*').order('deleted_at', { ascending: false }),
+      supabase.from('company_details').select('*').eq('id', 1).maybeSingle(),
     ])
 
     const schedules = wsRes.error ? [] : (wsRes.data || [])
@@ -251,6 +270,10 @@ export default function App({ route = 'manufacturing' }) {
     // the component editor both fall back to whatever kinds the components
     // themselves already carry, so nothing breaks in the meantime.
     if (!ckRes.error) setComponentKinds(ckRes.data || [])
+
+    // Missing until supabase_po_receiving.sql is run. An empty object just
+    // means a PDF with a shorter letterhead, so nothing breaks meanwhile.
+    if (!cdRes.error && cdRes.data) setCompanyDetails(cdRes.data)
 
     // Left null when the table isn't there, so the admin screen can say
     // "not switched on yet" rather than the far worse "nothing was deleted".
@@ -558,15 +581,50 @@ export default function App({ route = 'manufacturing' }) {
   }
 
   // ==== FABRIC PRICING CATEGORIES ====
-  // Six fixed rows (A-F) seeded by migration — this only ever updates one,
-  // never inserts or deletes.
+  // A category is now the tier the WHOLESALER sells a fabric under, and it
+  // carries their width × drop price list. Grids arrive by upload rather than
+  // by hand: eleven grids of 121 cells is 1,331 chances to type a price wrong
+  // into a margin report. See supabase_price_grids.sql.
 
-  const handleSaveFabricCategoryPrice = async (code, max_price) => {
+  /**
+   * Load the grids a parsed workbook produced.
+   *
+   * Upserted by code, so a tier the list has and the table doesn't — Budget
+   * the first time, or whatever they add next year — arrives with its prices
+   * rather than being silently dropped.
+   */
+  const handleSaveFabricGrids = async (grids, fileName) => {
     setProdSaving(true)
-    const { error } = await supabase.from('fabric_categories')
-      .update({ max_price: Number(max_price) || 0 }).eq('code', code)
-    if (error) showToast(error.message || 'Failed to save', 'error')
-    else { showToast(`Category ${code} updated ✓`, 'success'); await loadAll() }
+    const now = new Date().toISOString()
+    const { error } = await supabase.from('fabric_categories').upsert(
+      grids.map(g => ({
+        code:             g.code,
+        name:             g.code === 'Budget' ? 'Budget' : `Category ${g.code}`,
+        widths:           g.widths,
+        drops:            g.drops,
+        prices:           g.prices,
+        price_list_label: `${fileName} · ${g.sheet}`,
+        price_list_year:  g.year || null,
+        priced_at:        now,
+      })), { onConflict: 'code' })
+    if (error) showToast(error.message || 'Failed to load price list', 'error')
+    else {
+      showToast(`${grids.length} price grid${grids.length !== 1 ? 's' : ''} loaded ✓`, 'success')
+      await loadAll()
+    }
+    setProdSaving(false)
+  }
+
+  /** Apply the workbook's unambiguous fabric → category suggestions. */
+  const handleTagFabrics = async (suggestions = []) => {
+    if (suggestions.length === 0) return
+    setProdSaving(true)
+    await Promise.all(suggestions.map(sug =>
+      supabase.from('components')
+        .update({ fabric_category: sug.suggested })
+        .eq('id', sug.component.id)))
+    showToast(`${suggestions.length} fabric${suggestions.length !== 1 ? 's' : ''} tagged ✓`, 'success')
+    await loadAll()
     setProdSaving(false)
   }
 
@@ -1041,12 +1099,33 @@ export default function App({ route = 'manufacturing' }) {
     const jobExtraLines = buildJobExtraLines(job, components, null)
     const total = calcJobSummary(windowsWithBOM, jobExtraLines)
       .reduce((s, r) => s + r.total_cost, 0)
+
+    // Sell freezes beside cost, for the same reason. Without it, loading next
+    // year's price list would silently rewrite the margin on every job ever
+    // completed — and a GP figure that changes when you restate the prices is
+    // not a figure anyone can act on. A window with no sell price yet is left
+    // OUT of the snapshot rather than frozen at null, so pricing it later
+    // still works; only a real number is worth locking.
+    const sell_snapshot = {}
+    windowsWithBOM.forEach(win => {
+      const product = products.find(p => p.id === win.product_id)
+      const optDefs = optionDefsFor(win.product_id)
+      const fabricCmp = components.find(c => c.id === win.config?.fabric?.component_id) || null
+      const { sell } = windowSell({
+        win, product, fabricComponent: fabricCmp,
+        categories: fabricCategories, optionDefs: optDefs,
+        answers: resolveAnswers(optDefs, win.config),
+      })
+      if (sell !== null && sell !== undefined) sell_snapshot[win.id] = sell
+    })
+
     return {
       price_snapshot: buildPriceSnapshot(windowsWithBOM, jobExtraLines),
       qty_snapshot:   buildQtySnapshot(windowsWithBOM),
+      sell_snapshot,
       locked_total:   Math.round(total * 100) / 100,
     }
-  }, [buildJobWindows, components])
+  }, [buildJobWindows, components, products, optionDefsFor, fabricCategories])
 
   // One-off: jobs confirmed before pricing was locked have no snapshot, so their
   // value would keep moving with component costs. Lock them at current prices.
@@ -1081,7 +1160,7 @@ export default function App({ route = 'manufacturing' }) {
   }, [loading, jobs, productComponentsMap, computeJobLock, showToast])
 
   const handleJobConfirm = async () => {
-    if (!window.confirm('Confirm this job? The BOM and its pricing will be locked.')) return
+    if (!window.confirm('Confirm this job? The BOM, its cost and its sell prices will be locked.')) return
     const updates = { status: 'in_progress', ...computeJobLock(currentJob) }
     // Default the manufacture date to today if not already set
     if (!currentJob.date_manufacture) {
@@ -1241,6 +1320,123 @@ export default function App({ route = 'manufacturing' }) {
     setStockSaving(false)
   }
 
+  /* -------------------------------------------------------- add to a PO --
+   * Reordering from the shelf, where you notice you are short, rather than
+   * three screens away in Orders.
+   *
+   * The order is the supplier's most recent DRAFT, and when they have none —
+   * which is the usual case, not the exception — one is started. Draft only:
+   * a 'sent' order has gone to the supplier and appending to it would add a
+   * line nobody is going to send.
+   * --------------------------------------------------------------------- */
+  const handleAddToPO = (component, colourVariant) => {
+    setAddToPOComp(component)
+    setAddToPOColour(colourVariant)
+    setAddToPOOpen(true)
+  }
+
+  const handleSaveAddToPO = async ({ qty }) => {
+    setPoCreating(true)
+    const component = addToPOComp
+    const supplierId = component.supplier_id
+    let po = openPOFor(purchaseOrders, supplierId)
+    let created = false
+
+    if (!po) {
+      const { data, error } = await supabase
+        .from('purchase_orders')
+        .insert({ supplier_id: supplierId, status: 'draft', notes: null })
+        .select('*, supplier:suppliers(*)').single()
+      if (error || !data) {
+        showToast(error?.message || 'Could not start an order', 'error')
+        setPoCreating(false)
+        return
+      }
+      po = data
+      created = true
+    }
+
+    const info = orderUnitInfo(component, suppliers.find(sp => sp.id === supplierId))
+    const { error } = await supabase.from('purchase_order_lines').insert({
+      po_id:          po.id,
+      component_id:   component.id,
+      colour_variant: addToPOColour || null,
+      qty_ordered:    Number(qty) || 0,
+      unit_cost:      info.price,
+    })
+
+    if (error) {
+      showToast(error.message || 'Could not add to the order', 'error')
+    } else {
+      const unit = component.order_type === 'bar' ? 'bar' : 'pack'
+      showToast(
+        `${qty} ${unit}${qty !== 1 ? 's' : ''} → ${poDisplayNumber(po)}${created ? ' (new draft)' : ''} ✓`,
+        'success')
+      setAddToPOOpen(false)
+      await loadAll()
+    }
+    setPoCreating(false)
+  }
+
+  /* ---------------------------------------------------------- stocktake --
+   * Bars could only ever go up. Receiving added to the count and nothing took
+   * away from it, so the one correction a stocktake exists to make had no way
+   * in — and a bar count that is too high is worse than one that is too low,
+   * because the cut planner will confidently plan against bars that are not
+   * on the rack.
+   *
+   * The count is set, not nudged, and the difference is written to
+   * stock_movements as an 'adjust' so the change can be accounted for later.
+   * planStockRestore only ever reads 'deduct' rows, so an adjustment cannot be
+   * picked up and "returned" by deleting a job.
+   * --------------------------------------------------------------------- */
+  const handleStocktake = (component, colourVariant, stock) => {
+    setStocktakeComp(component)
+    setStocktakeColour(colourVariant)
+    setStocktakeStock(stock)
+    setStocktakeOpen(true)
+  }
+
+  const handleSaveStocktake = async ({ counted, qty_minimum }) => {
+    setStockSaving(true)
+    const before = Number(stocktakeStock?.qty_on_hand) || 0
+    const after  = Number(counted) || 0
+    const delta  = after - before
+
+    if (stocktakeStock?.id) {
+      await supabase.from('stock')
+        .update({ qty_on_hand: after, qty_minimum })
+        .eq('id', stocktakeStock.id)
+    } else {
+      await supabase.from('stock').insert({
+        component_id:   stocktakeComp.id,
+        colour_variant: stocktakeColour || null,
+        qty_on_hand:    after,
+        qty_minimum,
+      })
+    }
+
+    // Only when something actually moved. A stocktake that confirms the count
+    // is a real and useful outcome, but it is not a stock movement.
+    if (delta !== 0) {
+      await supabase.from('stock_movements').insert({
+        component_id:      stocktakeComp.id,
+        colour_variant:    stocktakeColour || null,
+        movement_type:     'adjust',
+        qty:               delta,
+        qty_on_hand_delta: delta,
+        notes:             `Stocktake: counted ${after} bar${after !== 1 ? 's' : ''} (was ${before})`,
+      })
+    }
+
+    showToast(delta === 0
+      ? 'Count confirmed — no change'
+      : `Stock set to ${after} bar${after !== 1 ? 's' : ''} (${delta > 0 ? '+' : ''}${delta}) ✓`, 'success')
+    setStocktakeOpen(false)
+    await loadAll()
+    setStockSaving(false)
+  }
+
   const handleReceiveBars = (component, colourVariant, stock) => {
     setReceiveBarsComp(component)
     setReceiveBarsColour(colourVariant)
@@ -1344,6 +1540,69 @@ export default function App({ route = 'manufacturing' }) {
     setDeductOpen(true)
   }
 
+  /* ------------------------------------------------------------------------
+   * Offcuts still owed
+   *
+   * A bar deduction takes the bars the cutting plan called for and records
+   * what it EXPECTS to be left over, but puts nothing on the shelf — the real
+   * lengths are only known once the cutting is done. So a job can sit in a
+   * state where stock has gone out and the leftovers have not come back, and
+   * the job page has to say so, or the offcuts quietly never get entered and
+   * the next job plans against a shelf that is emptier than it really is.
+   *
+   * Movements are therefore loaded whenever a job is open, not only when the
+   * deduct modal is, since the prompt has to appear without being asked for.
+   * ---------------------------------------------------------------------- */
+  useEffect(() => {
+    if (currentJob?.id) loadJobMovements(currentJob.id)
+    else setJobMovements([])
+  }, [currentJob?.id, loadJobMovements])
+
+  const pendingOffcuts = useMemo(() => (jobMovements || [])
+    .filter(m => Array.isArray(m.planned_offcuts) && m.planned_offcuts.length > 0
+      && !m.offcuts_recorded_at)
+    .map(m => ({
+      movement_id:    m.id,
+      component_id:   m.component_id,
+      component:      components.find(c => c.id === m.component_id) || null,
+      colour_variant: m.colour_variant || null,
+      offcuts:        m.planned_offcuts,
+    })), [jobMovements, components])
+
+  /**
+   * Put the recorded leftovers on the shelf and stop the job asking.
+   *
+   * The pieces are stamped with the job, the same as any offcut a job created,
+   * so deleting the job can still take back what it made (planStockRestore
+   * tells them from the pieces it consumed by status). The movements are
+   * stamped whether or not anything was kept — "it all went in the bin" is an
+   * answer, and a job that has been answered should stop prompting.
+   */
+  const handleRecordOffcuts = async ({ pieces = [], movementIds = [] }) => {
+    setDeductSaving(true)
+    if (pieces.length > 0) {
+      await supabase.from('stock_bars').insert(pieces.map(p => ({
+        component_id:   p.component_id,
+        colour_variant: p.colour_variant || null,
+        label:          p.label,
+        length_mm:      p.length_mm,
+        status:         'available',
+        job_id:         currentJob.id,
+      })))
+    }
+    if (movementIds.length > 0) {
+      await supabase.from('stock_movements')
+        .update({ offcuts_recorded_at: new Date().toISOString() })
+        .in('id', movementIds)
+    }
+    showToast(pieces.length > 0
+      ? `${pieces.length} offcut${pieces.length !== 1 ? 's' : ''} on the shelf ✓`
+      : 'Offcuts recorded — nothing kept', 'success')
+    setRecordOffcutsOpen(false)
+    await Promise.all([loadAll(), loadJobMovements(currentJob.id)])
+    setDeductSaving(false)
+  }
+
   // Deduct stock line by line after job confirmation
   const handleDeductStock = async (deductions) => {
     setDeductSaving(true)
@@ -1367,6 +1626,11 @@ export default function App({ route = 'manufacturing' }) {
         movement_type:  'deduct',
         qty:            -d.qty,
         qty_on_hand_delta: 0,
+        // What the cutting plan expects to survive the saw. Held rather than
+        // written to stock, because the real lengths are only known once the
+        // cutting is done — see supabase_cut_plan_offcuts.sql and the Record
+        // Offcuts step. Absent on pack and fabric lines, which have no plan.
+        planned_offcuts: d.planned_offcuts || null,
       }
       movements.push(movement)
 
@@ -1506,7 +1770,7 @@ export default function App({ route = 'manufacturing' }) {
       if (po) {
         await supabase.from('purchase_order_lines').insert(
           items.map(item => {
-            const info      = orderUnitInfo(item.component)
+            const info      = orderUnitInfo(item.component, suppliers.find(sp => sp.id === item.component.supplier_id))
             const shortfall = (item.stock.qty_minimum || 0) - item.qtyAfter
             const packQty   = item.component.order_type === 'bar' ? 1 : (Number(item.component.pack_qty) || 1)
             return {
@@ -1564,6 +1828,137 @@ export default function App({ route = 'manufacturing' }) {
     showToast('Purchase order deleted')
   }
 
+  /** Who we are, for documents that leave the building. One row, id 1. */
+  const handleSaveCompanyDetails = async (form) => {
+    setProdSaving(true)
+    const { error } = await supabase.from('company_details').upsert({
+      id: 1,
+      name: form.name || 'Curtain Ideas',
+      abn: form.abn || null,
+      address: form.address || null,
+      phone: form.phone || null,
+      email: form.email || null,
+      website: form.website || null,
+      delivery_address: form.delivery_address || null,
+      delivery_note: form.delivery_note || null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' })
+    if (error) showToast(error.message || 'Failed to save', 'error')
+    else { showToast('Company details saved ✓', 'success'); await loadAll() }
+    setProdSaving(false)
+  }
+
+  /** Quantities-only mode. Stored on the order so the PDF cannot disagree. */
+  const handleTogglePricing = async (hide) => {
+    const { error } = await supabase.from('purchase_orders')
+      .update({ hide_pricing: hide }).eq('id', currentPO.id)
+    if (error) { showToast(error.message || 'Failed to save', 'error'); return }
+    setCurrentPO(p => ({ ...p, hide_pricing: hide }))
+    setPurchaseOrders(prev => prev.map(p => p.id === currentPO.id ? { ...p, hide_pricing: hide } : p))
+    showToast(hide ? 'Pricing hidden on this order' : 'Pricing shown on this order')
+  }
+
+  const handleExportPOPdf = async () => {
+    setPoExporting(true)
+    try {
+      const supplier = suppliers.find(sp => sp.id === currentPO.supplier_id) || currentPO.supplier
+      await exportPurchaseOrderPDF(currentPO, supplier, poLinesMap[currentPO.id] || [], companyDetails)
+    } catch (e) {
+      showToast(e.message || 'Could not generate the PDF', 'error')
+    } finally {
+      setPoExporting(false)
+    }
+  }
+
+  /* -------------------------------------------------------- receiving --
+   * Books a delivery in against its order and onto the shelf in one step.
+   *
+   * The conversion is the whole job and it differs per kind of part: an order
+   * unit is a bar for a bar, a PACK for a pack — three packs of a 50m spline
+   * is 150 metres of stock, not three — and fabric is not a count at all, so
+   * each roll arrives as its own piece with the width and length the modal
+   * asked for.
+   *
+   * The order closes itself only when every line is fully in. A part delivery
+   * leaves it open, showing what is still owed.
+   * ------------------------------------------------------------------- */
+  const handleReceivePO = async (received) => {
+    setReceiving(true)
+    const movements = [], pieces = []
+
+    for (const { line, qty, rolls } of received) {
+      const component = line.component
+      if (!component) continue
+
+      const movement = {
+        component_id:      component.id,
+        colour_variant:    line.colour_variant || null,
+        movement_type:     'receive',
+        qty,
+        qty_on_hand_delta: 0,
+        notes:             `Received ${qty} on ${poDisplayNumber(currentPO)}`,
+      }
+
+      if (component.order_type === 'fabric') {
+        // Rolls are pieces, not a number. qty_on_hand stays untouched.
+        (rolls || []).forEach((r, i) => pieces.push({
+          component_id:   component.id,
+          colour_variant: line.colour_variant || null,
+          label:          `${poDisplayNumber(currentPO)} roll ${i + 1}`,
+          length_mm:      r.length_mm,
+          roll_width_mm:  r.roll_width_mm,
+          status:         'available',
+        }))
+      } else {
+        const delta = receivedToStockQty(component, qty)
+        const key   = stockKey(component.id, line.colour_variant)
+        const stock = getStock(stockMap, component, line.colour_variant) || stockMap[key]
+        if (stock?.id) {
+          await supabase.from('stock')
+            .update({ qty_on_hand: (Number(stock.qty_on_hand) || 0) + delta })
+            .eq('id', stock.id)
+        } else {
+          await supabase.from('stock').insert({
+            component_id:   component.id,
+            colour_variant: line.colour_variant || null,
+            qty_on_hand:    delta,
+            qty_minimum:    0,
+          })
+        }
+        movement.qty_on_hand_delta = delta
+      }
+
+      movements.push(movement)
+
+      await supabase.from('purchase_order_lines')
+        .update({ qty_received: (Number(line.qty_received) || 0) + qty })
+        .eq('id', line.id)
+    }
+
+    if (pieces.length)    await supabase.from('stock_bars').insert(pieces)
+    if (movements.length) await supabase.from('stock_movements').insert(movements)
+
+    // Close the order only when nothing is left owing.
+    const after = (poLinesMap[currentPO.id] || []).map(l => {
+      const hit = received.find(r => r.line.id === l.id)
+      return hit ? { ...l, qty_received: (Number(l.qty_received) || 0) + hit.qty } : l
+    })
+    const done = isFullyReceived(after)
+    if (done) {
+      await supabase.from('purchase_orders').update({ status: 'received' }).eq('id', currentPO.id)
+      setCurrentPO(p => ({ ...p, status: 'received' }))
+    }
+
+    const still = after.reduce((n, l) => n + (outstandingQty(l) > 0 ? 1 : 0), 0)
+    showToast(done
+      ? `Delivery received — order complete ✓`
+      : `${received.length} line${received.length !== 1 ? 's' : ''} received · ${still} still outstanding`,
+      'success')
+    setReceivePOOpen(false)
+    await loadAll()
+    setReceiving(false)
+  }
+
   const handleAddPOLines = async (lines) => {
     setAddingLines(true)
     const payload = lines.map(l => ({ ...l, po_id: currentPO.id }))
@@ -1582,6 +1977,11 @@ export default function App({ route = 'manufacturing' }) {
     const payload = {}
     if (updates.qty_ordered !== undefined) payload.qty_ordered = Number(updates.qty_ordered) || 0
     if (updates.unit_cost !== undefined) payload.unit_cost = Number(updates.unit_cost) || 0
+    // Blank is not a description — it means "use the component's own wording",
+    // so it goes back as null rather than as an empty string that would print
+    // a blank line on the order.
+    if (updates.description !== undefined) payload.description = updates.description.trim() === '' ? null : updates.description
+    if (updates.order_unit !== undefined)  payload.order_unit  = updates.order_unit.trim()  === '' ? null : updates.order_unit
     setPoLinesMap(prev => ({
       ...prev,
       [currentPO.id]: (prev[currentPO.id] || []).map(l => l.id === lineId ? { ...l, ...payload } : l),
@@ -1607,12 +2007,12 @@ export default function App({ route = 'manufacturing' }) {
     }
   }
 
-  const handleExportPricing = async (product) => {
+  const handleExportPricing = async (product, fabric = null) => {
     setPricingExporting(true)
     try {
       const optionDefs = productOptions[product.product_type] || []
       const { truncated } = await exportProductPricingXLSX(
-        product, productComponentsMap[product.id] || [], optionDefs, fabricCategories, Number(product.markup) || 1.6)
+        product, productComponentsMap[product.id] || [], optionDefs, fabricCategories, fabric)
       if (truncated) showToast('Too many option combinations — export was capped', 'error')
       else showToast('Pricing downloaded ✓', 'success')
     } catch (e) {
@@ -1688,6 +2088,7 @@ export default function App({ route = 'manufacturing' }) {
           kinds={componentKinds}
           fabricCategories={fabricCategories}
           stockMap={stockMap}
+          stockBars={stockBars}
           onBack={() => setCurrentJob(null)}
           onUpdate={handleJobUpdate}
           onDelete={handleJobDeleteRequest}
@@ -1702,6 +2103,8 @@ export default function App({ route = 'manufacturing' }) {
           onAttachPO={handleAttachPO}
           poUploading={poUploading}
           onDeductStock={handleOpenDeductModal}
+          onRecordOffcuts={() => setRecordOffcutsOpen(true)}
+          pendingOffcutCount={pendingOffcuts.length}
         />
       )
     }
@@ -1731,7 +2134,7 @@ export default function App({ route = 'manufacturing' }) {
           onRemoveComponent={handleRemoveProductComponent}
           onDuplicate={handleDuplicate}
           onDeleteProduct={handleProductDelete}
-          onExportPricing={() => handleExportPricing(currentProduct)}
+          onExportPricing={(fabric) => handleExportPricing(currentProduct, fabric)}
           pricingExporting={pricingExporting}
           saving={prodSaving}
         />
@@ -1761,8 +2164,21 @@ export default function App({ route = 'manufacturing' }) {
       return (
         <FabricCategoriesAdmin
           categories={fabricCategories}
+          components={components}
           onBack={() => setAdminSection(null)}
-          onSave={handleSaveFabricCategoryPrice}
+          onSaveGrids={handleSaveFabricGrids}
+          onTagFabrics={handleTagFabrics}
+          saving={prodSaving}
+        />
+      )
+    }
+
+    if (navTab === 'admin' && adminSection === 'company_details') {
+      return (
+        <CompanyDetailsAdmin
+          company={companyDetails}
+          onBack={() => setAdminSection(null)}
+          onSave={handleSaveCompanyDetails}
           saving={prodSaving}
         />
       )
@@ -1798,6 +2214,7 @@ export default function App({ route = 'manufacturing' }) {
 
     if (navTab === 'admin') {
       return <AdminHome onOpenOptions={() => setAdminSection('options')}
+               onOpenCompanyDetails={() => setAdminSection('company_details')}
                onOpenFabricCategories={() => setAdminSection('fabric_categories')}
                onOpenComponentKinds={() => setAdminSection('component_kinds')}
                onOpenDeletedRecords={() => setAdminSection('deleted_records')} />
@@ -1842,8 +2259,12 @@ export default function App({ route = 'manufacturing' }) {
           kinds={componentKinds}
           onEditStock={handleOpenStockEdit}
           onReceiveBars={handleReceiveBars}
+          onStocktake={handleStocktake}
           onAddOffcut={handleAddBar}
           onEditOffcut={handleEditBar}
+          purchaseOrders={purchaseOrders}
+          poLinesMap={poLinesMap}
+          onAddToPO={handleAddToPO}
         />
       )
     }
@@ -1861,6 +2282,9 @@ export default function App({ route = 'manufacturing' }) {
           onRemoveLine={handleRemovePOLine}
           onStatusChange={handlePOStatusChange}
           onExport={handleExportPO}
+          onExportPdf={handleExportPOPdf}
+          onTogglePricing={handleTogglePricing}
+          onReceive={() => setReceivePOOpen(true)}
           exporting={poExporting}
         />
       )
@@ -2009,6 +2433,44 @@ export default function App({ route = 'manufacturing' }) {
         saving={stockSaving}
       />
 
+      {currentPO && (
+        <ReceivePOModal
+          open={receivePOOpen}
+          po={currentPO}
+          lines={poLinesMap[currentPO.id] || []}
+          onClose={() => setReceivePOOpen(false)}
+          onReceive={handleReceivePO}
+          saving={receiving}
+        />
+      )}
+
+      <AddToPOModal
+        open={addToPOOpen}
+        component={addToPOComp}
+        colourVariant={addToPOColour}
+        supplier={suppliers.find(s => s.id === addToPOComp?.supplier_id) || null}
+        po={openPOFor(purchaseOrders, addToPOComp?.supplier_id)}
+        willCreate={!openPOFor(purchaseOrders, addToPOComp?.supplier_id)}
+        stockMap={stockMap}
+        onClose={() => setAddToPOOpen(false)}
+        onAdd={handleSaveAddToPO}
+        saving={poCreating}
+      />
+
+      <StocktakeModal
+        open={stocktakeOpen}
+        component={stocktakeComp}
+        colourVariant={stocktakeColour}
+        stock={stocktakeStock}
+        offcuts={stockBars.filter(b =>
+          b.component_id === stocktakeComp?.id &&
+          b.status === 'available' &&
+          (b.colour_variant?.suffix || null) === (stocktakeColour?.suffix || null))}
+        onClose={() => setStocktakeOpen(false)}
+        onSave={handleSaveStocktake}
+        saving={stockSaving}
+      />
+
       <ReceiveBarsModal
         open={receiveBarsOpen}
         component={receiveBarsComp}
@@ -2040,6 +2502,17 @@ export default function App({ route = 'manufacturing' }) {
           stockBars={stockBars}
           onClose={() => setDeductOpen(false)}
           onDeduct={handleDeductStock}
+          saving={deductSaving}
+        />
+      )}
+
+      {currentJob && (
+        <RecordOffcutsModal
+          open={recordOffcutsOpen}
+          job={currentJob}
+          pending={pendingOffcuts}
+          onClose={() => setRecordOffcutsOpen(false)}
+          onSave={handleRecordOffcuts}
           saving={deductSaving}
         />
       )}

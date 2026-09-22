@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { XIcon } from './Icons'
 import { resolveAnswers, isOptionVisible, missingAnswers, resolveRecipe, applySubstitutions, calcWindowBOM, fabricLineFor, buildFabricSelection, jobRoleSlots, fmt } from '../lib/bomEngine'
-import { fabricsInCategory } from '../lib/fabricEngine'
+import { allFabrics, categoryForFabric } from '../lib/fabricEngine'
 import { getStock } from '../lib/stockEngine'
 
 /**
@@ -12,8 +12,11 @@ import { getStock } from '../lib/stockEngine'
  * shown as settled rather than asked, and never blocks.
  *
  * A blind also picks its fabric here — the one thing every blind window needs
- * that no track window does — from whatever's currently classified into the
- * product's pricing category (see supabase_fabric_pricing.sql).
+ * that no track window does — from the whole fabric library. The list used to
+ * be narrowed to the product's pricing category, which made sense while that
+ * category decided what the blind cost. It doesn't any more: any fabric goes
+ * on any roller blind, and both its cost and its sell price follow the fabric
+ * rather than the product (see supabase_price_grids.sql).
  *
  * Last come the parts the recipe is willing to be argued with about: any line
  * whose KIND is marked ask_on_job (see supabase_kind_ask_on_job.sql) is its own
@@ -49,15 +52,17 @@ export default function CustomiseWindowModal({
   }, [open, config, substitutions])
 
   const isBlind  = product?.product_type === 'blind'
-  const category = categories.find(c => c.code === product?.fabric_category)
-  const fabricChoices = useMemo(() => (isBlind && category)
-    ? fabricsInCategory(allComponents, categories, category.code)
-    : [], [isBlind, category, allComponents, categories])
+  const fabricChoices = useMemo(
+    () => isBlind ? allFabrics(allComponents) : [],
+    [isBlind, allComponents])
   const selectedFabric = allComponents.find(c => c.id === fabricAnswer.component_id)
   const fabricColours  = selectedFabric?.colour_variants || []
+  // The chosen fabric's own sell tier, shown so an untagged fabric is caught
+  // here rather than as a missing sell price on the job later.
+  const category = categoryForFabric(categories, selectedFabric)
 
   const fabricSelection = isBlind
-    ? buildFabricSelection(selectedFabric, fabricAnswer.colour_variant, product, category)
+    ? buildFabricSelection(selectedFabric, fabricAnswer.colour_variant, product)
     : null
 
   const draft = useMemo(() => ({ options: answers, fabric: fabricAnswer }), [answers, fabricAnswer])
@@ -65,10 +70,9 @@ export default function CustomiseWindowModal({
   const effective = useMemo(() => resolveAnswers(optionDefs, draft), [optionDefs, draft])
   const missing   = useMemo(() => missingAnswers(optionDefs, draft), [optionDefs, draft])
 
-  // A category assigned but nothing picked yet blocks save, same as any
-  // other required answer. No category assigned is a product-setup gap this
-  // modal can't fix, so it's shown but doesn't block.
-  const fabricUnanswered = isBlind && !!category && !fabricAnswer.component_id
+  // Every blind needs a fabric, so not picking one blocks save the same way
+  // any other required answer does.
+  const fabricUnanswered = isBlind && !fabricAnswer.component_id
   const allMissing = fabricUnanswered ? [...missing, 'Fabric'] : missing
 
   // The lines this window actually gets, before anything is swapped into them.
@@ -162,18 +166,10 @@ export default function CustomiseWindowModal({
             <div className="field">
               <label className="field-label">
                 Fabric
-                {category && <span style={{ fontSize: 10, fontWeight: 700, marginLeft: 6, padding: '1px 5px', borderRadius: 4, background: 'var(--danger-bg)', color: 'var(--danger)' }}>required</span>}
+                <span style={{ fontSize: 10, fontWeight: 700, marginLeft: 6, padding: '1px 5px', borderRadius: 4, background: 'var(--danger-bg)', color: 'var(--danger)' }}>required</span>
               </label>
 
-              {!category ? (
-                <div style={{
-                  background: 'var(--warning-bg)', borderRadius: 'var(--radius-sm)',
-                  padding: '9px 12px', fontSize: 12.5, color: 'var(--warning)',
-                }}>
-                  This product has no pricing category assigned — set one in Products before a
-                  fabric can be picked.
-                </div>
-              ) : (
+              {(
                 <>
                   <select className="field-input" value={fabricAnswer.component_id}
                     onChange={e => setFabricAnswer({ component_id: e.target.value, colour_variant: null })}
@@ -190,7 +186,7 @@ export default function CustomiseWindowModal({
                   </select>
                   {fabricChoices.length === 0 && (
                     <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
-                      No fabrics are currently classified into Category {category.code}.
+                      No fabrics in the component library yet.
                     </div>
                   )}
 
@@ -216,9 +212,11 @@ export default function CustomiseWindowModal({
                   )}
 
                   {selectedFabric && (
-                    <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
-                      Priced at Category {category.code}'s rate — ${Number(category.max_price).toFixed(2)}/m
-                      — not {selectedFabric.name}'s own ${Number(selectedFabric.unit_cost).toFixed(2)}/m.
+                    <div style={{ fontSize: 11, marginTop: 6, color: category ? 'var(--warm-300)' : 'var(--warning)' }}>
+                      Costs ${Number(selectedFabric.unit_cost).toFixed(2)}/m off the roll
+                      {category
+                        ? ` · sells on the ${category.name || category.code} price list`
+                        : ' · not tagged with a sell category, so this blind will have no sell price — tag it in the component library'}
                     </div>
                   )}
                 </>

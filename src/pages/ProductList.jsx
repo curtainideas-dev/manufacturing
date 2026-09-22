@@ -65,7 +65,6 @@ export default function ProductList({ products, onOpen, onNew }) {
                     <div className="component-name">{p.name}</div>
                     <div className="component-sub">
                       {p.component_count ?? 0} recipe line{p.component_count !== 1 ? 's' : ''}
-                      {p.fabric_category ? ` · ${p.fabric_category}` : ''}
                     </div>
                   </div>
                   <ChevronRightIcon size={16} color="var(--warm-200)" style={{ flexShrink: 0 }} />
