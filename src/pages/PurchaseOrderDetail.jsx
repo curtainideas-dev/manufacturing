@@ -46,7 +46,7 @@ function TextCell({ value, placeholder, disabled, onCommit, style }) {
 
 export default function PurchaseOrderDetail({
   po, lines, onBack, onDelete, onAddLines, onUpdateLine, onRemoveLine,
-  onStatusChange, onExport, onExportPdf, onTogglePricing, onReceive, exporting,
+  onStatusChange, onExport, onExportPdf, onTogglePricing, onReceive, onDuplicate, exporting,
 }) {
   const supplier = po.supplier
   const total    = poGrandTotal(lines)
@@ -370,6 +370,18 @@ export default function PurchaseOrderDetail({
               Reopen
             </button>
           )}
+
+          {/* Available at any status: the usual reason to duplicate is that a
+              previous order arrived and you want the same again, which means
+              copying something already sent or received. */}
+          <button className="btn btn-secondary btn-block" style={{ marginTop: 12 }}
+            onClick={onDuplicate} disabled={exporting}>
+            ⧉ Duplicate Order
+          </button>
+          <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginTop: 6, lineHeight: 1.5 }}>
+            Starts a new draft for {supplier?.name || 'this supplier'} with the same items and
+            quantities, priced at today&apos;s rates.
+          </div>
 
           <div className="divider" />
           <button className="btn btn-danger btn-block" onClick={onDelete}>
