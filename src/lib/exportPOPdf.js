@@ -8,9 +8,14 @@
  * order number they can quote back. Everything else in the app is printed for
  * the bench, where all of that is assumed.
  *
- * A4 PORTRAIT, unlike the cut sheets — those are landscape because eight
- * columns of cut data need the width. An order is a short table with a lot of
- * white space around it, and portrait is what a supplier expects to receive.
+ * A4 LANDSCAPE. This started portrait, on the reasoning that an order is a
+ * short table and portrait is what a supplier expects through the letterbox.
+ * That was wrong once Colour earned a column: nine columns do not fit 178mm,
+ * and the squeeze fell on the two that carry the least text and the most
+ * meaning — Disc clipped "25%" and Part No. clipped a 17-character code.
+ * A part number or a discount that is almost right is worse on an order than
+ * one that is missing, because it still gets acted on. The width is worth
+ * more than the convention.
  *
  * QUANTITIES-ONLY MODE (purchase_orders.hide_pricing) drops every money column
  * and the total. It is a property of the order rather than a choice made here,
@@ -28,35 +33,36 @@ import {
 
 const money = n => Number(n || 0).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-const MX = 16, PW = 210, MXR = PW - MX, CW = MXR - MX
-const MB = 272                                  // start a new page before this
+const MX = 16, PW = 297, MXR = PW - MX, CW = MXR - MX   // A4 landscape: 297 wide
+const MB = 190                                  // start a new page before this
+                                                // (page is 210 tall on its side)
 
 /** Columns, priced and unpriced. The unpriced order is not the priced one
  *  with blanks — the description takes back the width the money used. */
 // Widths must sum to CW (178mm). They did not, and the Total column ran
 // off the right edge of the page — invisible on screen, wrong on the sheet a
 // supplier receives.
-// Colour gets real width at the money columns' expense. "Anodised Silver" is
-// 15 characters and was clipping to "Anodised Si…" — a truncated colour on a
-// sheet going to a supplier is how the wrong thing turns up. The price columns
-// hold at most "1234.56" and were carrying several millimetres of slack.
-const COLS_PRICED = [
-  { key: 'pn',     title: 'Part No.',    w: 24 },
-  { key: 'desc',   title: 'Description', w: 44 },
-  { key: 'colour', title: 'Colour',      w: 28 },
-  { key: 'unit',   title: 'Order unit',  w: 18 },
-  { key: 'qty',    title: 'Qty',         w: 10, align: 'right' },
-  { key: 'list',   title: 'List',        w: 13, align: 'right' },
-  { key: 'disc',   title: 'Disc',        w: 9,  align: 'right' },
-  { key: 'net',    title: 'Unit',        w: 13, align: 'right' },
-  { key: 'total',  title: 'Total',       w: 19, align: 'right' },
-]
-const COLS_PLAIN = [
+// Sized against the longest strings this catalogue actually holds, not against
+// invented samples: 17-character part numbers (B0-RB006-200W-WHT), 15-character
+// colours (ARCTIC BLOCKOUT, Anodised Silver) and 45-character names (TCO50
+// 85-110mm single F/Fix bracket 40mm foot). Widths must sum to CW (265mm).
+export const COLS_PRICED = [
   { key: 'pn',     title: 'Part No.',    w: 36 },
-  { key: 'desc',   title: 'Description', w: 62 },
+  { key: 'desc',   title: 'Description', w: 78 },
   { key: 'colour', title: 'Colour',      w: 34 },
-  { key: 'unit',   title: 'Order unit',  w: 28 },
-  { key: 'qty',    title: 'Qty',         w: 18, align: 'right' },
+  { key: 'unit',   title: 'Order unit',  w: 26 },
+  { key: 'qty',    title: 'Qty',         w: 14, align: 'right' },
+  { key: 'list',   title: 'List',        w: 20, align: 'right' },
+  { key: 'disc',   title: 'Disc',        w: 14, align: 'right' },
+  { key: 'net',    title: 'Unit',        w: 20, align: 'right' },
+  { key: 'total',  title: 'Total',       w: 23, align: 'right' },
+]
+export const COLS_PLAIN = [
+  { key: 'pn',     title: 'Part No.',    w: 46 },
+  { key: 'desc',   title: 'Description', w: 99 },
+  { key: 'colour', title: 'Colour',      w: 46 },
+  { key: 'unit',   title: 'Order unit',  w: 40 },
+  { key: 'qty',    title: 'Qty',         w: 34, align: 'right' },
 ]
 
 export function poRows(lines = [], supplier = null, showPricing = true) {
@@ -88,7 +94,7 @@ export function poRows(lines = [], supplier = null, showPricing = true) {
 
 export async function exportPurchaseOrderPDF(po, supplier, lines, company = {}) {
   const jsPDF = await loadJsPDF()
-  const doc   = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+  const doc   = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
 
   const showPricing = !po?.hide_pricing
   const COLS = (showPricing ? COLS_PRICED : COLS_PLAIN).map((c, i, arr) => ({
