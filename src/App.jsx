@@ -1982,6 +1982,7 @@ export default function App({ route = 'manufacturing' }) {
     // a blank line on the order.
     if (updates.description !== undefined) payload.description = updates.description.trim() === '' ? null : updates.description
     if (updates.order_unit !== undefined)  payload.order_unit  = updates.order_unit.trim()  === '' ? null : updates.order_unit
+    if (updates.colour !== undefined)      payload.colour      = updates.colour.trim()      === '' ? null : updates.colour
     setPoLinesMap(prev => ({
       ...prev,
       [currentPO.id]: (prev[currentPO.id] || []).map(l => l.id === lineId ? { ...l, ...payload } : l),
