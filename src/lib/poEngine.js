@@ -219,17 +219,23 @@ export function derivedDescription(line) {
   return line?.component?.name || 'Component'
 }
 
+/** The colour variant's own name — what the line says unless overridden. */
+export function derivedColour(line) {
+  return line?.colour_variant?.name || ''
+}
+
 /**
- * The colour on a line, as its own field.
+ * The colour a line PRINTS, the supplier's word winning over ours.
  *
- * Derived from the colour variant rather than typed. Unlike the description
- * and the order unit — which are our words for something and often wrong on
- * someone else's paperwork — the colour is structural: it picks the part
- * number suffix and the stock row the line draws from, so it is not a label
- * to be freely reworded.
+ * The override is a label and nothing more. colour_variant still decides the
+ * part number suffix and which stock row a delivery books into, so typing
+ * "SA" over "Anodised Silver" changes the sheet and moves no stock. That
+ * separation is deliberate: it lets an order read the supplier's way without
+ * touching what the line actually IS.
  */
 export function lineColour(line) {
-  return line?.colour_variant?.name || ''
+  const override = (line?.colour || '').trim()
+  return override || derivedColour(line)
 }
 
 /** What the line says, the supplier's words winning over ours. */

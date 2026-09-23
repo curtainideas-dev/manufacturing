@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { ChevronLeftIcon, TrashIcon, PlusIcon } from '../components/Icons'
 import {
   orderUnitInfo, displayPN, poDisplayNumber, poLineTotal, poGrandTotal,
-  priceBreakdown, outstandingQty, isFullyReceived, derivedDescription, lineColour,
+  priceBreakdown, outstandingQty, isFullyReceived, derivedDescription, derivedColour,
 } from '../lib/poEngine'
 
 const STATUS_META = {
@@ -207,6 +207,10 @@ export default function PurchaseOrderDetail({
                     // than as missing data.
                     const descPlaceholder = derivedDescription(l)
                     const unitPlaceholder = l.component ? orderUnitInfo(l.component, supplier).label : ''
+                    // A line with no colour variant has no colour to rename,
+                    // so its box stays empty and disabled rather than inviting
+                    // a colour onto a part that does not come in one.
+                    const colourPlaceholder = derivedColour(l)
                     return (
                       <div key={l.id} style={{
                         display: 'grid', gridTemplateColumns: grid,
@@ -240,12 +244,22 @@ export default function PurchaseOrderDetail({
                           )}
                         </div>
 
-                        {/* Derived, not typed. The colour picks the part
-                            number suffix and the stock row this line draws
-                            from, so it is structural rather than a label to
-                            be reworded the way the description is. */}
-                        <div style={{ minWidth: 0, fontSize: 12.5, color: lineColour(l) ? 'var(--ink)' : 'var(--warm-300)' }}>
-                          {lineColour(l) || '—'}
+                        {/* A label only. colour_variant still decides the part
+                            number suffix and the stock row a delivery books
+                            into, so overriding this changes the sheet and
+                            moves no stock. */}
+                        <div style={{ minWidth: 0 }}>
+                          <TextCell
+                            value={l.colour}
+                            placeholder={colourPlaceholder || '—'}
+                            disabled={!isDraft || !colourPlaceholder}
+                            onCommit={v => onUpdateLine(l.id, { colour: v })}
+                            style={{ padding: '5px 7px', fontSize: 12.5, width: '100%' }} />
+                          {l.colour?.trim() && l.colour.trim() !== colourPlaceholder && (
+                            <div style={{ fontSize: 10.5, color: 'var(--warm-300)', marginTop: 2 }}>
+                              {colourPlaceholder}
+                            </div>
+                          )}
                         </div>
 
                         <TextCell
