@@ -212,9 +212,24 @@ export function addToPOState({ component, colourVariant, purchaseOrders = [], po
 
 /** The component's own wording for a line, before any override. */
 export function derivedDescription(line) {
-  const name   = line?.component?.name || 'Component'
-  const colour = line?.colour_variant?.name
-  return colour ? `${name} · ${colour}` : name
+  // Colour is NOT folded in here any more: it has a column of its own, and a
+  // document that prints it twice reads as two different facts. The Excel
+  // export always had a Colour column and so always printed it twice; that is
+  // fixed by the same change.
+  return line?.component?.name || 'Component'
+}
+
+/**
+ * The colour on a line, as its own field.
+ *
+ * Derived from the colour variant rather than typed. Unlike the description
+ * and the order unit — which are our words for something and often wrong on
+ * someone else's paperwork — the colour is structural: it picks the part
+ * number suffix and the stock row the line draws from, so it is not a label
+ * to be freely reworded.
+ */
+export function lineColour(line) {
+  return line?.colour_variant?.name || ''
 }
 
 /** What the line says, the supplier's words winning over ours. */

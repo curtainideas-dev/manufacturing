@@ -9,7 +9,7 @@
  * jsdelivr — jsdelivr is blocked/unreliable in this environment).
  */
 
-import { displayPN, poDisplayNumber, poLineTotal, poGrandTotal, lineDescription, lineOrderUnit } from './poEngine'
+import { displayPN, poDisplayNumber, poLineTotal, poGrandTotal, lineDescription, lineOrderUnit, lineColour } from './poEngine'
 
 const loadXLSX = () => new Promise((resolve, reject) => {
   if (window.XLSX) return resolve(window.XLSX)
@@ -44,7 +44,7 @@ export async function exportPurchaseOrderXLSX(po, supplier, lines) {
     rows.push([
       displayPN(l.component, l.colour_variant),
       lineDescription(l),
-      l.colour_variant?.name || '',
+      lineColour(l),
       Number(l.qty_ordered) || 0,
       lineOrderUnit(l, supplier),
       Number(l.unit_cost) || 0,
