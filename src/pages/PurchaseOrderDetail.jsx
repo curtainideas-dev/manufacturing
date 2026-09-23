@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { ChevronLeftIcon, TrashIcon, PlusIcon } from '../components/Icons'
 import {
   orderUnitInfo, displayPN, poDisplayNumber, poLineTotal, poGrandTotal,
-  priceBreakdown, outstandingQty, isFullyReceived, derivedDescription,
+  priceBreakdown, outstandingQty, isFullyReceived, derivedDescription, lineColour,
 } from '../lib/poEngine'
 
 const STATUS_META = {
@@ -63,8 +63,8 @@ export default function PurchaseOrderDetail({
   // The PDF's columns, in the PDF's order. Part No. and Description lead
   // because that is what a supplier scans for; the money trails behind them.
   const grid = showPricing
-    ? '92px minmax(150px,1fr) 104px 56px 60px 44px 74px 74px 26px'
-    : '110px minmax(190px,1fr) 120px 64px 26px'
+    ? '86px minmax(140px,1fr) 96px 94px 52px 58px 42px 72px 72px 26px'
+    : '104px minmax(170px,1fr) 110px 112px 62px 26px'
 
   const outstanding = lines.reduce((n, l) => n + (outstandingQty(l) > 0 ? 1 : 0), 0)
   const allIn       = isFullyReceived(lines)
@@ -178,7 +178,7 @@ export default function PurchaseOrderDetail({
                  than a scroll. Part No. and Description stay pinned left so a
                  row stays identifiable while the money scrolls past. */
               <div style={{ overflowX: 'auto' }}>
-                <div style={{ minWidth: showPricing ? 760 : 460 }}>
+                <div style={{ minWidth: showPricing ? 866 : 570 }}>
                   <div style={{
                     display: 'grid', gridTemplateColumns: grid,
                     padding: '10px 16px', background: 'var(--warm-100)',
@@ -188,6 +188,7 @@ export default function PurchaseOrderDetail({
                   }}>
                     <div>Part No.</div>
                     <div>Description</div>
+                    <div>Colour</div>
                     <div>Order unit</div>
                     <div style={{ textAlign: 'right' }}>Qty</div>
                     {showPricing && <div style={{ textAlign: 'right' }}>List</div>}
@@ -237,6 +238,14 @@ export default function PurchaseOrderDetail({
                                 : `all ${l.qty_ordered} received`}
                             </div>
                           )}
+                        </div>
+
+                        {/* Derived, not typed. The colour picks the part
+                            number suffix and the stock row this line draws
+                            from, so it is structural rather than a label to
+                            be reworded the way the description is. */}
+                        <div style={{ minWidth: 0, fontSize: 12.5, color: lineColour(l) ? 'var(--ink)' : 'var(--warm-300)' }}>
+                          {lineColour(l) || '—'}
                         </div>
 
                         <TextCell
@@ -294,7 +303,7 @@ export default function PurchaseOrderDetail({
                       padding: '12px 16px', background: 'var(--accent-bg)',
                       fontSize: 14, fontWeight: 700, gap: 8,
                     }}>
-                      <div style={{ color: 'var(--accent-dark)', gridColumn: '1 / 8' }}>Estimated Total</div>
+                      <div style={{ color: 'var(--accent-dark)', gridColumn: '1 / 9' }}>Estimated Total</div>
                       <div style={{ textAlign: 'right', color: 'var(--accent-dark)' }}>${fmtMoney(total)}</div>
                       <div />
                     </div>

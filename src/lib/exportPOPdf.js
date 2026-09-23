@@ -23,7 +23,7 @@ import {
 } from './pdfKit'
 import {
   displayPN, poDisplayNumber, poLineTotal, poGrandTotal, priceBreakdown,
-  lineDescription, lineOrderUnit,
+  lineDescription, lineOrderUnit, lineColour,
 } from './poEngine'
 
 const money = n => Number(n || 0).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -36,21 +36,27 @@ const MB = 272                                  // start a new page before this
 // Widths must sum to CW (178mm). They did not, and the Total column ran
 // off the right edge of the page — invisible on screen, wrong on the sheet a
 // supplier receives.
+// Colour gets real width at the money columns' expense. "Anodised Silver" is
+// 15 characters and was clipping to "Anodised Si…" — a truncated colour on a
+// sheet going to a supplier is how the wrong thing turns up. The price columns
+// hold at most "1234.56" and were carrying several millimetres of slack.
 const COLS_PRICED = [
-  { key: 'pn',    title: 'Part No.',    w: 28 },
-  { key: 'desc',  title: 'Description', w: 50 },
-  { key: 'unit',  title: 'Order unit',  w: 22 },
-  { key: 'qty',   title: 'Qty',         w: 12, align: 'right' },
-  { key: 'list',  title: 'List',        w: 16, align: 'right' },
-  { key: 'disc',  title: 'Disc',        w: 12, align: 'right' },
-  { key: 'net',   title: 'Unit',        w: 16, align: 'right' },
-  { key: 'total', title: 'Total',       w: 22, align: 'right' },
+  { key: 'pn',     title: 'Part No.',    w: 24 },
+  { key: 'desc',   title: 'Description', w: 44 },
+  { key: 'colour', title: 'Colour',      w: 28 },
+  { key: 'unit',   title: 'Order unit',  w: 18 },
+  { key: 'qty',    title: 'Qty',         w: 10, align: 'right' },
+  { key: 'list',   title: 'List',        w: 13, align: 'right' },
+  { key: 'disc',   title: 'Disc',        w: 9,  align: 'right' },
+  { key: 'net',    title: 'Unit',        w: 13, align: 'right' },
+  { key: 'total',  title: 'Total',       w: 19, align: 'right' },
 ]
 const COLS_PLAIN = [
-  { key: 'pn',    title: 'Part No.',    w: 40 },
-  { key: 'desc',  title: 'Description', w: 90 },
-  { key: 'unit',  title: 'Order unit',  w: 30 },
-  { key: 'qty',   title: 'Qty',         w: 18, align: 'right' },
+  { key: 'pn',     title: 'Part No.',    w: 36 },
+  { key: 'desc',   title: 'Description', w: 62 },
+  { key: 'colour', title: 'Colour',      w: 34 },
+  { key: 'unit',   title: 'Order unit',  w: 28 },
+  { key: 'qty',    title: 'Qty',         w: 18, align: 'right' },
 ]
 
 export function poRows(lines = [], supplier = null, showPricing = true) {
@@ -59,10 +65,11 @@ export function poRows(lines = [], supplier = null, showPricing = true) {
     // has typed over it — so the sheet the supplier receives is the sheet that
     // was on screen.
     const row = {
-      pn:   displayPN(l.component, l.colour_variant) || '—',
-      desc: lineDescription(l),
-      unit: lineOrderUnit(l, supplier) || '—',
-      qty:  String(Number(l.qty_ordered) || 0),
+      pn:     displayPN(l.component, l.colour_variant) || '—',
+      desc:   lineDescription(l),
+      colour: lineColour(l) || '—',
+      unit:   lineOrderUnit(l, supplier) || '—',
+      qty:    String(Number(l.qty_ordered) || 0),
     }
     if (!showPricing) return row
 
