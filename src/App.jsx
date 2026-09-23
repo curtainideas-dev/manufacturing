@@ -1816,6 +1816,83 @@ export default function App({ route = 'manufacturing' }) {
     else showToast(`Marked as ${status} ✓`, 'success')
   }
 
+  /**
+   * Order the same things again.
+   *
+   * A new DRAFT carrying the same supplier, the same parts and the same
+   * quantities — and today's prices, not the old order's. Every other path
+   * that creates a line prices it from the component and its supplier
+   * discount (+ PO, Add Items, the low-stock auto-order), and a duplicate
+   * creates lines, so a year-old order would otherwise be re-sent at last
+   * year's cost.
+   *
+   * What deliberately does NOT come across: the status, which starts at draft
+   * because nothing has been sent; and qty_received, because nothing has
+   * arrived. Copying either would produce an order that claims to be part way
+   * through a delivery that never happened.
+   *
+   * The per-line wording does come across — description, colour and order unit
+   * overrides are how this supplier likes to be written to, and that does not
+   * change between orders.
+   */
+  const handlePODuplicate = async () => {
+    setPoCreating(true)
+    const source   = currentPO
+    const supplier = suppliers.find(sp => sp.id === source.supplier_id) || null
+    const lines    = poLinesMap[source.id] || []
+
+    const { data: po, error } = await supabase.from('purchase_orders').insert({
+      supplier_id:  source.supplier_id,
+      status:       'draft',
+      notes:        source.notes || null,
+      hide_pricing: !!source.hide_pricing,
+    }).select('*, supplier:suppliers(*)').single()
+
+    if (error || !po) {
+      showToast(error?.message || 'Could not duplicate the order', 'error')
+      setPoCreating(false)
+      return
+    }
+
+    let repriced = 0
+    if (lines.length > 0) {
+      const payload = lines.map(l => {
+        // A line whose component has since been removed cannot be re-priced,
+        // so it keeps what it was. Better a stale figure than a zero that
+        // reads as free.
+        const priced = l.component ? orderUnitInfo(l.component, supplier).price : null
+        if (priced !== null && Math.abs(priced - (Number(l.unit_cost) || 0)) > 0.005) repriced++
+        return {
+          po_id:          po.id,
+          component_id:   l.component_id,
+          colour_variant: l.colour_variant || null,
+          qty_ordered:    Number(l.qty_ordered) || 0,
+          unit_cost:      priced !== null ? priced : (Number(l.unit_cost) || 0),
+          description:    l.description || null,
+          order_unit:     l.order_unit || null,
+          colour:         l.colour || null,
+        }
+      })
+      const { error: lineErr } = await supabase.from('purchase_order_lines').insert(payload)
+      if (lineErr) {
+        // The order exists but is empty, which is worse than not having it —
+        // take it back out rather than leaving a husk behind.
+        await supabase.from('purchase_orders').delete().eq('id', po.id)
+        showToast(lineErr.message || 'Could not copy the items', 'error')
+        setPoCreating(false)
+        return
+      }
+    }
+
+    showToast(
+      `Duplicated to ${poDisplayNumber(po)} — ${lines.length} line${lines.length !== 1 ? 's' : ''}`
+      + (repriced > 0 ? `, ${repriced} re-priced` : ''),
+      'success')
+    await loadAll()
+    setCurrentPO(po)
+    setPoCreating(false)
+  }
+
   const handlePODelete = async () => {
     if (!window.confirm('Delete this purchase order?')) return
     const id = currentPO.id
@@ -2286,6 +2363,7 @@ export default function App({ route = 'manufacturing' }) {
           onExportPdf={handleExportPOPdf}
           onTogglePricing={handleTogglePricing}
           onReceive={() => setReceivePOOpen(true)}
+          onDuplicate={handlePODuplicate}
           exporting={poExporting}
         />
       )
