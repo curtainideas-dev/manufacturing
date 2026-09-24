@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ChevronLeftIcon } from '../components/Icons'
+import { ChevronLeftIcon, ChevronRightIcon, PlusIcon } from '../components/Icons'
 
 /**
  * Who we are, for documents that leave the building.
@@ -11,6 +11,12 @@ import { ChevronLeftIcon } from '../components/Icons'
  *
  * One row, edited in place. Blank fields simply don't print, so a half-filled
  * form produces a shorter letterhead rather than a broken one.
+ *
+ * Delivery addresses are the exception and are NOT part of that row. There is
+ * more than one place goods land — workroom, warehouse, occasionally a site —
+ * and a single field meant editing the business before each order and putting
+ * it back afterwards, which nobody does. They are rows of their own, and an
+ * order picks one.
  */
 const FIELDS = [
   { key: 'name',    label: 'Business name', placeholder: 'Curtain Ideas',
@@ -21,7 +27,15 @@ const FIELDS = [
   { key: 'website', label: 'Website', placeholder: 'curtainideas.com.au' },
 ]
 
-export default function CompanyDetailsAdmin({ company, onBack, onSave, saving }) {
+export default function CompanyDetailsAdmin({
+  company, addresses, onBack, onSave, saving, onNewAddress, onEditAddress,
+}) {
+  // null means the table isn't there yet, which is not the same as "no
+  // addresses" — one is a setup step, the other is a shop that hasn't added
+  // any. Saying "none" to the first would be a lie with an obvious next step
+  // attached, which is how people delete things that were never missing.
+  const available = addresses !== null
+  const list      = addresses || []
   const [form, setForm] = useState(company || {})
   const [dirty, setDirty] = useState(false)
 
@@ -72,39 +86,70 @@ export default function CompanyDetailsAdmin({ company, onBack, onSave, saving })
             </div>
           </div>
 
-          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--warm-300)', marginBottom: 8 }}>
-            Deliveries
-          </div>
-
-          <div className="card card-body" style={{ marginBottom: 16 }}>
-            <div className="field" style={{ marginBottom: 12 }}>
-              <label className="field-label">Delivery address</label>
-              <textarea className="field-input" rows={3}
-                value={form.delivery_address || ''}
-                placeholder="Leave blank to use the postal address"
-                onChange={e => set('delivery_address', e.target.value)}
-                style={{ resize: 'vertical', fontFamily: 'inherit' }} />
-              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4 }}>
-                Only needed when suppliers deliver somewhere other than the postal address.
-              </div>
-            </div>
-
-            <div className="field" style={{ marginBottom: 0 }}>
-              <label className="field-label">Delivery note</label>
-              <input className="field-input" value={form.delivery_note || ''}
-                placeholder="e.g. Deliveries 7am–3pm, rear roller door"
-                onChange={e => set('delivery_note', e.target.value)} />
-              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4 }}>
-                Printed under the delivery address on every order.
-              </div>
-            </div>
-          </div>
-
           <button className="btn btn-primary btn-block"
             disabled={saving || !dirty}
             onClick={() => onSave(form).then(() => setDirty(false))}>
             {saving ? 'Saving…' : dirty ? 'Save Details' : 'Saved'}
           </button>
+
+          <div className="divider" />
+
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--warm-300)', marginBottom: 8 }}>
+            Delivery addresses
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--warm-300)', marginBottom: 12, lineHeight: 1.5 }}>
+            The places suppliers deliver to. Each order picks one, so a delivery to
+            the warehouse does not mean editing the business and putting it back.
+            Orders that pick nothing use the default.
+          </div>
+
+          {!available ? (
+            <div style={{
+              background: 'var(--warning-bg)', borderLeft: '3px solid var(--warning)',
+              borderRadius: 'var(--radius-sm)', padding: '11px 13px',
+              fontSize: 12.5, color: 'var(--warning)', marginBottom: 16,
+            }}>
+              The <strong>company_addresses</strong> table doesn&apos;t exist yet — run
+              <strong> supabase_po_delivery_pickup.sql</strong> to switch this on. Until
+              then every order delivers to the postal address above.
+            </div>
+          ) : (
+            <>
+              <div className="card" style={{ marginBottom: 12 }}>
+                {list.length === 0 ? (
+                  <div className="empty-state" style={{ padding: '24px 20px' }}>
+                    <div className="empty-icon" style={{ fontSize: 30 }}>📍</div>
+                    <div className="empty-desc">
+                      No addresses yet — orders deliver to the postal address above.
+                    </div>
+                  </div>
+                ) : list.map(a => (
+                  <div key={a.id} className="component-item" onClick={() => onEditAddress(a)}>
+                    <div className="component-avatar" style={{ fontSize: 16 }}>📍</div>
+                    <div className="component-info">
+                      <div className="component-name">
+                        {a.label}
+                        {a.is_default && (
+                          <span className="pill pill-green" style={{ marginLeft: 8 }}>Default</span>
+                        )}
+                      </div>
+                      {/* One line, however many the address is typed on: this is
+                          a list to recognise a place in, not the printed copy. */}
+                      <div className="component-sub">
+                        {String(a.address || '').split('\n').map(s => s.trim()).filter(Boolean).join(', ')}
+                        {a.note ? ` · ${a.note}` : ''}
+                      </div>
+                    </div>
+                    <ChevronRightIcon size={16} color="var(--warm-200)" style={{ flexShrink: 0 }} />
+                  </div>
+                ))}
+              </div>
+
+              <button className="btn btn-secondary btn-block" onClick={onNewAddress}>
+                <PlusIcon size={16} /> Add Address
+              </button>
+            </>
+          )}
         </div>
       </div>
     </>

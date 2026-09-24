@@ -20,6 +20,11 @@
  * QUANTITIES-ONLY MODE (purchase_orders.hide_pricing) drops every money column
  * and the total. It is a property of the order rather than a choice made here,
  * so what was sent and what is on screen cannot disagree.
+ *
+ * PICKUP (purchase_orders.fulfilment) replaces the delivery block with a
+ * collection one and says so beside the order number, because a supplier's
+ * default is to put it on a truck — an order that merely omits the address
+ * still gets delivered, to whichever address they hold for us.
  */
 
 import {
@@ -28,7 +33,7 @@ import {
 } from './pdfKit'
 import {
   displayPN, poDisplayNumber, poLineTotal, poGrandTotal, priceBreakdown,
-  lineDescription, lineOrderUnit, lineColour,
+  lineDescription, lineOrderUnit, lineColour, poFulfilment, fulfilmentBlock,
 } from './poEngine'
 
 const money = n => Number(n || 0).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -92,11 +97,12 @@ export function poRows(lines = [], supplier = null, showPricing = true) {
   })
 }
 
-export async function exportPurchaseOrderPDF(po, supplier, lines, company = {}) {
+export async function exportPurchaseOrderPDF(po, supplier, lines, company = {}, addresses = []) {
   const jsPDF = await loadJsPDF()
   const doc   = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
 
   const showPricing = !po?.hide_pricing
+  const pickup      = poFulfilment(po) === 'pickup'
   const COLS = (showPricing ? COLS_PRICED : COLS_PLAIN).map((c, i, arr) => ({
     ...c, x: MX + arr.slice(0, i).reduce((s, p) => s + p.w, 0),
   }))
@@ -136,7 +142,14 @@ export async function exportPurchaseOrderPDF(po, supplier, lines, company = {}) 
       day: 'numeric', month: 'long', year: 'numeric',
     }), MXR, y + 10, { align: 'right' })
 
-    y = Math.max(ly, y + 14) + 4
+    // Said twice on purpose — here and in the block below. This is the line a
+    // despatch clerk reads without reading the sheet.
+    if (pickup) {
+      setColor(ACCENT_DARK); doc.setFont('helvetica', 'bold'); doc.setFontSize(9)
+      doc.text('FOR PICKUP — DO NOT DELIVER', MXR, y + 15.5, { align: 'right' })
+    }
+
+    y = Math.max(ly, y + (pickup ? 19.5 : 14)) + 4
     doc.setDrawColor(...ACCENT_DARK); doc.setLineWidth(0.5)
     doc.line(MX, y, MXR, y)
     y += 7
@@ -174,11 +187,8 @@ export async function exportPurchaseOrderPDF(po, supplier, lines, company = {}) 
     supplier?.name || '—', supplier?.contact_name, supplier?.email, supplier?.phone,
   ])
   y = sy
-  const delBottom = block(MX + boxW + 6, 'Deliver to', [
-    company.name || 'Curtain Ideas',
-    company.delivery_address || company.address,
-    company.delivery_note,
-  ])
+  const fulfil    = fulfilmentBlock(po, supplier, addresses, company)
+  const delBottom = block(MX + boxW + 6, fulfil.title, fulfil.lines)
   y = Math.max(supBottom, delBottom) + 6
 
   if (po?.notes) {
