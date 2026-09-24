@@ -3,6 +3,7 @@ import { ChevronLeftIcon, TrashIcon, PlusIcon } from '../components/Icons'
 import {
   orderUnitInfo, displayPN, poDisplayNumber, poLineTotal, poGrandTotal,
   priceBreakdown, outstandingQty, isFullyReceived, derivedDescription, derivedColour,
+  poFulfilment, poAddress,
 } from '../lib/poEngine'
 
 const STATUS_META = {
@@ -45,8 +46,9 @@ function TextCell({ value, placeholder, disabled, onCommit, style }) {
 }
 
 export default function PurchaseOrderDetail({
-  po, lines, onBack, onDelete, onAddLines, onUpdateLine, onRemoveLine,
-  onStatusChange, onExport, onExportPdf, onTogglePricing, onReceive, onDuplicate, exporting,
+  po, lines, addresses, onBack, onDelete, onAddLines, onUpdateLine,
+  onRemoveLine, onStatusChange, onExport, onExportPdf, onTogglePricing,
+  onSetFulfilment, onReceive, onDuplicate, exporting,
 }) {
   const supplier = po.supplier
   const total    = poGrandTotal(lines)
@@ -57,6 +59,13 @@ export default function PurchaseOrderDetail({
   // Quantities-only is a property of the ORDER, not a view toggle, so the
   // screen and every PDF of it say the same thing.
   const showPricing = !po.hide_pricing
+
+  // Delivery or pickup, and which of our addresses. Same reasoning as pricing:
+  // it lives on the order, so the sheet that was sent and the screen cannot
+  // end up saying different things about where the goods go.
+  const addressList = addresses || []
+  const isPickup    = poFulfilment(po) === 'pickup'
+  const shipTo      = poAddress(po, addressList)
 
   // Columns change shape rather than blanking out: with no money to show, the
   // description takes back the width it was using.
@@ -113,6 +122,69 @@ export default function PurchaseOrderDetail({
             {po.notes && (
               <div style={{ fontSize: 13, marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--warm-100)' }}>
                 {po.notes}
+              </div>
+            )}
+          </div>
+
+          {/* How this order travels. A supplier's default is to put it on a
+              truck, so an order being collected has to say so — omitting the
+              address just means it gets delivered to whatever address they
+              hold for us. */}
+          <div style={{
+            padding: '10px 14px', marginBottom: 16, background: '#fff',
+            border: '1px solid var(--warm-200)', borderRadius: 'var(--radius-sm)',
+          }}>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+              {[
+                { key: 'delivery', label: '🚚 Delivery' },
+                { key: 'pickup',   label: '📦 Pickup' },
+              ].map(o => {
+                const on = (o.key === 'pickup') === isPickup
+                return (
+                  <button key={o.key}
+                    onClick={() => { if (!on) onSetFulfilment({ fulfilment: o.key }) }}
+                    style={{
+                      flex: 1, padding: '8px 10px', fontSize: 13, fontWeight: 600,
+                      cursor: on ? 'default' : 'pointer', borderRadius: 8,
+                      border: `1px solid ${on ? 'var(--accent)' : 'var(--warm-200)'}`,
+                      background: on ? 'var(--accent-bg)' : '#fff',
+                      color: on ? 'var(--accent-dark)' : 'var(--warm-300)',
+                    }}>
+                    {o.label}
+                  </button>
+                )
+              })}
+            </div>
+
+            {isPickup ? (
+              <div style={{ fontSize: 11.5, color: 'var(--warm-300)', lineHeight: 1.45 }}>
+                We collect from {supplier?.name || 'the supplier'}. The order prints
+                as a pickup, with no delivery address on it.
+              </div>
+            ) : addressList.length > 0 ? (
+              <>
+                <select className="field-input" value={shipTo?.id || ''}
+                  onChange={e => onSetFulfilment({ delivery_address_id: e.target.value })}
+                  style={{ width: '100%', fontSize: 13 }}>
+                  {addressList.map(a => (
+                    <option key={a.id} value={a.id}>
+                      {a.label}{a.is_default ? ' (default)' : ''}
+                    </option>
+                  ))}
+                </select>
+                {/* The address as it will print, so it is proof-read here
+                    rather than on the PDF after it has gone. */}
+                <div style={{
+                  fontSize: 11.5, color: 'var(--warm-300)', marginTop: 6,
+                  lineHeight: 1.45, whiteSpace: 'pre-line',
+                }}>
+                  {[shipTo?.address, shipTo?.note].filter(Boolean).join('\n')}
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize: 11.5, color: 'var(--warm-300)', lineHeight: 1.45 }}>
+                Delivering to the address in Admin → Company Details. Add addresses
+                there to choose between them on an order.
               </div>
             )}
           </div>

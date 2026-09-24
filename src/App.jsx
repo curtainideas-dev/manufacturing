@@ -32,6 +32,7 @@ import AddToPOModal          from './components/AddToPOModal'
 import ReceivePOModal        from './components/ReceivePOModal'
 import CompanyDetailsAdmin   from './pages/CompanyDetailsAdmin'
 import SupplierModal         from './components/SupplierModal'
+import AddressModal          from './components/AddressModal'
 import AddWindowModal        from './components/AddWindowModal'
 import PurchaseOrderModal    from './components/PurchaseOrderModal'
 import AddPOLinesModal       from './components/AddPOLinesModal'
@@ -40,7 +41,7 @@ import { useToast, ToastContainer } from './hooks/useToast.jsx'
 import { buildStockMap, stockKey, getStock, planStockRestore, stockPositions } from './lib/stockEngine'
 import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines, resolveAnswers } from './lib/bomEngine'
 import { windowSell } from './lib/sellEngine'
-import { orderUnitInfo, openPOFor, poDisplayNumber, outstandingQty, isFullyReceived, receivedToStockQty } from './lib/poEngine'
+import { orderUnitInfo, openPOFor, poDisplayNumber, outstandingQty, isFullyReceived, receivedToStockQty, poFulfilment, poAddress } from './lib/poEngine'
 import { exportPurchaseOrderPDF } from './lib/exportPOPdf'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
 import { exportProductPricingXLSX } from './lib/exportPricing'
@@ -116,6 +117,12 @@ export default function App({ route = 'manufacturing' }) {
   const [editingBar, setEditingBar]               = useState(null)
 
   const [companyDetails, setCompanyDetails]       = useState({})
+  // null until we know: missing table and "no addresses yet" are different
+  // answers, and only one of them is a setup step.
+  const [companyAddresses, setCompanyAddresses]   = useState(null)
+  const [addressModalOpen, setAddressModalOpen]   = useState(false)
+  const [editingAddress, setEditingAddress]       = useState(null)
+  const [addressSaving, setAddressSaving]         = useState(false)
   const [receivePOOpen, setReceivePOOpen]         = useState(false)
   const [receiving, setReceiving]                 = useState(false)
   const [addToPOOpen, setAddToPOOpen]             = useState(false)
@@ -243,7 +250,7 @@ export default function App({ route = 'manufacturing' }) {
 
   const loadAll = useCallback(async () => {
     if (!hasLoadedRef.current) setLoading(true)
-    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes, fcRes, ckRes, delRes, cdRes] = await Promise.all([
+    const [compRes, suppRes, prodRes, pcRes, jobRes, stockRes, barsRes, wsRes, poRes, poLinesRes, optRes, fcRes, ckRes, delRes, cdRes, caRes] = await Promise.all([
       supabase.from('components').select('*').order('name'),
       supabase.from('suppliers').select('*').order('name'),
       supabase.from('products').select('*').order('name'),
@@ -259,6 +266,7 @@ export default function App({ route = 'manufacturing' }) {
       supabase.from('component_kinds').select('*').order('sort_order'),
       supabase.from('deleted_records').select('*').order('deleted_at', { ascending: false }),
       supabase.from('company_details').select('*').eq('id', 1).maybeSingle(),
+      supabase.from('company_addresses').select('*').order('sort_order').order('created_at'),
     ])
 
     const schedules = wsRes.error ? [] : (wsRes.data || [])
@@ -274,6 +282,12 @@ export default function App({ route = 'manufacturing' }) {
     // Missing until supabase_po_receiving.sql is run. An empty object just
     // means a PDF with a shorter letterhead, so nothing breaks meanwhile.
     if (!cdRes.error && cdRes.data) setCompanyDetails(cdRes.data)
+
+    // Missing until supabase_po_delivery_pickup.sql is run, and null says so.
+    // Orders then fall back to company_details.delivery_address, which is the
+    // single field this replaced and is still populated — so the PDF a
+    // supplier receives is unchanged until someone adds an address.
+    setCompanyAddresses(caRes.error ? null : (caRes.data || []))
 
     // Left null when the table isn't there, so the admin screen can say
     // "not switched on yet" rather than the far worse "nothing was deleted".
@@ -1808,10 +1822,22 @@ export default function App({ route = 'manufacturing' }) {
   }
 
   const handlePOStatusChange = async (status) => {
-    const updated = { ...currentPO, status }
+    const patch = { status }
+
+    // Sending fixes the address the order was sent with. Until now the order
+    // carried no address at all and the PDF read the default at print time —
+    // so moving the default later would silently rewrite where a supplier had
+    // already been told to deliver. Only on the way OUT, and only if nothing
+    // was chosen: reopening and re-sending keeps whatever it went with.
+    if (status === 'sent' && poFulfilment(currentPO) === 'delivery' && !currentPO.delivery_address_id) {
+      const addr = poAddress(currentPO, companyAddresses || [])
+      if (addr) patch.delivery_address_id = addr.id
+    }
+
+    const updated = { ...currentPO, ...patch }
     setCurrentPO(updated)
     setPurchaseOrders(prev => prev.map(p => p.id === updated.id ? updated : p))
-    const { error } = await supabase.from('purchase_orders').update({ status }).eq('id', currentPO.id)
+    const { error } = await supabase.from('purchase_orders').update(patch).eq('id', currentPO.id)
     if (error) showToast('Failed to update status', 'error')
     else showToast(`Marked as ${status} ✓`, 'success')
   }
@@ -1846,6 +1872,18 @@ export default function App({ route = 'manufacturing' }) {
       status:       'draft',
       notes:        source.notes || null,
       hide_pricing: !!source.hide_pricing,
+      // How the last one travelled is how this one travels — a supplier you
+      // collect from is collected from every time, and the order that was
+      // going to the warehouse is going there again.
+      //
+      // Spread only when the column is actually there: naming it on a
+      // database where the delivery migration hasn't run makes the whole
+      // insert fail, and losing "duplicate" is a worse trade than losing the
+      // one field it carries.
+      ...('fulfilment' in source ? {
+        fulfilment:          poFulfilment(source),
+        delivery_address_id: source.delivery_address_id || null,
+      } : {}),
     }).select('*, supplier:suppliers(*)').single()
 
     if (error || !po) {
@@ -1925,6 +1963,80 @@ export default function App({ route = 'manufacturing' }) {
     setProdSaving(false)
   }
 
+  /**
+   * The places goods land.
+   *
+   * Rows rather than a field on the company record, because there is more
+   * than one and which one an order uses is a per-order question. The single
+   * field these replaced stays where it is as the fallback for a database
+   * where this table does not exist yet.
+   */
+  const handleAddressSave = async (form) => {
+    setAddressSaving(true)
+    const payload = {
+      label:      form.label.trim(),
+      address:    form.address.trim(),
+      note:       form.note?.trim() || null,
+      is_default: !!form.is_default,
+    }
+
+    // A partial unique index allows exactly one default, so the old one has to
+    // be cleared BEFORE the new one is written or the write is rejected.
+    if (payload.is_default) {
+      let clear = supabase.from('company_addresses').update({ is_default: false }).eq('is_default', true)
+      if (editingAddress) clear = clear.neq('id', editingAddress.id)
+      const { error: clearErr } = await clear
+      if (clearErr) {
+        showToast(clearErr.message || 'Save failed', 'error')
+        setAddressSaving(false)
+        return
+      }
+    }
+
+    const result = editingAddress
+      ? await supabase.from('company_addresses').update(payload).eq('id', editingAddress.id)
+      : await supabase.from('company_addresses').insert({
+          ...payload, sort_order: (companyAddresses || []).length,
+        })
+
+    if (result.error) {
+      showToast(result.error.message || 'Save failed', 'error')
+    } else {
+      showToast(editingAddress ? 'Address updated ✓' : 'Address added ✓', 'success')
+      setAddressModalOpen(false)
+      setEditingAddress(null)
+      await loadAll()
+    }
+    setAddressSaving(false)
+  }
+
+  const handleAddressDelete = async (id) => {
+    const addr = (companyAddresses || []).find(a => a.id === id)
+    if (!window.confirm(`Delete "${addr?.label}"? Orders sent to it fall back to the default address.`)) return
+
+    setAddressSaving(true)
+    const { error } = await supabase.from('company_addresses').delete().eq('id', id)
+    if (error) {
+      showToast(error.message || 'Delete failed', 'error')
+      setAddressSaving(false)
+      return
+    }
+
+    // Deleting the default would leave no row marked, which reads as "no
+    // default" on screen while orders quietly keep using the first address
+    // anyway. Say out loud what is already happening.
+    const rest = (companyAddresses || []).filter(a => a.id !== id)
+    if (addr?.is_default && rest.length > 0) {
+      await supabase.from('company_addresses').update({ is_default: true }).eq('id', rest[0].id)
+    }
+
+    showToast('Address deleted')
+    setAddressModalOpen(false)
+    setEditingAddress(null)
+    await loadAll()
+    setAddressSaving(false)
+  }
+
   /** Quantities-only mode. Stored on the order so the PDF cannot disagree. */
   const handleTogglePricing = async (hide) => {
     const { error } = await supabase.from('purchase_orders')
@@ -1935,11 +2047,37 @@ export default function App({ route = 'manufacturing' }) {
     showToast(hide ? 'Pricing hidden on this order' : 'Pricing shown on this order')
   }
 
+  /**
+   * Delivery or pickup, and which of our addresses.
+   *
+   * On the order for the same reason hide_pricing is: a screen toggle would
+   * let the PDF in a supplier's inbox and the screen disagree about where the
+   * goods go. Written straight through with the screen moved first, and moved
+   * back if the write fails — the alternative is a page that shows pickup
+   * against an order the database still calls a delivery.
+   */
+  const handleSetFulfilment = async (patch) => {
+    const before = currentPO
+    setCurrentPO(p => ({ ...p, ...patch }))
+    setPurchaseOrders(prev => prev.map(p => p.id === before.id ? { ...p, ...patch } : p))
+
+    const { error } = await supabase.from('purchase_orders').update(patch).eq('id', before.id)
+    if (error) {
+      setCurrentPO(before)
+      setPurchaseOrders(prev => prev.map(p => p.id === before.id ? before : p))
+      showToast(error.message || 'Could not save', 'error')
+      return
+    }
+    if (patch.fulfilment) {
+      showToast(patch.fulfilment === 'pickup' ? 'Marked for pickup' : 'Marked for delivery')
+    }
+  }
+
   const handleExportPOPdf = async () => {
     setPoExporting(true)
     try {
       const supplier = suppliers.find(sp => sp.id === currentPO.supplier_id) || currentPO.supplier
-      await exportPurchaseOrderPDF(currentPO, supplier, poLinesMap[currentPO.id] || [], companyDetails)
+      await exportPurchaseOrderPDF(currentPO, supplier, poLinesMap[currentPO.id] || [], companyDetails, companyAddresses || [])
     } catch (e) {
       showToast(e.message || 'Could not generate the PDF', 'error')
     } finally {
@@ -2079,7 +2217,7 @@ export default function App({ route = 'manufacturing' }) {
     setPoExporting(true)
     try {
       const supplier = suppliers.find(s => s.id === currentPO.supplier_id) || currentPO.supplier
-      await exportPurchaseOrderXLSX(currentPO, supplier, poLinesMap[currentPO.id] || [])
+      await exportPurchaseOrderXLSX(currentPO, supplier, poLinesMap[currentPO.id] || [], companyDetails, companyAddresses || [])
     } finally {
       setPoExporting(false)
     }
@@ -2255,8 +2393,11 @@ export default function App({ route = 'manufacturing' }) {
       return (
         <CompanyDetailsAdmin
           company={companyDetails}
+          addresses={companyAddresses}
           onBack={() => setAdminSection(null)}
           onSave={handleSaveCompanyDetails}
+          onNewAddress={() => { setEditingAddress(null); setAddressModalOpen(true) }}
+          onEditAddress={(a) => { setEditingAddress(a); setAddressModalOpen(true) }}
           saving={prodSaving}
         />
       )
@@ -2353,6 +2494,7 @@ export default function App({ route = 'manufacturing' }) {
         <PurchaseOrderDetail
           po={currentPO}
           lines={poLinesMap[currentPO.id] || []}
+          addresses={companyAddresses}
           onBack={() => setCurrentPO(null)}
           onDelete={handlePODelete}
           onAddLines={() => setAddLinesOpen(true)}
@@ -2362,6 +2504,7 @@ export default function App({ route = 'manufacturing' }) {
           onExport={handleExportPO}
           onExportPdf={handleExportPOPdf}
           onTogglePricing={handleTogglePricing}
+          onSetFulfilment={handleSetFulfilment}
           onReceive={() => setReceivePOOpen(true)}
           onDuplicate={handlePODuplicate}
           exporting={poExporting}
@@ -2437,6 +2580,15 @@ export default function App({ route = 'manufacturing' }) {
         onSave={handleCompSave}
         onDelete={handleCompDelete}
         saving={compSaving}
+      />
+
+      <AddressModal
+        open={addressModalOpen}
+        address={editingAddress}
+        onClose={() => { setAddressModalOpen(false); setEditingAddress(null) }}
+        onSave={handleAddressSave}
+        onDelete={handleAddressDelete}
+        saving={addressSaving}
       />
 
       <SupplierModal

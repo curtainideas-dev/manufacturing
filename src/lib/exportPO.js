@@ -9,7 +9,7 @@
  * jsdelivr — jsdelivr is blocked/unreliable in this environment).
  */
 
-import { displayPN, poDisplayNumber, poLineTotal, poGrandTotal, lineDescription, lineOrderUnit, lineColour } from './poEngine'
+import { displayPN, poDisplayNumber, poLineTotal, poGrandTotal, lineDescription, lineOrderUnit, lineColour, fulfilmentBlock } from './poEngine'
 
 const loadXLSX = () => new Promise((resolve, reject) => {
   if (window.XLSX) return resolve(window.XLSX)
@@ -20,7 +20,7 @@ const loadXLSX = () => new Promise((resolve, reject) => {
   document.head.appendChild(s)
 })
 
-export async function exportPurchaseOrderXLSX(po, supplier, lines) {
+export async function exportPurchaseOrderXLSX(po, supplier, lines, company = {}, addresses = []) {
   const XLSX = await loadXLSX()
 
   const dateStr = new Date(po.created_at || Date.now()).toLocaleDateString('en-AU', {
@@ -28,7 +28,7 @@ export async function exportPurchaseOrderXLSX(po, supplier, lines) {
   })
 
   const rows = [
-    ['Curtain Ideas'],
+    [company.name || 'Curtain Ideas'],
     ['Purchase Order'],
     [],
     ['PO Number', poDisplayNumber(po), '', 'Date', dateStr],
@@ -37,6 +37,19 @@ export async function exportPurchaseOrderXLSX(po, supplier, lines) {
   if (supplier?.contact_name) rows.push(['Contact', supplier.contact_name])
   if (supplier?.email)        rows.push(['Email', supplier.email])
   if (supplier?.phone)        rows.push(['Phone', supplier.phone])
+
+  // Where the goods go, in the same words the PDF uses. A supplier who works
+  // off the spreadsheet and one who works off the sheet must not end up
+  // sending the same order to two different places.
+  const fulfil = fulfilmentBlock(po, supplier, addresses, company)
+  rows.push([])
+  fulfil.lines.forEach((t, i) => {
+    // An address is typed with line breaks; a cell per line keeps it readable
+    // in a column rather than as one run-on string.
+    String(t).split(/\r?\n/).forEach((part, j) => {
+      rows.push([i === 0 && j === 0 ? fulfil.title : '', part.trim()])
+    })
+  })
   rows.push([])
   rows.push(['Part No.', 'Description', 'Colour', 'Qty', 'Order Unit', 'Unit Price', 'Line Total'])
 

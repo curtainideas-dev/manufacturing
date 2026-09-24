@@ -250,3 +250,81 @@ export function lineOrderUnit(line, supplier = null) {
   if (override) return override
   return line?.component ? orderUnitInfo(line.component, supplier).label : ''
 }
+
+/* ==========================================================================
+ * Where the goods are going
+ *
+ * An order travels one of two ways, and the document has to say which. Until
+ * now every order assumed delivery, to the one address held on the company
+ * record — so an order someone was driving over to collect still printed a
+ * delivery address, and a delivery to the warehouse printed the workroom's.
+ *
+ * These read the answer off the ORDER, falling back through the addresses to
+ * the company record, so a database where the addresses table does not exist
+ * yet still produces exactly the sheet it produced before.
+ * ========================================================================== */
+
+/** 'delivery' unless the order says otherwise — including when the column
+ *  isn't there yet, which is the whole point of not comparing to 'delivery'. */
+export function poFulfilment(po) {
+  return po?.fulfilment === 'pickup' ? 'pickup' : 'delivery'
+}
+
+/** Where goods land unless an order says otherwise. */
+export function defaultAddress(addresses = []) {
+  return addresses.find(a => a.is_default) || addresses[0] || null
+}
+
+/**
+ * The address THIS order delivers to.
+ *
+ * A null delivery_address_id means "wherever the default is" rather than
+ * "nowhere", which is what every existing order and every new draft carries.
+ * A pinned id that no longer resolves — the address was deleted — falls back
+ * to the default rather than printing nothing.
+ */
+export function poAddress(po, addresses = []) {
+  if (poFulfilment(po) === 'pickup') return null
+  const pinned = po?.delivery_address_id
+    ? addresses.find(a => a.id === po.delivery_address_id)
+    : null
+  return pinned || defaultAddress(addresses)
+}
+
+/**
+ * The block that goes on the documents, as a title and the lines under it.
+ *
+ * Both exports print the same words from here, because the PDF a supplier
+ * reads and the spreadsheet they paste into their system disagreeing about
+ * where the goods go is the exact failure this is meant to prevent.
+ *
+ * The delivery fallback chain ends at company_details.delivery_address — the
+ * single field this replaced. It is still populated and still correct on a
+ * database where the addresses table hasn't been created, so nothing has to
+ * be set up before the next order can be sent.
+ */
+export function fulfilmentBlock(po, supplier, addresses = [], company = {}) {
+  if (poFulfilment(po) === 'pickup') {
+    return {
+      mode:  'pickup',
+      title: 'Pick up',
+      lines: [
+        `We will collect from ${supplier?.name || 'the supplier'}.`,
+        'Please advise when the order is ready.',
+        [company.phone, company.email].filter(Boolean).join('  ·  ') || null,
+      ].filter(Boolean),
+    }
+  }
+
+  const addr = poAddress(po, addresses)
+  const body = addr
+    ? [addr.address, addr.note]
+    : [company.delivery_address || company.address, company.delivery_note]
+
+  return {
+    mode:  'delivery',
+    title: 'Deliver to',
+    lines: [company.name || 'Curtain Ideas', ...body]
+      .filter(t => t && String(t).trim()),
+  }
+}
