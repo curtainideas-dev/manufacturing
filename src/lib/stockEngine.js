@@ -492,3 +492,44 @@ export function stockPositions(entries = [], stockMap = {}, stockBars = []) {
   })
   return out
 }
+
+/* ==========================================================================
+ * What the job still owes the shelf
+ *
+ * Deducting is a separate, manual step from completing a job, and the two had
+ * nothing to say to each other: a job could be marked complete — pricing done,
+ * labels printed, out the door — with every part still sitting on the shelf as
+ * far as the system was concerned. Nothing complains, and the error only
+ * surfaces later as a stocktake that will not reconcile, or as a reorder that
+ * never fires because the shelf says there is plenty.
+ *
+ * So completing asks first. This works out what to ask about.
+ * ========================================================================== */
+
+/**
+ * The job's lines with no deduction against them.
+ *
+ * A line counts as deducted when a movement exists for its component+colour,
+ * which is the same test the deduct modal uses to grey a line out. Deliberately
+ * NOT a quantity comparison: the modal lets a picker adjust what actually came
+ * off the shelf, so a deduction that differs from the BOM is the normal case,
+ * not an error, and flagging it would train people to click past this.
+ *
+ * Two kinds of line are never owed:
+ *
+ *   labour   has no shelf and no stock row, so it can never be deducted. It is
+ *            in the BOM to be costed, and every job carries it — leaving it in
+ *            would make this prompt fire every single time, which is the fast
+ *            way to have it clicked through unread.
+ *   zero qty nothing to take.
+ */
+export function undeductedLines({ jobSummary = [], movements = [] } = {}) {
+  const deducted = new Set(
+    movements.map(m => stockKey(m.component_id, m.colour_variant))
+  )
+  return jobSummary.filter(row =>
+    row.component
+    && row.component.order_type !== 'labour'
+    && Number(row.total_qty) > 0
+    && !deducted.has(stockKey(row.component.id, row.colour_variant)))
+}
