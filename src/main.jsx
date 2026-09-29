@@ -9,17 +9,15 @@ import './index.css'
 /**
  * Path-based routing, still without a router library.
  *
- *   /               the four tiles — needs no data, so it paints immediately
+ *   /               the five tiles — needs no data, so it paints immediately
  *   /submit         the public PO portal, standalone
  *   /track          where every order is up to (read-only)
  *   /manufacturing  the workshop screens — the day-to-day app
+ *   /romanblinds    the roman blind calculator, standalone
  *   /admin          setup, out of the workshop tabs and on its own
- *   /romanblinds    the roman blind calculator, standalone and unlisted
  *
- * /romanblinds is deliberately not on the tiles yet. It is a calculator being
- * tried on the bench rather than part of anybody's day, it reads and writes
- * nothing, and a fifth tile would put it in front of people who have no use for
- * it before it has earned one. Reached by typing the URL until it has.
+ * /romanblinds is standalone like /submit: it reads and writes nothing, so it
+ * doesn't wait on App's data load.
  *
  * /track, /manufacturing and /admin are all App, because App owns every
  * Supabase read in this codebase and splitting them would mean loading the
