@@ -3,11 +3,15 @@ import { ChevronRightIcon } from '../components/Icons'
 /**
  * The front door.
  *
- * Four ways in, because there are four jobs to do here and they belong to
+ * Five ways in, because there are five jobs to do here and they belong to
  * different people. Submitting and tracking a PO is Sandi's day; Manufacturing
  * is the factory's; Admin is setup nobody touches weekly. Landing all of them
  * on the same seven-tab screen meant everyone navigating past the six tabs
  * that were not theirs.
+ *
+ * Roman Blinds is the workroom's calculator — a finished size in, a cut sheet
+ * out, nothing saved — so it sits beside Manufacturing rather than inside it,
+ * and ahead of Admin, which stays last because it is used least.
  *
  * Deliberately not behind the app's data load — this page needs nothing from
  * Supabase, so it paints instantly and the wait happens after the choice, not
@@ -35,6 +39,13 @@ const TILES = [
     title: 'Manufacturing',
     desc:  'Jobs, components, products, stock and supplier orders. The day-to-day workshop screens.',
     tone:  'var(--warning-bg)',
+  },
+  {
+    href:  '/romanblinds',
+    emoji: '📐',
+    title: 'Roman Blinds',
+    desc:  'Work out a roman blind from its finished size — the fabric to cut, where to mark every pocket, and a sheet to print.',
+    tone:  'var(--success-bg)',
   },
   {
     href:  '/admin',
