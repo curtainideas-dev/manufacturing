@@ -33,12 +33,13 @@ import ReceivePOModal        from './components/ReceivePOModal'
 import CompanyDetailsAdmin   from './pages/CompanyDetailsAdmin'
 import SupplierModal         from './components/SupplierModal'
 import AddressModal          from './components/AddressModal'
+import CompleteJobModal      from './components/CompleteJobModal'
 import AddWindowModal        from './components/AddWindowModal'
 import PurchaseOrderModal    from './components/PurchaseOrderModal'
 import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
-import { buildStockMap, stockKey, getStock, planStockRestore, stockPositions } from './lib/stockEngine'
+import { buildStockMap, stockKey, getStock, planStockRestore, stockPositions, undeductedLines } from './lib/stockEngine'
 import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines, resolveAnswers } from './lib/bomEngine'
 import { windowSell } from './lib/sellEngine'
 import { orderUnitInfo, openPOFor, poDisplayNumber, outstandingQty, isFullyReceived, receivedToStockQty, poFulfilment, poAddress } from './lib/poEngine'
@@ -141,6 +142,10 @@ export default function App({ route = 'manufacturing' }) {
   const [deductSaving, setDeductSaving]           = useState(false)
   const [recordOffcutsOpen, setRecordOffcutsOpen] = useState(false)
   const [jobMovements, setJobMovements]           = useState([])
+  // The lines a job is about to be completed without deducting, or null when
+  // there is nothing to ask about.
+  const [completePlan, setCompletePlan]           = useState(null)
+  const [completing, setCompleting]               = useState(false)
 
   // ---- Purchase order state ----
   const [purchaseOrders, setPurchaseOrders]       = useState([])
@@ -1184,10 +1189,38 @@ export default function App({ route = 'manufacturing' }) {
     showToast('Job confirmed — pricing locked ✓', 'success')
   }
 
-  const handleJobComplete = async () => {
-    if (!window.confirm('Mark this job as completed and ready for pickup?')) return
+  const finishJob = async () => {
     await handleJobUpdate({ status: 'completed' })
     showToast('Job completed ✓', 'success')
+  }
+
+  /**
+   * Completing asks about stock that was never taken off the shelf.
+   *
+   * Deducting is a separate, manual step and nothing tied the two together, so
+   * a job could be finished — priced, labelled, out the door — with every part
+   * still counted as in stock. Nothing complained, and the mistake only turned
+   * up later as a stocktake that would not reconcile, or a reorder that never
+   * fired because the shelf said there was plenty.
+   *
+   * It asks rather than blocks: parts fitted from the van, or booked out by
+   * hand, are not mistakes and must not be stuck behind a rule. And a job with
+   * nothing outstanding keeps the plain confirm it always had — a warning that
+   * shows up every time is one nobody reads.
+   */
+  const handleJobComplete = async () => {
+    const owed = undeductedLines({ jobSummary: currentJobSummary, movements: jobMovements })
+    if (owed.length > 0) { setCompletePlan(owed); return }
+
+    if (!window.confirm('Mark this job as completed and ready for pickup?')) return
+    await finishJob()
+  }
+
+  const handleCompleteAnyway = async () => {
+    setCompleting(true)
+    await finishJob()
+    setCompleting(false)
+    setCompletePlan(null)
   }
 
   // Completed -> In Progress. Nothing was locked or consumed by completing a
@@ -2598,6 +2631,16 @@ export default function App({ route = 'manufacturing' }) {
         onSave={handleSupplierSave}
         onDelete={handleSupplierDelete}
         saving={supplierSaving}
+      />
+
+      <CompleteJobModal
+        open={!!completePlan}
+        job={currentJob}
+        lines={completePlan || []}
+        working={completing}
+        onClose={() => setCompletePlan(null)}
+        onDeduct={() => { setCompletePlan(null); handleOpenDeductModal() }}
+        onComplete={handleCompleteAnyway}
       />
 
       <BackToReceivedModal
