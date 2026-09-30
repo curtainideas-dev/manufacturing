@@ -72,10 +72,17 @@
  *
  * Millimetres inside, like every other cut dimension in the app; the page and
  * the sheet show centimetres to one decimal, which is the same millimetre.
- * Every mark is rounded to the millimetre from its exact position rather than
- * built up from a rounded panel, so no mark is ever more than half a millimetre
- * out and the rounding spreads itself across the panels instead of piling up
- * in the last one.
+ *
+ * Rounding: the main panel is rounded to the millimetre ONCE, and every main
+ * panel is made exactly that. They must be identical — they fold onto each
+ * other, and one that is a millimetre short shows in the stack. (Rounding each
+ * mark from its exact position instead keeps every mark within half a
+ * millimetre, but lets neighbouring panels differ by one: 354, 354, 353, 354.)
+ * The bottom panel is then half that main panel plus its allowance, rounded;
+ * and the first panel takes whatever is left so the drop still adds up to the
+ * millimetre. That leftover is at most a few millimetres, and the first panel
+ * is the one place it is invisible — its whole top panel allowance is there to
+ * clear the mechanisms under the headboard.
  */
 
 /* --------------------------------------------------------------------------
@@ -233,33 +240,34 @@ export function calcRomanBlind(input = {}, assumptions = {}) {
   const headboardTopMm = a.headboardFoldMm
   const H              = a.headboardFoldMm + a.headboardFaceMm
 
-  /* Pocket i (1 … n+1) starts after the headboard, the first panel, and i−1
-   * main panels each followed by a pocket. Rounded once, from the exact
-   * position; the fold and bottom lines are then a fixed distance below it so
-   * every pocket is exactly its own width. */
+  /* The panels as they will be made, in whole millimetres. Every main panel is
+   * the same; the first panel takes the rounding (see Units, above). */
+  const mainMm        = Math.round(d)
+  const bottomPanelMm = Math.round(mainMm / 2 + a.bottomPanelExtraMm)
+  const firstPanelMm  = dropMm - a.headboardFaceMm - n * mainMm - bottomPanelMm
+
+  /* Pocket i (1 … n+1) sits after the headboard, the first panel, and i−1 main
+   * panels each followed by a pocket. Walked in whole millimetres, so the gap
+   * between any two pockets is exactly one main panel; the fold and bottom
+   * lines are a fixed distance below each top so every pocket is exactly its
+   * own width. */
+  let topMm = H + firstPanelMm
   for (let i = 1; i <= n + 1; i++) {
-    const topMm = Math.round(H + (d + a.topPanelExtraMm) + (i - 1) * (d + pocketMm))
     pockets.push({
-      n:        i,
+      n:            i,
       topMm,
-      foldMm:   Math.round(topMm + pocketMm / 2),
-      bottomMm: topMm + pocketMm,
+      foldMm:       Math.round(topMm + pocketMm / 2),
+      bottomMm:     topMm + pocketMm,
+      panelAboveMm: i === 1 ? firstPanelMm : mainMm,
+      panelAboveLabel: i === 1 ? 'First panel' : `Main panel ${i - 1}`,
     })
+    topMm += pocketMm + mainMm
   }
 
-  // The panel above each pocket, as it will actually be made — the gaps between
-  // the rounded marks, which are the figures that add up to the drop.
-  pockets.forEach((p, i) => {
-    p.panelAboveMm    = i === 0 ? p.topMm - H : p.topMm - pockets[i - 1].bottomMm
-    p.panelAboveLabel = i === 0 ? 'First panel' : `Main panel ${i}`
-  })
-
   // The drop starts at the top of the headboard, so the face is already in it.
-  const hemLineMm     = headboardTopMm + dropMm + (n + 1) * pocketMm
-  const cutDropMm     = hemLineMm + a.hemMm
-  const cutWidthMm    = widthMm + 2 * a.sideAllowanceMm
-  const lastPocket    = pockets[pockets.length - 1]
-  const bottomPanelMm = hemLineMm - lastPocket.bottomMm
+  const hemLineMm  = headboardTopMm + dropMm + (n + 1) * pocketMm
+  const cutDropMm  = hemLineMm + a.hemMm
+  const cutWidthMm = widthMm + 2 * a.sideAllowanceMm
 
   /* Where each main panel folds when the blind is raised — its half. Not
    * marked on the fabric, the fold forms itself, but drawn on the diagram so
@@ -289,8 +297,9 @@ export function calcRomanBlind(input = {}, assumptions = {}) {
 
     /* The panels */
     mainPanels:    n,
-    panelMm:       d,                                 // exact main panel drop
-    firstPanelMm:  pockets[0].panelAboveMm,
+    panelMm:       mainMm,          // every main panel, as made
+    panelExactMm:  d,               // before rounding, for reference
+    firstPanelMm,
     bottomPanelMm,
     dowels:        n + 1,
     dowelLengthMm: widthMm - a.dowelDeductionMm,

@@ -415,7 +415,14 @@ export default function RomanBlinds() {
                   <div className="summary-card">
                     <div className="summary-val">{cm(result.firstPanelMm)}</div>
                     <div className="summary-lbl">First panel (cm)</div>
-                    <Sub>main panel + {cm(a.topPanelExtraMm)}</Sub>
+                    {/* The real difference, not the allowance: the first panel
+                      * takes the rounding so every main panel can be identical,
+                      * and a label claiming +10.0 over a panel that is +9.8
+                      * would be a wrong number on a workshop screen. */}
+                    <Sub>
+                      main panel + {cm(result.firstPanelMm - result.panelMm)}
+                      {result.firstPanelMm - result.panelMm !== a.topPanelExtraMm && ' (takes the rounding)'}
+                    </Sub>
                   </div>
                   <div className="summary-card">
                     <div className="summary-val">{cm(result.bottomPanelMm)}</div>
