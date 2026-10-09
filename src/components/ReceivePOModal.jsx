@@ -28,6 +28,10 @@ export default function ReceivePOModal({ open, po, lines = [], onClose, onReceiv
 
   const open_ = open && !!po
 
+  // Fabric ordered as so many metres of a stated width, rather than as a
+  // number of rolls whose size only the delivery knows.
+  const isCutLength = (l) => l?.component?.order_type === 'fabric' && Number(l?.roll_width_mm) > 0
+
   useEffect(() => {
     if (!open_) return
     const p = {}, q = {}, r = {}
@@ -35,7 +39,11 @@ export default function ReceivePOModal({ open, po, lines = [], onClose, onReceiv
       const out = outstandingQty(l)
       p[l.id] = out > 0          // everything still owed is ticked by default
       q[l.id] = out
-      if (l.component?.order_type === 'fabric') {
+      if (isCutLength(l)) {
+        // One piece, already described by the order: that width, that many
+        // metres. Shown filled in so it only has to be checked, not typed.
+        r[l.id] = [{ width_mm: Number(l.roll_width_mm), length_mm: Math.round(out * 1000) }]
+      } else if (l.component?.order_type === 'fabric') {
         const w = orderableWidths(l.component)
         r[l.id] = Array.from({ length: Math.max(0, Math.round(out)) }, () => ({
           width_mm: w[w.length - 1] || '', length_mm: '',
@@ -52,6 +60,10 @@ export default function ReceivePOModal({ open, po, lines = [], onClose, onReceiv
     // Keep the roll rows in step with how many rolls are said to have arrived.
     setRolls(s => {
       if (!s[id]) return s
+      // A cut length is metres of one piece, not a count of rolls.
+      if (isCutLength(lines.find(l => l.id === id))) {
+        return { ...s, [id]: [{ ...s[id][0], length_mm: Math.round((Number(v) || 0) * 1000) }] }
+      }
       const n = Math.max(0, Math.round(Number(v) || 0))
       const cur = s[id]
       const next = Array.from({ length: n }, (_, i) => cur[i] || { width_mm: cur[0]?.width_mm || '', length_mm: '' })
@@ -106,8 +118,9 @@ export default function ReceivePOModal({ open, po, lines = [], onClose, onReceiv
           {lines.map(l => {
             const out      = outstandingQty(l)
             const done     = out <= 0
-            const info     = l.component ? orderUnitInfo(l.component) : null
+            const info     = l.component ? orderUnitInfo(l.component, null, l.roll_width_mm) : null
             const isFabric = l.component?.order_type === 'fabric'
+            const cutLength = isCutLength(l)
             const qty      = Number(qtys[l.id]) || 0
             const toStock  = l.component ? receivedToStockQty(l.component, qty) : 0
             const on       = !!picked[l.id]
@@ -135,6 +148,7 @@ export default function ReceivePOModal({ open, po, lines = [], onClose, onReceiv
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 14 }}>
                       {l.component?.name || 'Component removed'}
+                      {cutLength && ` — ${Number(l.roll_width_mm).toLocaleString()}mm wide`}
                       {l.colour_variant?.name && (
                         <span style={{ fontSize: 12, color: 'var(--warm-300)', fontWeight: 400, marginLeft: 6 }}>
                           · {l.colour_variant.name}
@@ -156,9 +170,9 @@ export default function ReceivePOModal({ open, po, lines = [], onClose, onReceiv
                   {!done && (
                     <div style={{ flexShrink: 0, textAlign: 'right' }}>
                       <label style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--warm-300)', display: 'block', marginBottom: 2 }}>
-                        Arrived
+                        Arrived{cutLength ? ' (m)' : ''}
                       </label>
-                      <input className="field-input" type="number" step="1" min="0"
+                      <input className="field-input" type="number" step={cutLength ? '0.01' : '1'} min="0"
                         value={qtys[l.id] ?? ''}
                         onFocus={e => e.target.select()}
                         onChange={e => setQty(l.id, e.target.value)}
@@ -184,7 +198,9 @@ export default function ReceivePOModal({ open, po, lines = [], onClose, onReceiv
                 {on && !done && isFabric && (
                   <div style={{ marginTop: 8, marginLeft: 38 }}>
                     <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginBottom: 6 }}>
-                      Each roll goes on the shelf as its own piece — give the width and length that came.
+                      {cutLength
+                        ? 'Goes on the shelf as one piece — check the width and length against what came.'
+                        : 'Each roll goes on the shelf as its own piece — give the width and length that came.'}
                     </div>
                     {(rolls[l.id] || []).map((r, i) => (
                       <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'center' }}>

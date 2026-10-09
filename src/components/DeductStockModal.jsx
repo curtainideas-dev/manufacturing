@@ -186,9 +186,29 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
    * Bands cut from one roll are collapsed into a single entry, so a roll that
    * supplied three bands is only marked used once.
    */
+  /**
+   * Which piece each band is cut from, before anyone has touched it.
+   *
+   * The job's fabric was already planned against the shelf — these bands ARE
+   * that plan — so each one arrives pointing at the piece the cut sheet told
+   * the table to use: the stock piece it was laid out on, or a new roll for
+   * the ordered length. A planned piece that has since left the shelf is left
+   * unpicked rather than guessed at. Anything chosen by hand wins.
+   */
+  const fabricSelectionsFor = (key, bands) => {
+    const planned = {}
+    bands.forEach((band, i) => {
+      if (band.source === 'order') planned[i] = '__new_roll__'
+      else if (band.stockPieceId && (stockBars || []).some(b => b.id === band.stockPieceId && b.status === 'available')) {
+        planned[i] = band.stockPieceId
+      }
+    })
+    return { ...planned, ...(fabricSelections[key] || {}) }
+  }
+
   const buildFabricDeductions = (row, key) => {
     const bands      = nestGroups(row.fabricCuts || [])
-    const selections = fabricSelections[key] || {}
+    const selections = fabricSelectionsFor(key, bands)
     const byPiece    = new Map()
 
     bands.forEach((band, bandIdx) => {
@@ -537,7 +557,7 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
     const isDone = status === 'done'
 
     const bands      = nestGroups(row.fabricCuts || [])
-    const selections = fabricSelections[key] || {}
+    const selections = fabricSelectionsFor(key, bands)
     const totalBands = bands.length
     const allPicked  = totalBands > 0 && Object.values(selections).filter(Boolean).length === totalBands
     const totalLengthMm = bands.reduce((s, b) => s + b.lengthMm, 0)
@@ -575,7 +595,7 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
                 {row.fabricCuts?.length || 0} blind{(row.fabricCuts?.length || 0) !== 1 ? 's' : ''} nested into{' '}
                 <strong style={{ color: 'var(--ink)' }}>{totalBands} band{totalBands !== 1 ? 's' : ''}</strong>
                 {' · '}{totalLengthMm.toLocaleString()}mm off the roll
-                <span style={{ marginLeft: 8 }}>· costed {fmtQty(row.total_qty)}m</span>
+                <span style={{ marginLeft: 8 }}>· costed {fmtQty(row.total_qty)}{row.component.unit === 'm²' ? 'm²' : 'm'}</span>
               </div>
             )}
           </div>
@@ -638,6 +658,8 @@ export default function DeductStockModal({ open, job, jobSummary, jobMovements, 
                   Band {bandIdx + 1}
                   <span style={{ fontWeight: 400, color: 'var(--warm-300)', marginLeft: 8 }}>
                     pull {band.lengthMm.toLocaleString()}mm off a {band.rollWidthMm.toLocaleString()}mm roll
+                    {band.source === 'stock' && ' · planned from stock'}
+                    {band.source === 'order' && ' · planned on the ordered roll'}
                   </span>
                 </div>
                 {band.oversized ? (

@@ -5,6 +5,8 @@
  * Handles both pack-type and bar-type components.
  */
 
+import { fabricSqmRate, fabricReferenceWidthMm } from './fabricEngine'
+
 /**
  * Get a consistent key for a component + colour combination.
  * Used to group stock entries.
@@ -208,20 +210,17 @@ export function stockValue(component, stock, offcutLengthMm = 0) {
  * its length × the rate.
  */
 export function fabricStockValue(component, pieces = []) {
-  const base     = Number(component?.unit_cost) || 0
   const discount = Number(component?.discount) || 0
-  const rate     = base * (1 - discount / 100)
-
-  const orderable = (Array.isArray(component?.roll_widths) ? component.roll_widths : [])
-    .map(Number).filter(n => n > 0)
   const widestHeld = pieces.reduce((m, p) => Math.max(m, Number(p.roll_width_mm) || 0), 0)
-  const reference  = Math.max(0, ...orderable, widestHeld)
-  if (reference <= 0) return 0
+  // Per square metre, so every piece is simply its own area at the rate —
+  // which is the same answer the width-share above gives, without needing a
+  // reference width for a fabric that is already priced per m².
+  const rate = fabricSqmRate(component, widestHeld || 3000) * (1 - discount / 100)
 
   return pieces.reduce((total, p) => {
     const w = Number(p.roll_width_mm) || 0
     const l = Number(p.length_mm) || 0
-    return total + (l / 1000) * rate * Math.min(1, w / reference)
+    return total + (w / 1000) * (l / 1000) * rate
   }, 0)
 }
 
@@ -367,7 +366,7 @@ export function planStockRestore({ movements = [], jobBars = [], components = []
  * Mirrors calcQty's own rule for the BOM side — metres when the component's
  * unit is 'metres', millimetres otherwise — so both sides of the comparison
  * are always in the same unit by construction, not by coincidence. Fabric is
- * always metres, as fabric_strip is.
+ * always square metres, as fabric_strip is.
  *
  * The minimum is converted the same way, since for a bar it is also counted
  * in bars.
@@ -395,9 +394,28 @@ export function onHandInBomUnits(component, stock = null, pieces = []) {
     }
   }
   if (type === 'fabric') {
-    return { onHand: pieceMm / 1000, minimum: 0, pieces: pieces.length, piecesIn: pieceMm / 1000 }
+    // Square metres, as the BOM now asks for fabric — a 900mm offcut and a 3m
+    // roll of the same length are not the same amount of fabric.
+    const m2 = pieces.reduce((t, p) =>
+      t + ((Number(p.roll_width_mm) || 0) / 1000) * ((Number(p.length_mm) || 0) / 1000), 0)
+    return { onHand: m2, minimum: 0, pieces: pieces.length, piecesIn: m2 }
   }
   return { onHand: qty, minimum }
+}
+
+/**
+ * A summary row's quantity in the unit the shelf is counted in.
+ *
+ * Only fabric needs anything done. It is counted in square metres now, but a
+ * job confirmed before that change has its fabric frozen in linear metres of
+ * the widest roll — the one width there was — so that is what it converts at.
+ */
+function demandQty(row) {
+  const qty = Number(row?.total_qty) || 0
+  if (row?.component?.order_type === 'fabric' && row.component.unit === 'metres') {
+    return qty * (fabricReferenceWidthMm(row.component) / 1000)
+  }
+  return qty
 }
 
 export function stockPositions(entries = [], stockMap = {}, stockBars = []) {
@@ -415,7 +433,7 @@ export function stockPositions(entries = [], stockMap = {}, stockBars = []) {
   entries.forEach(({ summary = [] }) => {
     summary.forEach(row => {
       const k = stockKey(row.component.id, row.colour_variant)
-      demand.set(k, (demand.get(k) || 0) + (Number(row.total_qty) || 0))
+      demand.set(k, (demand.get(k) || 0) + demandQty(row))
     })
   })
 
@@ -430,7 +448,7 @@ export function stockPositions(entries = [], stockMap = {}, stockBars = []) {
     summary.forEach(r => {
       const k = stockKey(r.component.id, r.colour_variant)
       if (!own.has(k)) own.set(k, { ...r, total_qty: 0 })
-      own.get(k).total_qty += Number(r.total_qty) || 0
+      own.get(k).total_qty += demandQty(r)
     })
     ;[...own.values()].forEach(row => {
       const k = stockKey(row.component.id, row.colour_variant)
@@ -456,9 +474,9 @@ export function stockPositions(entries = [], stockMap = {}, stockBars = []) {
       lines.push({
         component:      row.component,
         colour_variant: row.colour_variant || null,
-        // Fabric is costed in metres whatever its unit says; bars in metres
-        // or millimetres per calcQty. Report the unit the numbers are in.
-        unit: row.component?.order_type === 'fabric' ? 'metres'
+        // Fabric is counted in square metres whatever its unit says; bars in
+        // metres or millimetres per calcQty. Report the unit the numbers are in.
+        unit: row.component?.order_type === 'fabric' ? 'm²'
           : row.component?.order_type === 'bar' && row.component?.unit !== 'metres' ? 'mm'
           : (row.component?.unit || ''),
         // How the stock figure is made up, for a bar or roll — so "54 metres"

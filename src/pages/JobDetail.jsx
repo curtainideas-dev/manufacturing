@@ -1,10 +1,11 @@
-import { useState, useMemo, useRef } from 'react'
+import { useState, useMemo, useRef, Fragment } from 'react'
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon, GripIcon } from '../components/Icons'
 import { buildWindowBOM, calcJobSummary, applyFabricNesting, missingAnswers, fabricSelectionFor, substitutionsFor, buildJobExtraLines, resolveAnswers, jobProductType, fmt, fmtQty } from '../lib/bomEngine'
 import { describeCombo } from '../lib/pricingCombos'
 import { windowSell, grossProfit, jobGrossProfit } from '../lib/sellEngine'
 import { exportJobPack } from '../lib/exportJobPack'
-import { exportCutSheetPDF, copyFabricSummary } from '../lib/exportCutSheet'
+import { exportCutSheetPDF, fabricCutGroups } from '../lib/exportCutSheet'
+import { fabricPlanKey } from '../lib/fabricEngine'
 import { exportPackagingLabels, exportTrackLabels, exportPartsLabels } from '../lib/exportLabels'
 import PartsListModal from '../components/PartsListModal'
 import SwapComponentModal from '../components/SwapComponentModal'
@@ -20,6 +21,102 @@ const DownloadIcon = () => (
   </svg>
 )
 
+/**
+ * Where one fabric's cuts come from, and the two things someone can change
+ * about it.
+ *
+ * Shown under the fabric's own row in the bill of materials because that row's
+ * quantity and cost are a consequence of exactly these choices:
+ *
+ *   stock or order   use what fits on the shelf first, or leave the shelf
+ *                    alone and order the lot.
+ *   roll width       the ordered roll is the one width that takes the cuts in
+ *                    the fewest square metres; any other width the fabric
+ *                    comes in can be forced instead.
+ *
+ * Every width is listed with what it would take, so an override is made
+ * against the figures rather than on a hunch.
+ */
+const FabricRollChoice = ({ rolls = [], choice = {}, onChange, frozen = false }) => {
+  if (rolls.length === 0) return null
+  const order   = rolls.find(r => r.source !== 'stock') || null
+  const stock   = rolls.filter(r => r.source === 'stock')
+  const options = order?.options || []
+  const metres  = (mm) => `${(mm / 1000).toFixed(2)}m`
+  const orderAll = choice.source === 'order'
+
+  const pill = (active) => ({
+    padding: '4px 10px', fontSize: 11.5, fontWeight: 600, cursor: 'pointer', borderRadius: 6,
+    border: `1.5px solid ${active ? 'var(--accent)' : 'var(--warm-200)'}`,
+    background: active ? '#fff' : 'var(--warm-100)',
+    color: active ? 'var(--accent-dark)' : 'var(--ink)',
+  })
+
+  return (
+    <div style={{
+      padding: '10px 16px 12px 28px', borderBottom: '1px solid var(--warm-100)',
+      background: '#fcfcfa', fontSize: 12, color: 'var(--warm-300)',
+    }}>
+      {stock.map(r => (
+        <div key={r.rollKey} style={{ marginBottom: 4 }}>
+          <strong style={{ color: 'var(--ink)' }}>From stock</strong>
+          {' · '}{r.stockPiece?.label || 'piece'}
+          {' '}({Number(r.rollWidthMm).toLocaleString()} × {Number(r.stockPiece?.length_mm || 0).toLocaleString()}mm)
+          {' — '}{r.summary.pieceCount} blind{r.summary.pieceCount !== 1 ? 's' : ''}, pull {metres(r.summary.totalLengthMm)}
+        </div>
+      ))}
+      {order && (
+        <div style={{ marginBottom: 4 }}>
+          <strong style={{ color: 'var(--ink)' }}>To order</strong>
+          {' · '}{metres(order.summary.totalLengthMm)} of {Number(order.rollWidthMm).toLocaleString()}mm roll
+          {' — '}{order.summary.pieceCount} blind{order.summary.pieceCount !== 1 ? 's' : ''}
+          , {order.summary.rollM2.toFixed(2)}m², {order.summary.wastePct.toFixed(0)}% waste
+          {order.overridden && <span style={{ color: 'var(--warning)', fontWeight: 600 }}> · width set by hand</span>}
+          {order.bands.some(b => b.oversized) && (
+            <span style={{ color: 'var(--danger)', fontWeight: 600 }}> · a blind is wider than this roll</span>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 8 }}>
+        <button type="button" style={pill(!orderAll)} onClick={() => onChange({ source: null })}>
+          Use stock first
+        </button>
+        <button type="button" style={pill(orderAll)} onClick={() => onChange({ source: 'order' })}>
+          Order all
+        </button>
+
+        {options.length > 0 && (
+          <select
+            className="field-input"
+            style={{ width: 'auto', fontSize: 12, padding: '4px 8px', marginLeft: 4 }}
+            value={choice.width ?? ''}
+            onChange={e => onChange({ width: e.target.value ? Number(e.target.value) : null })}>
+            <option value="">
+              Least waste{order?.autoWidthMm ? ` — ${Number(order.autoWidthMm).toLocaleString()}mm` : ''}
+            </option>
+            {options.map(o => (
+              <option key={o.rollWidthMm} value={o.rollWidthMm} disabled={!o.fits}>
+                {Number(o.rollWidthMm).toLocaleString()}mm
+                {o.fits
+                  ? ` — ${metres(o.lengthMm)} · ${o.rollM2.toFixed(2)}m² · ${o.wastePct.toFixed(0)}% waste`
+                  : ' — too narrow'}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {frozen && (
+        <div style={{ marginTop: 6, fontSize: 11 }}>
+          This job's cost was fixed when it was confirmed. Changes here alter the cut sheet and
+          fabric summary, not the cost.
+        </div>
+      )}
+    </div>
+  )
+}
+
 const CopyIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="9" y="9" width="13" height="13" rx="2"/>
@@ -30,12 +127,12 @@ const CopyIcon = () => (
 export default function JobDetail({
   job, products, productComponentsMap, optionDefsFor,
   allComponents = [], suppliers = [], fabricCategories = [], stockMap = {}, stockBars = [], kinds = [],
-  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onReorderWindows, onConfirm, onComplete, onReopen, onBackToReceived, onAttachPO, poUploading, onDeductStock, onRecordOffcuts, pendingOffcutCount = 0,
+  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onReorderWindows, onConfirm, onComplete, onReopen, onBackToReceived, onAttachPO, poUploading, onDeductStock, onRecordOffcuts, pendingOffcutCount = 0, onOrderFabric,
 }) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(false)
   const [cutting, setCutting]     = useState(false)
-  const [copied, setCopied]       = useState(null) // true | 'failed' | null
+  const [ordering, setOrdering]   = useState(false)
   const [labeling, setLabeling]   = useState(null) // 'pack' | 'track' | 'parts' | null
   const [partsOpen, setPartsOpen] = useState(false)
   const [swapRow, setSwapRow]     = useState(null)
@@ -69,8 +166,30 @@ export default function JobDetail({
           allComponents,
         ),
       }
-    }))
-  }, [job, productComponentsMap, optionDefsFor, products, allComponents])
+    }), { rollStock: stockBars, fabricPlan: job.fabric_plan || null })
+  }, [job, productComponentsMap, optionDefsFor, products, allComponents, stockBars])
+
+  // The rolls the job's fabric is cut from, per fabric and colour — what the
+  // Fabrics rows show and let someone change. Same layout the cut sheet draws.
+  const fabricRolls = useMemo(() => {
+    const map = {}
+    fabricCutGroups(windowsWithBOM).forEach(g => {
+      const key = fabricPlanKey(g.component?.id, g.colour_variant?.suffix)
+      ;(map[key] ||= []).push(g)
+    })
+    return map
+  }, [windowsWithBOM])
+
+  const setFabricChoice = (key, patch) => {
+    const plan = { ...(job.fabric_plan || {}) }
+    const next = { ...(plan[key] || {}), ...patch }
+    // Nothing chosen is the default, so it is stored as nothing at all.
+    if (next.source !== 'order') delete next.source
+    if (next.width == null) delete next.width
+    if (Object.keys(next).length) plan[key] = next
+    else delete plan[key]
+    onUpdate({ fabric_plan: Object.keys(plan).length ? plan : null })
+  }
 
   // Parts bought for the job rather than for any one window. They have no
   // window to live in, so they are costed here and folded into the summary —
@@ -213,16 +332,30 @@ export default function JobDetail({
   // One product type per job, so this is asked once rather than per window.
   const isBlindJob = jobProductType(job, windowsWithBOM, products) === 'blind'
 
-  // Only offer the copy when the job actually has fabric to order.
-  const hasFabric = useMemo(
-    () => windowsWithBOM.some(w => (w.bom || []).some(l => l.fabric_cut)),
-    [windowsWithBOM])
+  // What the job has to BUY: the ordered roll of each fabric and colour, as
+  // a width and the metres to cut off it. Stock rolls are left out — they are
+  // already on the shelf — so a job cut entirely from stock has nothing here
+  // and the button isn't offered. Two piles of one fabric that landed on the
+  // same width are one line on the order, not two.
+  const fabricToOrder = useMemo(() => {
+    const map = new Map()
+    fabricCutGroups(windowsWithBOM).forEach(g => {
+      if (g.source === 'stock' || !g.component?.id) return
+      const key = `${g.component.id}__${g.colour_variant?.suffix || ''}__${g.rollWidthMm}`
+      if (!map.has(key)) {
+        map.set(key, {
+          component_id: g.component.id, colour_variant: g.colour_variant || null,
+          roll_width_mm: g.rollWidthMm, lengthMm: 0,
+        })
+      }
+      map.get(key).lengthMm += g.summary.totalLengthMm
+    })
+    return [...map.values()]
+  }, [windowsWithBOM])
 
-  const handleCopySummary = async () => {
-    const res = await copyFabricSummary(windowsWithBOM, suppliers, job)
-    if (!res.ok) { setCopied('failed'); setTimeout(() => setCopied(null), 2500); return }
-    setCopied(true)
-    setTimeout(() => setCopied(null), 2000)
+  const handleOrderFabric = async () => {
+    setOrdering(true)
+    try { await onOrderFabric(fabricToOrder) } finally { setOrdering(false) }
   }
 
   const handlePackagingLabels = async () => {
@@ -353,24 +486,23 @@ export default function JobDetail({
             </button>
           )}
 
-          {/* The fabric summary on its own, for an email to the supplier.
-              Copied rather than printed, in both HTML and tab-separated text,
-              so it pastes into a mail composer as a real table. Only shown
-              when there's fabric to order. */}
-          {hasFabric && (
+          {/* Puts the job's fabric on a draft purchase order — each fabric at
+              the width and metres the cut sheet says to order. Only shown
+              when there is fabric to buy; a job cut from stock has none. */}
+          {fabricToOrder.length > 0 && (
             <button
-              onClick={handleCopySummary}
-              title="Copy the fabric summary — paste straight into an email"
+              onClick={handleOrderFabric}
+              disabled={ordering}
+              title="Raise a draft purchase order for the fabric this job needs to buy"
               style={{
                 padding: '6px 12px', fontSize: 13, fontWeight: 600,
-                background: copied === true ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.15)',
+                background: 'rgba(255,255,255,0.15)',
                 color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
                 borderRadius: 8, cursor: 'pointer',
                 display: 'flex', alignItems: 'center', gap: 6,
+                opacity: ordering ? 0.6 : 1,
               }}>
-              {copied === true    ? '✓ Copied'
-                : copied === 'failed' ? '⚠️ Copy blocked'
-                : <><CopyIcon /> Fabric Summary</>}
+              🧵 {ordering ? 'Ordering…' : 'Order Fabric'}
             </button>
           )}
 
@@ -898,7 +1030,8 @@ export default function JobDetail({
                           <span>${fmt(group.rows.reduce((s, r) => s + r.total_cost, 0))}</span>
                         </div>
                         {group.rows.map(row => (
-                          <div key={row.component.id} style={{
+                          <Fragment key={`${row.component.id}__${row.colour_variant?.suffix || ''}`}>
+                          <div style={{
                             display: 'grid', gridTemplateColumns: '1fr 70px 65px 75px',
                             padding: '11px 16px', borderBottom: '1px solid var(--warm-100)',
                             fontSize: 14, alignItems: 'center'
@@ -942,6 +1075,15 @@ export default function JobDetail({
                             <div style={{ textAlign: 'right', color: 'var(--warm-300)', fontSize: 13 }}>${fmt(row.unit_cost)}</div>
                             <div style={{ textAlign: 'right', fontWeight: 600 }}>${fmt(row.total_cost)}</div>
                           </div>
+                          {row.component.order_type === 'fabric' && (
+                            <FabricRollChoice
+                              rolls={fabricRolls[fabricPlanKey(row.component.id, row.colour_variant?.suffix)] || []}
+                              choice={job.fabric_plan?.[fabricPlanKey(row.component.id, row.colour_variant?.suffix)] || {}}
+                              onChange={patch => setFabricChoice(fabricPlanKey(row.component.id, row.colour_variant?.suffix), patch)}
+                              frozen={!!job.qty_snapshot}
+                            />
+                          )}
+                          </Fragment>
                         ))}
                       </div>
                     ))}
