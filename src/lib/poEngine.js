@@ -5,6 +5,26 @@
  */
 
 import { getStock } from './stockEngine'
+import { fabricMetreRate, orderableWidths } from './fabricEngine'
+
+/** The roll width a line orders, or null on anything that isn't a cut length. */
+export function lineRollWidthMm(line) {
+  const w = Number(line?.roll_width_mm) || 0
+  return w > 0 ? w : null
+}
+
+/**
+ * The widths a fabric line can be switched between.
+ *
+ * The fabric's own list, plus whatever the line already carries — a width that
+ * has since been taken off the fabric must still show on the order that was
+ * raised against it, not silently turn into the first one on the list.
+ */
+export function lineWidthChoices(line) {
+  const own = orderableWidths(line?.component)
+  const current = lineRollWidthMm(line)
+  return current && !own.includes(current) ? [...own, current].sort((a, b) => a - b) : own
+}
 
 /**
  * The discount that applies when ordering a component.
@@ -33,8 +53,17 @@ export function effectiveDiscount(component, supplier = null) {
  * discount that got us there come back alongside it for anything that wants
  * to show the working (see priceBreakdown).
  */
-export function orderUnitInfo(component, supplier = null) {
+export function orderUnitInfo(component, supplier = null, rollWidthMm = null) {
   const discount = effectiveDiscount(component, supplier)
+  // Fabric ordered at a stated width is a CUT LENGTH: so many metres off a
+  // roll that wide. The fabric is priced per m², so a metre of it costs the
+  // rate times the width — a different figure for every width, which is why
+  // the width has to be known before the line can be priced at all.
+  const width = Number(rollWidthMm) || 0
+  if (component?.order_type === 'fabric' && width > 0) {
+    const list = fabricMetreRate(component, width)
+    return { label: 'metre', price: list * (1 - discount / 100), list, discount }
+  }
   const isBar    = component?.order_type === 'bar'
   const list     = Number(isBar ? component?.bar_price : component?.pack_price) || 0
   const packQty  = Number(component?.pack_qty) || 1
@@ -59,7 +88,7 @@ export function orderUnitInfo(component, supplier = null) {
  * order would be worse than admitting they have drifted apart.
  */
 export function priceBreakdown(line, component, supplier = null) {
-  const info = orderUnitInfo(component, supplier)
+  const info = orderUnitInfo(component, supplier, lineRollWidthMm(line))
   const paid = Number(line?.unit_cost) || 0
   const drifted = info.list > 0 && Math.abs(info.price - paid) > 0.005
   return {
@@ -171,9 +200,16 @@ export function openPOFor(purchaseOrders = [], supplierId) {
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0] || null
 }
 
-/** Component + colour, the same key purchase order lines are compared on. */
-export function poLineKey(componentId, colourVariant) {
-  return `${componentId}__${colourVariant?.suffix || ''}`
+/**
+ * Component + colour, the same key purchase order lines are compared on.
+ *
+ * A roll width joins the key when there is one: the same fabric in the same
+ * colour at 2.5m and at 3m are two different things to cut and two lines on
+ * the order, not a duplicate.
+ */
+export function poLineKey(componentId, colourVariant, rollWidthMm = null) {
+  const base = `${componentId}__${colourVariant?.suffix || ''}`
+  return Number(rollWidthMm) > 0 ? `${base}@${Number(rollWidthMm)}` : base
 }
 
 /**
@@ -216,7 +252,11 @@ export function derivedDescription(line) {
   // document that prints it twice reads as two different facts. The Excel
   // export always had a Colour column and so always printed it twice; that is
   // fixed by the same change.
-  return line?.component?.name || 'Component'
+  const name  = line?.component?.name || 'Component'
+  // The width IS part of what is being ordered, so it is in the wording the
+  // supplier reads rather than left to a column they might not look at.
+  const width = lineRollWidthMm(line)
+  return width ? `${name} — ${width.toLocaleString()}mm wide` : name
 }
 
 /** The colour variant's own name — what the line says unless overridden. */
@@ -248,7 +288,7 @@ export function lineDescription(line) {
 export function lineOrderUnit(line, supplier = null) {
   const override = (line?.order_unit || '').trim()
   if (override) return override
-  return line?.component ? orderUnitInfo(line.component, supplier).label : ''
+  return line?.component ? orderUnitInfo(line.component, supplier, lineRollWidthMm(line)).label : ''
 }
 
 /* ==========================================================================

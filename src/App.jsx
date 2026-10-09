@@ -42,7 +42,7 @@ import { useToast, ToastContainer } from './hooks/useToast.jsx'
 import { buildStockMap, stockKey, getStock, planStockRestore, stockPositions, undeductedLines } from './lib/stockEngine'
 import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines, resolveAnswers } from './lib/bomEngine'
 import { windowSell } from './lib/sellEngine'
-import { orderUnitInfo, openPOFor, poDisplayNumber, outstandingQty, isFullyReceived, receivedToStockQty, poFulfilment, poAddress } from './lib/poEngine'
+import { orderUnitInfo, openPOFor, poLineKey, poDisplayNumber, outstandingQty, isFullyReceived, receivedToStockQty, poFulfilment, poAddress } from './lib/poEngine'
 import { exportPurchaseOrderPDF } from './lib/exportPOPdf'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
 import { exportProductPricingXLSX } from './lib/exportPricing'
@@ -203,8 +203,8 @@ export default function App({ route = 'manufacturing' }) {
         substitutionsFor(job, win, components),
         components,
       )
-    })))
-  }, [productComponentsMap, optionDefsFor, products, components])
+    })), { rollStock: stockBars, fabricPlan: job.fabric_plan || null })
+  }, [productComponentsMap, optionDefsFor, products, components, stockBars])
 
   // Pre-compute current job's BOM summary for the deduct stock modal.
   // Job-level extras are in it: they are picked and taken out of stock like
@@ -928,7 +928,10 @@ export default function App({ route = 'manufacturing' }) {
     const updated = { ...currentJob, ...updates }
     setCurrentJob(updated)
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
-    await supabase.from('mfg_jobs').update(updates).eq('id', currentJob.id)
+    const { error } = await supabase.from('mfg_jobs').update(updates).eq('id', currentJob.id)
+    // The screen has already moved on, so a change that didn't save has to say
+    // so — otherwise it looks saved until the next reload quietly undoes it.
+    if (error) showToast(error.message || 'That change could not be saved', 'error')
   }
 
   /**
@@ -1376,6 +1379,93 @@ export default function App({ route = 'manufacturing' }) {
    * a 'sent' order has gone to the supplier and appending to it would add a
    * line nobody is going to send.
    * --------------------------------------------------------------------- */
+  /**
+   * Put a job's fabric on order.
+   *
+   * One line per fabric, colour and roll width, in metres, priced per metre
+   * at that width — the figures the job's cut sheet says to order. Lines go
+   * onto each supplier's open DRAFT if there is one, so two jobs ordered the
+   * same morning end up on one sheet; otherwise a draft is started.
+   *
+   * A fabric already on that draft at that width is left alone rather than
+   * doubled or silently topped up: pressing the button twice must not order
+   * the fabric twice, and whether a second job's metres belong on the same
+   * line is a decision for whoever is looking at the order.
+   */
+  const handleOrderFabric = async (needs = []) => {
+    const job = currentJob
+    const bySupplier = new Map()
+    let noSupplier = 0
+    needs.forEach(n => {
+      const component = components.find(c => c.id === n.component_id)
+      if (!component?.supplier_id) { noSupplier++; return }
+      if (!bySupplier.has(component.supplier_id)) bySupplier.set(component.supplier_id, [])
+      bySupplier.get(component.supplier_id).push({ ...n, component })
+    })
+
+    let added = 0, skipped = 0, failed = null
+    const touched = []
+
+    for (const [supplierId, items] of bySupplier) {
+      const supplier = suppliers.find(sp => sp.id === supplierId)
+      let po = openPOFor(purchaseOrders, supplierId)
+      let created = false
+      const onOrder = new Set((po ? poLinesMap[po.id] || [] : [])
+        .map(l => poLineKey(l.component_id, l.colour_variant, l.roll_width_mm)))
+      const fresh = items.filter(i => !onOrder.has(poLineKey(i.component_id, i.colour_variant, i.roll_width_mm)))
+      skipped += items.length - fresh.length
+      if (fresh.length === 0) { if (po) touched.push(po); continue }
+
+      if (!po) {
+        const { data, error } = await supabase
+          .from('purchase_orders')
+          .insert({
+            supplier_id: supplierId, status: 'draft',
+            notes: `Fabric for job ${job?.job_number ? `#${job.job_number}` : ''}${job?.customer_name ? ` ${job.customer_name}` : ''}`.trim(),
+          })
+          .select('*, supplier:suppliers(*)').single()
+        if (error || !data) { failed = error?.message || 'Could not start an order'; break }
+        po = data
+        created = true
+      }
+
+      const { error } = await supabase.from('purchase_order_lines').insert(fresh.map(i => ({
+        po_id:          po.id,
+        component_id:   i.component_id,
+        colour_variant: i.colour_variant || null,
+        // Up to the next centimetre: an order a few millimetres short of the
+        // layout is a roll that doesn't take the last blind.
+        qty_ordered:    Math.ceil(i.lengthMm / 10) / 100,
+        unit_cost:      orderUnitInfo(i.component, supplier, i.roll_width_mm).price,
+        roll_width_mm:  i.roll_width_mm,
+      })))
+      if (error) {
+        // Don't leave behind an empty draft that was only made for these lines.
+        if (created) await supabase.from('purchase_orders').delete().eq('id', po.id)
+        failed = error.message || 'Could not add the fabric to the order'
+        break
+      }
+      added += fresh.length
+      touched.push(po)
+    }
+
+    if (failed) {
+      showToast(failed, 'error')
+    } else if (added === 0) {
+      showToast(
+        skipped > 0 ? `Already on ${touched.map(poDisplayNumber).join(', ')} — nothing added`
+          : noSupplier > 0 ? 'These fabrics have no supplier to order from'
+          : 'No fabric to order', 'error')
+    } else {
+      showToast(
+        `${added} fabric line${added !== 1 ? 's' : ''} → ${touched.map(poDisplayNumber).join(', ')} (draft)`
+        + (skipped ? ` · ${skipped} already on order` : '')
+        + (noSupplier ? ` · ${noSupplier} with no supplier` : '') + ' ✓',
+        'success')
+    }
+    await loadAll()
+  }
+
   const handleAddToPO = (component, colourVariant) => {
     setAddToPOComp(component)
     setAddToPOColour(colourVariant)
@@ -1931,7 +2021,7 @@ export default function App({ route = 'manufacturing' }) {
         // A line whose component has since been removed cannot be re-priced,
         // so it keeps what it was. Better a stale figure than a zero that
         // reads as free.
-        const priced = l.component ? orderUnitInfo(l.component, supplier).price : null
+        const priced = l.component ? orderUnitInfo(l.component, supplier, l.roll_width_mm).price : null
         if (priced !== null && Math.abs(priced - (Number(l.unit_cost) || 0)) > 0.005) repriced++
         return {
           po_id:          po.id,
@@ -1942,6 +2032,7 @@ export default function App({ route = 'manufacturing' }) {
           description:    l.description || null,
           order_unit:     l.order_unit || null,
           colour:         l.colour || null,
+          ...(Number(l.roll_width_mm) > 0 ? { roll_width_mm: Number(l.roll_width_mm) } : {}),
         }
       })
       const { error: lineErr } = await supabase.from('purchase_order_lines').insert(payload)
@@ -2152,7 +2243,9 @@ export default function App({ route = 'manufacturing' }) {
         (rolls || []).forEach((r, i) => pieces.push({
           component_id:   component.id,
           colour_variant: line.colour_variant || null,
-          label:          `${poDisplayNumber(currentPO)} roll ${i + 1}`,
+          label:          Number(line.roll_width_mm) > 0
+            ? `${poDisplayNumber(currentPO)} ${r.roll_width_mm}w`
+            : `${poDisplayNumber(currentPO)} roll ${i + 1}`,
           length_mm:      r.length_mm,
           roll_width_mm:  r.roll_width_mm,
           status:         'available',
@@ -2231,6 +2324,7 @@ export default function App({ route = 'manufacturing' }) {
     if (updates.description !== undefined) payload.description = updates.description.trim() === '' ? null : updates.description
     if (updates.order_unit !== undefined)  payload.order_unit  = updates.order_unit.trim()  === '' ? null : updates.order_unit
     if (updates.colour !== undefined)      payload.colour      = updates.colour.trim()      === '' ? null : updates.colour
+    if (updates.roll_width_mm !== undefined) payload.roll_width_mm = Number(updates.roll_width_mm) || null
     setPoLinesMap(prev => ({
       ...prev,
       [currentPO.id]: (prev[currentPO.id] || []).map(l => l.id === lineId ? { ...l, ...payload } : l),
@@ -2354,6 +2448,7 @@ export default function App({ route = 'manufacturing' }) {
           onDeductStock={handleOpenDeductModal}
           onRecordOffcuts={() => setRecordOffcutsOpen(true)}
           pendingOffcutCount={pendingOffcuts.length}
+          onOrderFabric={handleOrderFabric}
         />
       )
     }
@@ -2691,7 +2786,7 @@ export default function App({ route = 'manufacturing' }) {
         supplier={suppliers.find(s => s.id === currentPO?.supplier_id)}
         components={components}
         stockMap={stockMap}
-        existingKeys={new Set((poLinesMap[currentPO?.id] || []).map(l => `${l.component_id}__${l.colour_variant?.suffix || ''}`))}
+        existingKeys={new Set((poLinesMap[currentPO?.id] || []).map(l => poLineKey(l.component_id, l.colour_variant, l.roll_width_mm)))}
         onClose={() => setAddLinesOpen(false)}
         onAdd={handleAddPOLines}
         adding={addingLines}

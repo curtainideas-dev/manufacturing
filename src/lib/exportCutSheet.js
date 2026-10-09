@@ -44,7 +44,7 @@
  */
 
 import { printPDF } from './printPDF'
-import { nestPieces, nestSummary } from './fabricEngine'
+import { nestPieces, nestSummary, placedRolls } from './fabricEngine'
 import { resolveAnswers, roleSpecs, jobProductType } from './bomEngine'
 import { drawTrackCutSheet, drawBarCutCharts, trackCutGroups } from './cutSheetTrack'
 import {
@@ -175,16 +175,48 @@ export function cutSheetRow(win, optionDefs = [], kinds = []) {
  * The job's fabric cuts, grouped into the rolls they'll actually be nested on,
  * each group already laid out.
  *
- * Grouped by fabric, colour, roll width AND cut allowance: two blinds only
- * share a length of roll if they're the same fabric and colour, and the
- * nesting only means anything against one roll width. Allowance joins the key
- * because two products on the same fabric can carry different blade margins,
- * and mixing them would draw a layout neither was costed at.
+ * One group per ROLL, and a roll is either a piece already on the shelf or the
+ * one length being ordered. Which cuts go where was decided when the job's
+ * fabric was planned (bomEngine.applyFabricNesting → fabricEngine
+ * .planJobFabric) and is stamped on each cut, so this reads the layout back
+ * rather than working one out — the sheet cannot draw a different roll from
+ * the one the BOM was quantified on.
+ *
+ * Each group carries `source` ('stock' | 'order'), the `stockPiece` it comes
+ * off when there is one, and — on the ordered roll — the `options` every
+ * other width would have taken, so the choice can be shown and overridden.
  *
  * Exported separately from the rendering so a layout can be checked without
  * generating a PDF.
  */
 export function fabricCutGroups(windowsWithBOM = []) {
+  const lines = windowsWithBOM
+    .map((win, i) => ({ win, i, line: (win.bom || []).find(l => l.fabric_cut) }))
+    .filter(x => x.line)
+
+  if (lines.length > 0 && lines.every(x => x.line.fabric_cut.placement)) {
+    const byFabric = new Map()
+    lines.forEach(({ win, i, line }) => {
+      const key = `${line.component_id}__${line.colour_variant?.suffix || ''}`
+      if (!byFabric.has(key)) byFabric.set(key, { component: line.component, colour_variant: line.colour_variant || null, cuts: [] })
+      byFabric.get(key).cuts.push({
+        ...line.fabric_cut,
+        label: line.fabric_cut.label || win.label || `Window ${i + 1}`,
+      })
+    })
+    return [...byFabric.values()]
+      .sort((a, b) => String(a.component?.name || '').localeCompare(String(b.component?.name || '')))
+      .flatMap(f => placedRolls(f.cuts).map(roll => ({
+        ...roll,
+        key:            roll.rollKey,
+        component:      f.component,
+        colour_variant: f.colour_variant,
+        summary:        nestSummary(roll.bands, roll.rollWidthMm),
+      })))
+  }
+
+  // Cuts that were never planned — a caller that built BOMs without the
+  // nesting pass. Everything on one roll at its nominal width, as before.
   const groups = new Map()
 
   windowsWithBOM.forEach((win, i) => {
@@ -214,7 +246,7 @@ export function fabricCutGroups(windowsWithBOM = []) {
   return [...groups.values()]
     .map(g => {
       const bands = nestPieces(g.pieces, g.rollWidthMm, g.widthAllowanceMm)
-      return { ...g, bands, summary: nestSummary(bands, g.rollWidthMm) }
+      return { ...g, source: 'order', stockPiece: null, bands, summary: nestSummary(bands, g.rollWidthMm) }
     })
     .sort((a, b) => String(a.component?.name || '').localeCompare(String(b.component?.name || '')))
 }
@@ -233,24 +265,37 @@ export function fabricCutGroups(windowsWithBOM = []) {
 // Shared by the PDF table and the clipboard renderers. `w` is millimetres of
 // paper for the PDF; the text and HTML versions only use `title` and `key`.
 export const SUMMARY_COLS = [
-  { key: 'fabric',  title: 'Fabric',          w: 74 },
-  { key: 'company', title: 'Company',         w: 46 },
-  { key: 'length',  title: 'Length required', w: 36, align: 'right' },
-  { key: 'width',   title: 'Width required',  w: 36, align: 'right' },
-  { key: 'layout',  title: 'Layout',          w: 60 },
+  { key: 'fabric',  title: 'Fabric',          w: 66 },
+  { key: 'company', title: 'Company',         w: 34 },
+  { key: 'source',  title: 'Source',          w: 46 },
+  { key: 'length',  title: 'Length required', w: 30, align: 'right' },
+  { key: 'width',   title: 'Roll width',      w: 26, align: 'right' },
+  { key: 'layout',  title: 'Layout',          w: 50 },
 ]
 
+/** What a roll is called in the Source column and on its chart. */
+export function rollSourceLabel(group) {
+  if (group.source !== 'stock') return 'Order'
+  const p = group.stockPiece
+  const size = p ? `${Number(p.roll_width_mm).toLocaleString()}×${Number(p.length_mm).toLocaleString()}mm` : ''
+  return `Stock · ${p?.label || size}`
+}
+
 /**
- * One row per roll the job needs.
+ * One row per roll the job cuts from — what to order first, then what to pull
+ * off the shelf.
  *
- * `width` is the ROLL WIDTH the layout assumes — the width to order or pull,
- * and the width the nesting and the costing were both computed against. The
- * narrowest roll that would physically take the layout is smaller (no band
- * uses the whole width), so it rides along in `layout` as the widest band
- * rather than replacing the figure someone would put on a purchase order.
+ * `width` is the width of that roll: for an ordered roll, the one width that
+ * takes the cuts in the fewest square metres (or the width set by hand on the
+ * job); for stock, the width of the piece itself. The narrowest roll that
+ * would physically take the layout is smaller (no band uses the whole width),
+ * so it rides along in `layout` as the widest band rather than replacing the
+ * figure someone would put on a purchase order.
  */
 export function fabricSummary(windowsWithBOM = [], suppliers = []) {
   const groups = fabricCutGroups(windowsWithBOM)
+    .slice()
+    .sort((a, b) => (a.source === 'stock' ? 1 : 0) - (b.source === 'stock' ? 1 : 0))
 
   const supplierName = (componentId) => {
     const comp = windowsWithBOM
@@ -265,24 +310,35 @@ export function fabricSummary(windowsWithBOM = [], suppliers = []) {
       fabric: `${g.component?.fabric_code ? `${g.component.fabric_code} · ` : ''}${g.component?.name || DASH}`
         + (g.colour_variant?.name ? ` · ${g.colour_variant.name}` : ''),
       company: supplierName(g.component?.id),
+      source:  rollSourceLabel(g),
       length:  `${(g.summary.totalLengthMm / 1000).toFixed(2)} m`,
       width:   `${g.rollWidthMm.toLocaleString()} mm`,
-      layout:  `${g.bands.length} band${g.bands.length !== 1 ? 's' : ''} · widest ${Math.round(widestBandMm).toLocaleString()}mm`,
+      layout:  `${g.bands.length} band${g.bands.length !== 1 ? 's' : ''} · widest ${Math.round(widestBandMm).toLocaleString()}mm`
+        + (g.source !== 'stock' && g.overridden ? ' · width set by hand' : ''),
       // Raw figures, for anything that needs to compute rather than display.
+      isStock:  g.source === 'stock',
       lengthMm: g.summary.totalLengthMm,
       rollWidthMm: g.rollWidthMm,
       widestBandMm,
     }
   })
 
+  const lengthM = (list) => list.reduce((s, r) => s + r.lengthMm, 0) / 1000
+  const ordered = rows.filter(r => !r.isStock)
+  const stocked = rows.filter(r => r.isStock)
+
   return {
     rows,
     rollCount:    rows.length,
-    totalLengthM: rows.reduce((s, r) => s + r.lengthMm, 0) / 1000,
+    totalLengthM: lengthM(rows),
+    // The two totals that mean something: what goes on a purchase order, and
+    // what comes off the shelf. Added together they are neither.
+    totals: [
+      ...(ordered.length ? [{ label: `To order — ${ordered.length} roll${ordered.length !== 1 ? 's' : ''}`, lengthM: lengthM(ordered) }] : []),
+      ...(stocked.length ? [{ label: `From stock — ${stocked.length} piece${stocked.length !== 1 ? 's' : ''}`, lengthM: lengthM(stocked) }] : []),
+    ],
   }
 }
-
-const totalLabel = (n) => `Total across ${n} roll${n !== 1 ? 's' : ''}`
 
 const esc = (s) => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -295,7 +351,7 @@ const esc = (s) => String(s ?? '')
  * subset of HTML from a decade ago. What survives that is a `<table>` with
  * inline `style` on every cell, which is what this emits.
  */
-export function fabricSummaryHTML({ rows, rollCount, totalLengthM }, job = null) {
+export function fabricSummaryHTML({ rows, totals = [] }, job = null) {
   const th = 'padding:6px 10px;border:1px solid #cbd5e1;background:#1c2e0f;color:#ffffff;'
     + 'font:600 13px Arial,Helvetica,sans-serif;text-align:left;'
   const td = 'padding:6px 10px;border:1px solid #cbd5e1;font:400 13px Arial,Helvetica,sans-serif;'
@@ -309,11 +365,11 @@ export function fabricSummaryHTML({ rows, rollCount, totalLengthM }, job = null)
   const body = rows.map(r => '<tr>' + SUMMARY_COLS.map(c =>
     `<td style="${c.align === 'right' ? tdNum : td}">${esc(r[c.key])}</td>`).join('') + '</tr>').join('')
 
-  const total = `<tr>`
-    + `<td style="${td}font-weight:700;background:#e2e8f0;" colspan="2">${esc(totalLabel(rollCount))}</td>`
-    + `<td style="${tdNum}background:#e2e8f0;">${totalLengthM.toFixed(2)} m</td>`
+  const total = totals.map(t => `<tr>`
+    + `<td style="${td}font-weight:700;background:#e2e8f0;" colspan="3">${esc(t.label)}</td>`
+    + `<td style="${tdNum}background:#e2e8f0;">${t.lengthM.toFixed(2)} m</td>`
     + `<td style="${td}background:#e2e8f0;"></td><td style="${td}background:#e2e8f0;"></td>`
-    + `</tr>`
+    + `</tr>`).join('')
 
   return (caption ? `<p style="font:600 13px Arial,Helvetica,sans-serif;margin:0 0 6px;">Fabric Summary — ${esc(caption)}</p>` : '')
     + `<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;">`
@@ -327,14 +383,14 @@ export function fabricSummaryHTML({ rows, rollCount, totalLengthM }, job = null)
  * this lands as a real table with the columns split, which spaces would not
  * do. It's also the fallback whenever the clipboard won't take HTML.
  */
-export function fabricSummaryText({ rows, rollCount, totalLengthM }, job = null) {
+export function fabricSummaryText({ rows, totals = [] }, job = null) {
   const caption = [job?.job_number ? `Job #${job.job_number}` : null, job?.customer_name || null]
     .filter(Boolean).join(' · ')
   const lines = [
     ...(caption ? [`Fabric Summary — ${caption}`, ''] : []),
     SUMMARY_COLS.map(c => c.title).join('\t'),
     ...rows.map(r => SUMMARY_COLS.map(c => r[c.key]).join('\t')),
-    [totalLabel(rollCount), '', `${totalLengthM.toFixed(2)} m`, '', ''].join('\t'),
+    ...totals.map(t => [t.label, '', '', `${t.lengthM.toFixed(2)} m`, '', ''].join('\t')),
   ]
   return lines.join('\n')
 }
@@ -545,15 +601,22 @@ export function drawBlindCutSheet(doc, {
       if (y + 16 + firstBandH > MB) { doc.addPage(); pageNum++; y = drawPageHeader('Fabric Cut Charts') }
       if (gi > 0) y += 4
 
-      const name = `${g.component?.name || DASH}${g.colour_variant?.name ? ` · ${g.colour_variant.name}` : ''}`
-      setFill(ACCENT_DARK)
+      // Where the roll comes from leads the heading: it is the first thing the
+      // table needs to know — walk to the shelf, or wait for the delivery.
+      const isStock = g.source === 'stock'
+      const name = `${isStock ? 'FROM STOCK' : 'TO ORDER'}  ·  ${g.component?.name || DASH}`
+        + (g.colour_variant?.name ? ` · ${g.colour_variant.name}` : '')
+        + (isStock && g.stockPiece?.label ? `  ·  ${g.stockPiece.label}` : '')
+      setFill(isStock ? INK : ACCENT_DARK)
       doc.rect(CHART_X, y, CHART_W + 60, 8, 'F')
       setColor(WHITE); doc.setFontSize(9); doc.setFont('helvetica', 'bold')
-      doc.text(clip(name, 110), CHART_X + 3, y + 5.5)
+      doc.text(clip(name, 96), CHART_X + 3, y + 5.5)
       doc.setFontSize(7.5); doc.setFont('helvetica', 'normal')
       doc.text(
         [
-          `${rollWidthMm.toLocaleString()}mm roll`,
+          isStock
+            ? `${rollWidthMm.toLocaleString()} × ${Number(g.stockPiece?.length_mm || 0).toLocaleString()}mm piece`
+            : `${rollWidthMm.toLocaleString()}mm roll${g.overridden ? ' (set by hand)' : ''}`,
           `${summary.pieceCount} blind${summary.pieceCount !== 1 ? 's' : ''}`,
           `${bands.length} band${bands.length !== 1 ? 's' : ''}`,
           `${(summary.totalLengthMm / 1000).toFixed(2)}m off the roll`,
@@ -652,7 +715,7 @@ export function drawBlindCutSheet(doc, {
     }))
     const SUM_W = SUMMARY_COLS.reduce((s, c) => s + c.w, 0)
 
-    const { rows: sumRows, totalLengthM } = fabricSummary(windowsWithBOM, suppliers)
+    const { rows: sumRows, totals: sumTotals } = fabricSummary(windowsWithBOM, suppliers)
 
     const SUM_ROW_H = 8
 
@@ -700,21 +763,28 @@ export function drawBlindCutSheet(doc, {
       y += SUM_ROW_H
     })
 
-    // Total metres — the one number that goes onto a purchase order.
-    if (y + SUM_ROW_H + 8 > MB) { doc.addPage(); pageNum++; y = drawPageHeader('Fabric Cut Charts') }
-    setFill(WARM_200)
-    doc.rect(CHART_X, y, SUM_W, SUM_ROW_H, 'F')
-    setColor(INK); doc.setFontSize(8); doc.setFont('helvetica', 'bold')
-    doc.text(totalLabel(sumRows.length), CHART_X + 2, y + SUM_ROW_H / 2 + 1.4)
-    doc.setFontSize(9)
-    doc.text(`${totalLengthM.toFixed(2)} m`, SUM[2].x + SUM[2].w - 2, y + SUM_ROW_H / 2 + 1.4, { align: 'right' })
-    y += SUM_ROW_H + 4
+    // Metres to order and metres off the shelf, kept apart — only the first
+    // goes onto a purchase order.
+    const LEN = SUM.find(c => c.key === 'length')
+    sumTotals.forEach(t => {
+      if (y + SUM_ROW_H + 8 > MB) { doc.addPage(); pageNum++; y = drawPageHeader('Fabric Cut Charts') }
+      setFill(WARM_200)
+      doc.rect(CHART_X, y, SUM_W, SUM_ROW_H, 'F')
+      setColor(INK); doc.setFontSize(8); doc.setFont('helvetica', 'bold')
+      doc.text(t.label, CHART_X + 2, y + SUM_ROW_H / 2 + 1.4)
+      doc.setFontSize(9)
+      doc.text(`${t.lengthM.toFixed(2)} m`, LEN.x + LEN.w - 2, y + SUM_ROW_H / 2 + 1.4, { align: 'right' })
+      doc.setDrawColor(...WHITE); doc.setLineWidth(0.3)
+      doc.line(CHART_X, y + SUM_ROW_H, CHART_X + SUM_W, y + SUM_ROW_H)
+      y += SUM_ROW_H
+    })
+    y += 4
 
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7)
     setColor(WARM_300)
     doc.text(
       'Length required is what comes off the roll, offcut included — order this, not the sum of the blinds. '
-      + 'Width required is the roll width the layout assumes; no band fills it, so the widest band is shown alongside.',
+      + 'An ordered roll is the one width that takes the cuts in the fewest square metres, unless set by hand on the job.',
       CHART_X, y,
     )
   }

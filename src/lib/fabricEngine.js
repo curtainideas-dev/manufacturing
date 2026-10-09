@@ -114,14 +114,19 @@ export function nestPieces(pieces = [], rollWidthMm, widthAllowanceMm = 0) {
 /**
  * Nest a mixed pile of cuts, splitting it first by the roll it belongs on.
  *
- * One job's cuts in a single fabric and colour can still come off products
- * with different roll widths or different blade margins, and nesting those
- * together would draw a layout none of them was costed at. So they're split on
- * exactly those two figures, nested separately, and handed back as one flat
- * list of bands — each carrying the roll it assumes, so a caller never has to
- * remember which subgroup a band came from.
+ * A cut that has been through `planJobFabric` already knows its roll, its band
+ * and where it sits across it — that plan is what the BOM was quantified on
+ * and what the cut sheet draws, so it is read back rather than nested again.
+ * Anything without a placement falls back to the old rule: split on roll width
+ * and blade margin, nest each pile on its own.
+ *
+ * Either way the result is one flat list of bands, each carrying the roll it
+ * assumes, so a caller never has to remember which subgroup a band came from.
  */
 export function nestGroups(cuts = []) {
+  if (cuts.length > 0 && cuts.every(c => c.placement)) {
+    return placedRolls(cuts).flatMap(r => r.bands)
+  }
   const groups = new Map()
   cuts.forEach(c => {
     const rollWidthMm      = Number(c.rollWidthMm) || 0
@@ -254,6 +259,335 @@ export function piecesFitting(rollStock = [], componentId, colourSuffix, cutWidt
     .sort((a, b) =>
       (Number(a.roll_width_mm) || 0) - (Number(b.roll_width_mm) || 0) ||
       (Number(a.length_mm) || 0) - (Number(b.length_mm) || 0))
+}
+
+/* ==========================================================================
+ * What a fabric costs
+ *
+ * The supplier's list prices a fabric per SQUARE METRE, one figure whatever
+ * width the roll is: Vibe is $7.03/m² at 2.0, 2.5 and 3.0m alike. The per
+ * metre price is only that figure times the width, so it is different for
+ * every width and there is nothing to maintain per width.
+ *
+ * A fabric row stores one of two things, told apart by its unit:
+ *
+ *   'm²'      unit_cost IS the rate.
+ *   'metres'  unit_cost is per linear metre of the WIDEST roll the fabric can
+ *             be ordered in — the convention fabricStockValue already values
+ *             stock against — so the rate is that figure over the width.
+ * ========================================================================== */
+
+/** The width a per-metre fabric price is quoted against. */
+export function fabricReferenceWidthMm(fabric, fallbackWidthMm = 3000) {
+  const own = orderableWidths(fabric)
+  return own.length > 0 ? own[own.length - 1] : (Number(fallbackWidthMm) || 3000)
+}
+
+/** List price per square metre, before discount. */
+export function fabricSqmRate(fabric, fallbackWidthMm = 3000) {
+  const cost = Number(fabric?.unit_cost) || 0
+  if (fabric?.unit === 'm²') return cost
+  const ref = fabricReferenceWidthMm(fabric, fallbackWidthMm)
+  return ref > 0 ? cost / (ref / 1000) : 0
+}
+
+/** List price per linear metre off a roll of this width, before discount. */
+export function fabricMetreRate(fabric, rollWidthMm, fallbackWidthMm = 3000) {
+  return fabricSqmRate(fabric, fallbackWidthMm) * ((Number(rollWidthMm) || 0) / 1000)
+}
+
+/* ==========================================================================
+ * Planning a job's fabric
+ *
+ * One fabric in one colour is planned as a whole, in two steps:
+ *
+ *   1. STOCK. Every roll and offcut on the shelf is tried, tightest first, and
+ *      takes whatever cuts fit on it — across its width and within the length
+ *      it has left. Skipped entirely when the job says to order the lot.
+ *
+ *   2. ORDER. Whatever is left is laid out on each width the fabric can be
+ *      ordered in, and the width that needs the fewest square metres wins.
+ *      ONE width, always: a second roll is a second cut charge, which costs
+ *      more than the fabric a split would save. Fabric is priced per m², so
+ *      fewest square metres is also cheapest — there is no trade to weigh.
+ *
+ * The chosen width can be overridden per job; the alternatives ride along in
+ * the result so a screen can show what each would have taken.
+ * ========================================================================== */
+
+/**
+ * Nest cuts onto one piece of stock, which has an end.
+ *
+ * The same first-fit-decreasing pass as `nestPieces`, with the one thing a
+ * roll on the shelf has that a roll on order does not: a length. A cut that
+ * would open a band past the end of the piece is left for something else.
+ */
+export function nestOnPiece(cuts = [], pieceWidthMm, pieceLengthMm, widthAllowanceMm = 0) {
+  const roll   = Number(pieceWidthMm) || 0
+  const length = Number(pieceLengthMm) || 0
+  const prepared = cuts
+    .map(p => ({
+      ...p,
+      cutWidthMm: Number(p.cutWidthMm) || 0,
+      occupiedMm: occupiedWidthMm(p.cutWidthMm, widthAllowanceMm),
+      lengthMm:   Number(p.cutDropMm) || 0,
+    }))
+    .sort((a, b) => b.lengthMm - a.lengthMm || b.occupiedMm - a.occupiedMm)
+
+  const bands = [], left = []
+  let usedLength = 0
+  for (const piece of prepared) {
+    if (roll <= 0 || piece.occupiedMm > roll || piece.lengthMm <= 0) { left.push(piece); continue }
+    const band = bands.find(b => b.remainingWidthMm >= piece.occupiedMm)
+    if (band) {
+      band.pieces.push({ ...piece, offsetMm: band.usedWidthMm })
+      band.usedWidthMm      += piece.occupiedMm
+      band.remainingWidthMm -= piece.occupiedMm
+      continue
+    }
+    if (usedLength + piece.lengthMm > length) { left.push(piece); continue }
+    bands.push({
+      pieces:           [{ ...piece, offsetMm: 0 }],
+      usedWidthMm:      piece.occupiedMm,
+      remainingWidthMm: roll - piece.occupiedMm,
+      lengthMm:         piece.lengthMm,
+      oversized:        false,
+    })
+    usedLength += piece.lengthMm
+  }
+  return { bands, left, usedLengthMm: usedLength }
+}
+
+/**
+ * What each orderable width would take to cut these pieces.
+ *
+ * `fits` is false when a piece is wider than the roll — that width is still
+ * listed, so the screen can say why it was passed over, but never chosen while
+ * another width takes everything.
+ */
+export function orderOptions(cuts = [], widths = [], widthAllowanceMm = 0) {
+  return [...new Set(widths.map(Number).filter(w => w > 0))]
+    .sort((a, b) => a - b)
+    .map(rollWidthMm => {
+      const bands   = nestPieces(cuts, rollWidthMm, widthAllowanceMm)
+      const summary = nestSummary(bands, rollWidthMm)
+      return {
+        rollWidthMm, bands,
+        fits:     bands.every(b => !b.oversized),
+        lengthMm: summary.totalLengthMm,
+        rollM2:   summary.rollM2,
+        wasteM2:  summary.wasteM2,
+        wastePct: summary.wastePct,
+      }
+    })
+}
+
+/** Fewest square metres among the widths that take every piece; narrower on a tie. */
+export function bestOrderOption(options = []) {
+  const fitting = options.filter(o => o.fits)
+  if (fitting.length === 0) return options[options.length - 1] || null   // nothing fits: the widest, flagged
+  return fitting.slice().sort((a, b) =>
+    Math.abs(a.rollM2 - b.rollM2) > 1e-9 ? a.rollM2 - b.rollM2 : a.rollWidthMm - b.rollWidthMm)[0]
+}
+
+/**
+ * Plan one fabric and colour.
+ *
+ * @param cuts          [{ id, label, cutWidthMm, cutDropMm }]
+ * @param orderWidths   widths the fabric can be bought in
+ * @param stockPieces   available stock_bars rows for this fabric and colour
+ * @param useStock      false orders everything and leaves the shelf alone
+ * @param overrideWidthMm  a width picked by hand, or null for least waste
+ * @returns { rolls, options, autoWidthMm, chosenWidthMm, overridden }
+ *          `rolls` is every roll the job cuts from — stock pieces first, then
+ *          the one on order — each { key, source, rollWidthMm, stockPiece, bands }.
+ */
+export function planFabricGroup({
+  cuts = [], orderWidths = [], widthAllowanceMm = 0,
+  stockPieces = [], useStock = true, overrideWidthMm = null,
+}) {
+  let remaining = cuts.slice()
+  const rolls = []
+
+  if (useStock) {
+    // Tightest first, so an offcut is used up before a full roll is opened.
+    const shelf = stockPieces.slice().sort((a, b) =>
+      (Number(a.roll_width_mm) || 0) - (Number(b.roll_width_mm) || 0) ||
+      (Number(a.length_mm) || 0) - (Number(b.length_mm) || 0))
+    for (const piece of shelf) {
+      if (remaining.length === 0) break
+      const { bands, left } = nestOnPiece(remaining, piece.roll_width_mm, piece.length_mm, widthAllowanceMm)
+      if (bands.length === 0) continue
+      rolls.push({
+        key: `stock:${piece.id}`, source: 'stock',
+        rollWidthMm: Number(piece.roll_width_mm) || 0,
+        stockPiece: piece, bands,
+      })
+      // `left` is prepared copies; carry on with the originals.
+      const leftIds = new Set(left.map(p => p.id))
+      remaining = remaining.filter(p => leftIds.has(p.id))
+    }
+  }
+
+  const options = remaining.length > 0 ? orderOptions(remaining, orderWidths, widthAllowanceMm) : []
+  const auto    = bestOrderOption(options)
+  const forced  = overrideWidthMm != null
+    ? options.find(o => o.rollWidthMm === Number(overrideWidthMm)) || null
+    : null
+  const chosen  = forced || auto
+
+  if (chosen) {
+    rolls.push({
+      key: `order:${chosen.rollWidthMm}`, source: 'order',
+      rollWidthMm: chosen.rollWidthMm, stockPiece: null, bands: chosen.bands,
+    })
+  }
+
+  return {
+    rolls,
+    // The layouts themselves stay out: only the chosen one is ever drawn.
+    options: options.map(o => ({
+      rollWidthMm: o.rollWidthMm, fits: o.fits, lengthMm: o.lengthMm,
+      rollM2: o.rollM2, wasteM2: o.wasteM2, wastePct: o.wastePct, bandCount: o.bands.length,
+    })),
+    autoWidthMm:   auto?.rollWidthMm ?? null,
+    chosenWidthMm: chosen?.rollWidthMm ?? null,
+    overridden:    !!forced && forced.rollWidthMm !== auto?.rollWidthMm,
+  }
+}
+
+/** The key a job's fabric choices are saved under — one fabric in one colour. */
+export const fabricPlanKey = (componentId, colourSuffix) => `${componentId}__${colourSuffix || ''}`
+
+/**
+ * Plan every fabric cut in a job.
+ *
+ * @param cuts       [{ id, componentId, colourSuffix, cutWidthMm, cutDropMm,
+ *                      widthAllowanceMm, orderWidthsMm, label }]
+ * @param rollStock  every stock_bars row
+ * @param fabricPlan the job's saved choices: { [fabricPlanKey]: { source, width } }
+ *                   `source: 'order'` orders the lot; anything else uses stock
+ *                   first. `width` forces the ordered roll's width.
+ * @returns { [cut.id]: placement } — the roll, band and position of every cut.
+ *
+ * Two products can put the same fabric on a job with different blade margins.
+ * Those can't share a band, so they are planned as separate piles — but they
+ * do share the shelf, so what the first pile takes off a piece of stock is
+ * gone by the time the second one looks.
+ */
+export function planJobFabric(cuts = [], rollStock = [], fabricPlan = null) {
+  const piles = new Map()
+  cuts.forEach(c => {
+    const widths = (c.orderWidthsMm || []).map(Number).filter(w => w > 0)
+    const key = [c.componentId, c.colourSuffix || '', Number(c.widthAllowanceMm) || 0, widths.join('/')].join('__')
+    if (!piles.has(key)) piles.set(key, { key, widths, cuts: [] })
+    piles.get(key).cuts.push(c)
+  })
+
+  const lengthLeft = new Map()   // stock piece id -> mm not yet taken by an earlier pile
+  const placements = {}
+
+  piles.forEach(pile => {
+    const first   = pile.cuts[0]
+    const planKey = fabricPlanKey(first.componentId, first.colourSuffix)
+    const choice  = fabricPlan?.[planKey] || {}
+    const shelf   = fabricPieces(rollStock, first.componentId, first.colourSuffix || null)
+      .map(p => ({ ...p, length_mm: lengthLeft.has(p.id) ? lengthLeft.get(p.id) : Number(p.length_mm) || 0 }))
+      .filter(p => p.length_mm > 0)
+
+    const plan = planFabricGroup({
+      cuts: pile.cuts, orderWidths: pile.widths,
+      widthAllowanceMm: Number(first.widthAllowanceMm) || 0,
+      stockPieces: shelf,
+      useStock: choice.source !== 'order',
+      overrideWidthMm: choice.width ?? null,
+    })
+
+    plan.rolls.forEach(roll => {
+      if (roll.stockPiece) {
+        const taken = roll.bands.reduce((s, b) => s + b.lengthMm, 0)
+        lengthLeft.set(roll.stockPiece.id, roll.stockPiece.length_mm - taken)
+      }
+      roll.bands.forEach((band, bandIdx) => band.pieces.forEach(p => {
+        placements[p.id] = {
+          planKey,
+          rollKey:     `${pile.key}__${roll.key}`,
+          source:      roll.source,
+          rollWidthMm: roll.rollWidthMm,
+          stockPiece:  roll.stockPiece
+            ? { id: roll.stockPiece.id, label: roll.stockPiece.label || null,
+                roll_width_mm: roll.rollWidthMm, length_mm: roll.stockPiece.length_mm }
+            : null,
+          bandIdx,
+          offsetMm:      p.offsetMm,
+          occupiedMm:    p.occupiedMm,
+          bandLengthMm:  band.lengthMm,
+          bandUsedMm:    band.usedWidthMm,
+          oversized:     !!band.oversized,
+          options:       plan.options,
+          autoWidthMm:   plan.autoWidthMm,
+          chosenWidthMm: plan.chosenWidthMm,
+          overridden:    plan.overridden,
+        }
+      }))
+    })
+  })
+  return placements
+}
+
+/**
+ * Rebuild the rolls a set of planned cuts sits on.
+ *
+ * The plan is stamped onto each cut rather than kept beside them, so anything
+ * holding the cuts — the cut sheet, the stock picker — can draw the layout the
+ * BOM was quantified on without being handed the stock and the job's choices
+ * and planning it a second time.
+ *
+ * @param cuts [{ label, cutWidthMm, cutDropMm, widthAllowanceMm, placement }]
+ * @returns [{ rollKey, source, rollWidthMm, stockPiece, widthAllowanceMm, bands }]
+ *          stock rolls first.
+ */
+export function placedRolls(cuts = []) {
+  const rolls = new Map()
+  cuts.forEach(c => {
+    const pl = c.placement
+    if (!pl) return
+    if (!rolls.has(pl.rollKey)) {
+      rolls.set(pl.rollKey, {
+        rollKey: pl.rollKey, source: pl.source, rollWidthMm: pl.rollWidthMm,
+        stockPiece: pl.stockPiece, planKey: pl.planKey,
+        widthAllowanceMm: Number(c.widthAllowanceMm) || 0,
+        options: pl.options, autoWidthMm: pl.autoWidthMm,
+        chosenWidthMm: pl.chosenWidthMm, overridden: pl.overridden,
+        bandMap: new Map(),
+      })
+    }
+    const roll = rolls.get(pl.rollKey)
+    if (!roll.bandMap.has(pl.bandIdx)) {
+      roll.bandMap.set(pl.bandIdx, {
+        pieces: [], usedWidthMm: 0, lengthMm: pl.bandLengthMm, oversized: pl.oversized,
+        rollWidthMm: pl.rollWidthMm, widthAllowanceMm: roll.widthAllowanceMm,
+        source: pl.source, stockPieceId: pl.stockPiece?.id || null,
+      })
+    }
+    const band = roll.bandMap.get(pl.bandIdx)
+    band.pieces.push({
+      ...c, cutWidthMm: Number(c.cutWidthMm) || 0, lengthMm: Number(c.cutDropMm) || 0,
+      occupiedMm: pl.occupiedMm, offsetMm: pl.offsetMm,
+    })
+    band.usedWidthMm += pl.occupiedMm
+  })
+
+  return [...rolls.values()]
+    .map(({ bandMap, ...roll }) => ({
+      ...roll,
+      bands: [...bandMap.entries()].sort((a, b) => a[0] - b[0]).map(([, band]) => ({
+        ...band,
+        pieces: band.pieces.sort((a, b) => a.offsetMm - b.offsetMm),
+        remainingWidthMm: Math.max(0, roll.rollWidthMm - band.usedWidthMm),
+      })),
+    }))
+    .sort((a, b) => (a.source === 'stock' ? 0 : 1) - (b.source === 'stock' ? 0 : 1))
 }
 
 /* ==========================================================================

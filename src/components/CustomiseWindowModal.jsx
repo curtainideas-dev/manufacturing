@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { XIcon } from './Icons'
 import { resolveAnswers, isOptionVisible, missingAnswers, resolveRecipe, applySubstitutions, calcWindowBOM, fabricLineFor, buildFabricSelection, jobRoleSlots, fmt } from '../lib/bomEngine'
-import { allFabrics, categoryForFabric } from '../lib/fabricEngine'
+import { allFabrics, categoryForFabric, fabricSqmRate } from '../lib/fabricEngine'
 import { getStock } from '../lib/stockEngine'
 
 /**
@@ -213,7 +213,7 @@ export default function CustomiseWindowModal({
 
                   {selectedFabric && (
                     <div style={{ fontSize: 11, marginTop: 6, color: category ? 'var(--warm-300)' : 'var(--warning)' }}>
-                      Costs ${Number(selectedFabric.unit_cost).toFixed(2)}/m off the roll
+                      Costs ${fabricSqmRate(selectedFabric).toFixed(2)}/m²
                       {category
                         ? ` · sells on the ${category.name || category.code} price list`
                         : ' · not tagged with a sell category, so this blind will have no sell price — tag it in the component library'}

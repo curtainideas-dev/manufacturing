@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { ChevronLeftIcon, PlusIcon, TrashIcon, XIcon } from '../components/Icons'
 import ProductComponentModal from '../components/ProductComponentModal'
-import { allFabrics, categoryForFabric } from '../lib/fabricEngine'
+import { allFabrics, categoryForFabric, fabricSqmRate } from '../lib/fabricEngine'
 import { gridPrice, grossProfit } from '../lib/sellEngine'
 import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, fabricLineFor, buildFabricSelection, DEFAULT_ROLL_WIDTH_MM, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel, groupRecipeLines, overlappingLines } from '../lib/bomEngine'
 
@@ -310,8 +310,7 @@ export default function ProductDetail({
                   </select>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
                     <div style={{ fontSize: 12.5, color: 'var(--warm-300)' }}>
-                      Costs <strong style={{ color: 'var(--ink)' }}>${Number(gridFabric?.unit_cost || 0).toFixed(2)}/m</strong>
-                      {' '}off the roll
+                      Costs <strong style={{ color: 'var(--ink)' }}>${fabricSqmRate(gridFabric, product.fabric_roll_width_mm).toFixed(2)}/m²</strong>
                     </div>
                     <div style={{ fontSize: 12.5, fontWeight: 700, color: gridCategory ? 'var(--accent-dark)' : 'var(--warning)' }}>
                       {gridCategory
@@ -403,7 +402,9 @@ export default function ProductDetail({
                 const exW = 1500, exD = 2000
                 const cutW = exW - wDed, cutD = exD + dAdd
                 const share = roll > 0 ? Math.min(1, (cutW + wAllow) / roll) : 0
-                const metres = (cutD / 1000) * share
+                // The strip the blind takes, in square metres — its length
+                // times the width it occupies across the roll.
+                const area = (cutD / 1000) * (Math.min(cutW + wAllow, roll || cutW + wAllow) / 1000)
                 const perBand = roll > 0 && (cutW + wAllow) > 0 ? Math.floor(roll / (cutW + wAllow)) : 0
                 return (
                   <div style={{
@@ -416,8 +417,8 @@ export default function ProductDetail({
                     cuts at <strong style={{ color: 'var(--ink)' }}>{cutW.toLocaleString()} × {cutD.toLocaleString()}mm</strong>,
                     occupies <strong style={{ color: 'var(--ink)' }}>{(cutW + wAllow).toLocaleString()}mm</strong> of
                     the {roll.toLocaleString()}mm roll ({(share * 100).toFixed(0)}%), and is costed at{' '}
-                    <strong style={{ color: 'var(--ink)' }}>{metres.toFixed(3)}m</strong>
-                    {gridFabric && ` = $${(metres * (Number(gridFabric.unit_cost) || 0)).toFixed(2)}`}.
+                    <strong style={{ color: 'var(--ink)' }}>{area.toFixed(3)}m²</strong>
+                    {gridFabric && ` = $${(area * fabricSqmRate(gridFabric, roll)).toFixed(2)}`}.
                     {perBand > 1 && <> {perBand} of them fit side by side on one length off the roll.</>}
                     {perBand === 0 && <> <span style={{ color: 'var(--danger)' }}>It won't fit this roll width.</span></>}
                     <div style={{ marginTop: 6 }}>

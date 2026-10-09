@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { XIcon, TrashIcon, PlusIcon } from './Icons'
-import { sortedCategories } from '../lib/fabricEngine'
+import { sortedCategories, fabricSqmRate } from '../lib/fabricEngine'
 
 const UNITS = ['each', 'metres', 'mm', 'm²', 'hours']
 
@@ -36,7 +36,15 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
   useEffect(() => {
     if (open) {
       if (component) {
-        setForm({ ...DEFAULT, ...component, colour_variants: component.colour_variants || [] })
+        const next = { ...DEFAULT, ...component, colour_variants: component.colour_variants || [] }
+        // A fabric is edited per square metre — the supplier's own unit, and
+        // the one figure that holds at every width. One still stored per
+        // metre of its widest roll is shown converted, and saves that way.
+        if (next.order_type === 'fabric' && next.unit !== 'm²') {
+          next.unit_cost = Math.round(fabricSqmRate(component) * 10000) / 10000
+          next.unit = 'm²'
+        }
+        setForm(next)
       } else {
         setForm(DEFAULT)
       }
@@ -49,7 +57,7 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
     const next = { ...p, [k]: v }
     // Lock unit to hours for labour components
     if (k === 'order_type' && v === 'labour') next.unit = 'hours'
-    if (k === 'order_type' && v === 'fabric') next.unit = 'metres'
+    if (k === 'order_type' && v === 'fabric') next.unit = 'm²'
     return next
   })
 
@@ -358,14 +366,21 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
               </div>
 
               <div className="field" style={{ marginBottom: 12 }}>
-                <label className="field-label">Price per linear metre ($)</label>
+                <label className="field-label">Price per m² ($)</label>
                 <input className="field-input" type="number" step="0.01" min="0"
                   value={form.unit_cost} onChange={e => set('unit_cost', e.target.value)}
                   style={{ textAlign: 'right', maxWidth: '50%' }} />
                 <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
-                  What we pay per linear metre off the roll. This is the cost side —
-                  a blind is charged the share of the roll&apos;s width its cut takes.
-                  What it SELLS for comes from the category above.
+                  What we pay per square metre, as the supplier lists it — one figure
+                  whatever width the roll is. This is the cost side; what it SELLS for
+                  comes from the category above.
+                  {rollWidths.length > 0 && Number(form.unit_cost) > 0 && (
+                    <div style={{ marginTop: 4 }}>
+                      Per metre off the roll:{' '}
+                      {rollWidths.map(w =>
+                        `${w.toLocaleString()}mm $${(Number(form.unit_cost) * w / 1000).toFixed(2)}`).join('  ·  ')}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -395,10 +410,9 @@ export default function ComponentModal({ open, component, suppliers, fabricCateg
               </div>
 
               <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 10, lineHeight: 1.5 }}>
-                One row per fabric. The rate above is per linear metre off the roll, so it
-                assumes the width you actually stock — if {form.fabric_code || 'VIBE'} ever came
-                in a second width it would need its own row at its own per-metre rate. These
-                widths are what can be ordered; each roll records its own width when it arrives.
+                One row per fabric, however many widths it comes in. These widths are what
+                can be ordered: a job is laid out on each and cut from the one that wastes
+                least, and an order line picks one. Each roll records its own width when it arrives.
                 Colours go in Colour Variants below. A blind product locked to this fabric's
                 category will offer it at window-add time.
               </div>

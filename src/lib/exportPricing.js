@@ -19,6 +19,7 @@
 
 import { computePricingGroups } from './pricingCombos'
 import { fabricLineFor, buildFabricSelection, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS } from './bomEngine'
+import { fabricSqmRate } from './fabricEngine'
 import { gridPrice, grossProfit } from './sellEngine'
 
 const loadXLSX = () => new Promise((resolve, reject) => {
@@ -71,7 +72,7 @@ export async function exportProductPricingXLSX(product, productComponents, optio
     const rows = [[product.name || 'Product'], [label]]
     if (isBlind && fabric) {
       rows.push([`Fabric: ${fabric.fabric_code ? fabric.fabric_code + ' — ' : ''}${fabric.name}`
-        + ` · $${Number(fabric.unit_cost || 0).toFixed(2)}/m`
+        + ` · $${fabricSqmRate(fabric, product?.fabric_roll_width_mm).toFixed(2)}/m²`
         + (category ? ` · sells on ${category.name || category.code}` : ' · no sell category')])
     }
 

@@ -3,7 +3,7 @@ import { ChevronLeftIcon, TrashIcon, PlusIcon } from '../components/Icons'
 import {
   orderUnitInfo, displayPN, poDisplayNumber, poLineTotal, poGrandTotal,
   priceBreakdown, outstandingQty, isFullyReceived, derivedDescription, derivedColour,
-  poFulfilment, poAddress,
+  poFulfilment, poAddress, lineRollWidthMm, lineWidthChoices,
 } from '../lib/poEngine'
 
 const STATUS_META = {
@@ -278,7 +278,19 @@ export default function PurchaseOrderDetail({
                     // box reads as "using the component's own wording" rather
                     // than as missing data.
                     const descPlaceholder = derivedDescription(l)
-                    const unitPlaceholder = l.component ? orderUnitInfo(l.component, supplier).label : ''
+                    const unitPlaceholder = l.component ? orderUnitInfo(l.component, supplier, lineRollWidthMm(l)).label : ''
+                    // A fabric line is a cut length off a roll of one width.
+                    // Lines raised before widths existed carry none, and are
+                    // offered one rather than forced onto it.
+                    const isFabric     = l.component?.order_type === 'fabric'
+                    const rollWidth    = lineRollWidthMm(l)
+                    const widthChoices = isFabric ? lineWidthChoices(l) : []
+                    const setWidth = (w) => onUpdateLine(l.id, {
+                      roll_width_mm: w,
+                      // The rate is per m², so a different width is a
+                      // different price per metre.
+                      unit_cost: w ? orderUnitInfo(l.component, supplier, w).price : l.unit_cost,
+                    })
                     // A line with no colour variant has no colour to rename,
                     // so its box stays empty and disabled rather than inviting
                     // a colour onto a part that does not come in one.
@@ -305,6 +317,21 @@ export default function PurchaseOrderDetail({
                           {l.description?.trim() && l.description.trim() !== descPlaceholder && (
                             <div style={{ fontSize: 10.5, color: 'var(--warm-300)', marginTop: 2 }}>
                               {descPlaceholder}
+                            </div>
+                          )}
+                          {isFabric && widthChoices.length > 0 && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                              <span style={{ fontSize: 10.5, color: 'var(--warm-300)' }}>Roll width</span>
+                              <select className="field-input" disabled={!isDraft}
+                                value={rollWidth || ''}
+                                onChange={e => setWidth(e.target.value ? Number(e.target.value) : null)}
+                                style={{ width: 'auto', padding: '3px 6px', fontSize: 12 }}>
+                                {!rollWidth && <option value="">Not set — ordered by the roll</option>}
+                                {widthChoices.map(w => (
+                                  <option key={w} value={w}>{w.toLocaleString()}mm</option>
+                                ))}
+                              </select>
+                              {rollWidth && <span style={{ fontSize: 10.5, color: 'var(--warm-300)' }}>qty in metres</span>}
                             </div>
                           )}
                           {!isDraft && (
@@ -341,7 +368,7 @@ export default function PurchaseOrderDetail({
                           onCommit={v => onUpdateLine(l.id, { order_unit: v })}
                           style={{ padding: '5px 7px', fontSize: 12.5, width: '100%' }} />
 
-                        <input type="number" step="1" min="0" value={l.qty_ordered} disabled={!isDraft}
+                        <input type="number" step={rollWidth ? '0.1' : '1'} min="0" value={l.qty_ordered} disabled={!isDraft}
                           onChange={e => onUpdateLine(l.id, { qty_ordered: e.target.value })}
                           className="field-input"
                           style={{ textAlign: 'right', padding: '5px 6px', fontSize: 13 }} />
