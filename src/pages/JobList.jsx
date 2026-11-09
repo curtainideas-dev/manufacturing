@@ -129,7 +129,7 @@ export default function JobList({ jobs, products = [], onOpen, onNew, onUploadPO
   return (
     <>
       <div className="header">
-        <div className="header-title">BOM Generator</div>
+        <div className="header-title">Jobs</div>
         <div className="header-actions">
           <input
             ref={fileRef}

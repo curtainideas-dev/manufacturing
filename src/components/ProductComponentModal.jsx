@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { XIcon, TrashIcon } from './Icons'
 import { formulaDescription, GRID_WIDTHS } from '../lib/bomEngine'
+import InfoTip from './InfoTip'
 
 const COST_TYPES = [
   { val: 'fixed',            label: 'Fixed',     note: 'Same qty always' },
@@ -151,11 +152,10 @@ export default function ProductComponentModal({
   const preview   = formulaDescription(previewPc)
 
   const NumField = ({ id, label, hint, step = '0.1', min }) => (
-    <div className="field" style={{ marginBottom: hint ? 14 : 10 }}>
-      <label className="field-label">{label}</label>
+    <div className="field" style={{ marginBottom: 10 }}>
+      <label className="field-label">{label}{hint && <InfoTip>{hint}</InfoTip>}</label>
       <input className="field-input" type="number" step={step} min={min}
         value={form[id]} onChange={e => set(id, e.target.value)} />
-      {hint && <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>{hint}</div>}
     </div>
   )
 
@@ -373,11 +373,14 @@ export default function ProductComponentModal({
                     Inline (not inside FormulaFields) so inputs keep focus. */}
                 {form.cost_type === 'fixed_per_width' && !editingSchedule && (
                   <>
-                    <div style={{ fontSize: 11, color: 'var(--warm-300)', marginBottom: 8 }}>
-                      Pick a saved schedule — e.g. Standard, Heavy curtain. A window uses the
-                      first width band it fits into. Editing a schedule updates every product
-                      that uses it.
-                    </div>
+                    <label className="field-label">
+                      Width schedule
+                      <InfoTip>
+                        Pick a saved schedule, e.g. Standard or Heavy curtain. A window uses the
+                        first width band it fits into. Editing a schedule updates every product
+                        that uses it.
+                      </InfoTip>
+                    </label>
                     <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
                       <div style={{ flex: 1 }}>
                         <select className="field-input" value={form.width_schedule_id}
@@ -432,13 +435,14 @@ export default function ProductComponentModal({
                         placeholder="e.g. Heavy curtain" style={{ fontSize: 13 }} />
                     </div>
 
-                    <div style={{ fontSize: 11, color: 'var(--warm-300)', marginBottom: 8 }}>
-                      Width up to → quantity, read straight off a supplier's chart. A window uses
-                      the first band its width fits into — bands don't have to be evenly spaced.
-                    </div>
-
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 28px', gap: 6, marginBottom: 4 }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--warm-300)' }}>Width up to (mm)</div>
+                      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--warm-300)' }}>
+                        Width up to (mm)
+                        <InfoTip>
+                          Width up to → quantity, read straight off a supplier's chart. A window uses
+                          the first band its width fits into. Bands don't have to be evenly spaced.
+                        </InfoTip>
+                      </div>
                       <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--warm-300)' }}>Quantity</div>
                       <div />
                     </div>
@@ -508,7 +512,10 @@ export default function ProductComponentModal({
           {form.component_id && (
             <>
               <div className="divider" />
-              <label className="field-label">When is this used?</label>
+              <label className="field-label">
+                When is this used?
+                <InfoTip>Pick an option answer to only include this part when a window is given that answer. Leave on Always for parts every window gets.</InfoTip>
+              </label>
 
               <select className="field-input" style={{ marginBottom: 10 }}
                 value={form.option_choice_id || ''}
@@ -525,11 +532,14 @@ export default function ProductComponentModal({
 
               {optionDefs.length === 0 && (
                 <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginTop: -4, marginBottom: 10 }}>
-                  No options defined for this product type yet — add them under Products → Options.
+                  No options defined for this product type yet. Add them under Setup → Options.
                 </div>
               )}
 
-              <label className="field-label">Only for sizes in this range (optional)</label>
+              <label className="field-label">
+                Only for sizes in this range (optional)
+                <InfoTip>Leave blank for no limit. This is how a wider blind swaps to a heavier tube.</InfoTip>
+              </label>
               <div className="grid-2" style={{ marginBottom: 8 }}>
                 <input className="field-input" type="number" placeholder="min width" style={{ textAlign: 'right' }}
                   value={form.active_min_width ?? ''}
@@ -546,13 +556,19 @@ export default function ProductComponentModal({
                   value={form.active_max_drop ?? ''}
                   onChange={e => set('active_max_drop', e.target.value === '' ? null : Number(e.target.value))} />
               </div>
-              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 4, marginBottom: 12 }}>
-                Leave blank for no limit. This is how a wider blind swaps to a heavier tube.
-              </div>
+              <div style={{ height: 12 }} />
 
               {/* Width → drop threshold. A table rather than a formula, because
                   real thresholds don't move in one direction. */}
-              <label className="field-label">Drop limit per width (optional)</label>
+              <label className="field-label">
+                Drop limit per width (optional)
+                <InfoTip>
+                  Read as: up to that width, the limit is that drop. A width past the last band
+                  uses the last band's figure. Thresholds don't have to rise or fall in order:
+                  2000 → 1800, 2100 → 1600, 2200 → 1800 is fine, which is why it's a table and
+                  not a formula.
+                </InfoTip>
+              </label>
               <div style={{
                 border: '1px solid var(--warm-200)', borderRadius: 'var(--radius-sm)',
                 padding: 10, background: '#fff',
@@ -599,12 +615,6 @@ export default function ProductComponentModal({
                     fontWeight: 600, cursor: 'pointer', border: '1.5px dashed var(--warm-200)',
                     background: 'none', color: 'var(--warm-300)',
                   }}>+ Add width band</button>
-              </div>
-              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6, lineHeight: 1.5 }}>
-                Read as: up to that width, the limit is that drop. A width past the last band uses
-                the last band's figure. Thresholds don't have to rise or fall in order —
-                2000&nbsp;→&nbsp;1800, 2100&nbsp;→&nbsp;1600, 2200&nbsp;→&nbsp;1800 is fine, which is
-                why it's a table and not a formula.
               </div>
             </>
           )}

@@ -1,5 +1,4 @@
 import { useState, useRef } from 'react'
-import { ChevronLeftIcon } from '../components/Icons'
 import { sortedCategories } from '../lib/fabricEngine'
 import { importPriceList, suggestFabricCategories } from '../lib/importPriceList'
 import { fmt } from '../lib/bomEngine'
@@ -20,7 +19,7 @@ import { fmt } from '../lib/bomEngine'
  * the cells here are read-only.
  */
 export default function FabricCategoriesAdmin({
-  categories, components = [], onBack, onSaveGrids, onTagFabrics, saving,
+  categories, components = [], onSaveGrids, onTagFabrics, saving,
 }) {
   const [expanded, setExpanded] = useState(null)
   const [result,   setResult]   = useState(null)   // parsed workbook, awaiting confirm
@@ -60,9 +59,6 @@ export default function FabricCategoriesAdmin({
   return (
     <>
       <div className="header">
-        <button className="header-back" onClick={onBack}>
-          <ChevronLeftIcon size={18} /> Admin
-        </button>
         <div className="header-title" style={{ fontSize: 15 }}>Fabric Categories</div>
       </div>
 

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronLeftIcon, PlusIcon, TrashIcon } from '../components/Icons'
+import { PlusIcon, TrashIcon } from '../components/Icons'
 
 /**
  * The vocabulary of component kinds — what a part IS, as opposed to how it is
@@ -48,7 +48,7 @@ const ORDER_TYPES = [
 ]
 
 export default function ComponentKindsAdmin({
-  kinds = [], components = [], onBack, onSave, onDelete, saving,
+  kinds = [], components = [], onSave, onDelete, saving,
 }) {
   const [newName, setNewName] = useState('')
   const [drafts, setDrafts]   = useState({})   // id -> edited name, while typing
@@ -80,9 +80,6 @@ export default function ComponentKindsAdmin({
   return (
     <>
       <div className="header">
-        <button className="header-back" onClick={onBack}>
-          <ChevronLeftIcon size={18} /> Admin
-        </button>
         <div className="header-title" style={{ fontSize: 15 }}>Component Kinds</div>
       </div>
 

@@ -1,140 +1,46 @@
 # Email notifications
 
-Four automated emails, all to internal `@curtainideas` addresses. Nothing is
-sent to customers, so no email is gated on customer data quality.
+One automated email: **a new job arrived through the `/submit` portal**. It goes
+to the internal addresses in `NOTIFY_ORDERS`. Nothing is sent to customers.
 
-| Email | Trigger | Recipient var |
-|---|---|---|
-| New order received | pg_net trigger — INSERT on `mfg_jobs`, portal submissions only | `NOTIFY_ORDERS` |
-| Order complete, ready for pickup | pg_net trigger — UPDATE on `mfg_jobs` where status becomes `completed` | `NOTIFY_PICKUP` |
-| Jobs due soon (daily digest) | Vercel Cron, ~07:00 AEST | `NOTIFY_ORDERS` |
-| Stock running low (daily digest) | Vercel Cron, ~07:30 AEST | `NOTIFY_STOCK` |
+The "ready for pickup", "jobs due soon" and "stock running low" emails were
+removed on 2026-11-09. Low stock is now something to look at in the app, not an
+email.
 
-No table or column changes were needed — nothing in `mfg_jobs` or `stock` moved.
-The only database object added is the trigger pair in
-`supabase_job_notifications.sql`, which drives the two event-driven emails.
+## How it fires
 
-The code lives in `api/`, which Vercel picks up
-as serverless functions automatically on push — same deploy pipeline as the app.
+A `pg_net` trigger on `mfg_jobs` (`mfg_jobs_notify_received`, insert where
+`source = 'portal'`) posts the new row to `/api/notify/job-received`, which
+renders the email and sends it through Resend. Jobs created inside the app don't
+send anything.
 
-## Why database triggers rather than calling an endpoint from App.jsx
-
-The database is the source of truth, so these fire whichever path caused the
-change — the ops screen, the `/submit` portal, or a hand-edited row. The webhook
-payload also carries `old_record`, which is what makes "status *became*
-completed" detectable. Without it the pickup email would fire on every field
-edit, because `handleJobUpdate` writes the whole job on any change.
+Triggers are used rather than calling the endpoint from the browser so the email
+goes out whichever way the row was written. pg_net sends after commit, so a slow
+or unreachable endpoint can never block saving a job.
 
 ## Setup
 
-### 1. Sending domain (do this first — it's the only step outside the repo)
-
-Resend's shared test domain only delivers to your own account address, so it
-can't reach several internal mailboxes. You need a verified domain.
-
-Verify a **subdomain** — `notifications.curtainideas.com.au` — not the root
-domain. The DNS records are scoped to the subdomain and never touch the records
-governing real company mail, so a mistake here cannot disrupt actual email.
-
-1. Sign up at [resend.com](https://resend.com), add the subdomain.
-2. Add the SPF + DKIM records it gives you to DNS.
-3. Create an API key.
-
-If anything lands in spam, allowlist the sender in your own tenant — you control
-the receiving end.
-
-### 2. Vercel environment variables
-
-Settings → Environment Variables. See `.env.example` for the full list.
-
-**Do not put any of these in `.env` — that file is committed to this repo.**
-
-Required: `RESEND_API_KEY`, `NOTIFY_FROM`, `NOTIFY_ORDERS`, `NOTIFY_PICKUP`,
-`NOTIFY_STOCK`, `NOTIFY_WEBHOOK_SECRET`, `CRON_SECRET`, `SUPABASE_URL` and
-`SUPABASE_SERVICE_ROLE_KEY`.
-
-The two Supabase values are easy to miss. The committed `.env` at the repo root
-is read by Vite at build time, for the browser bundle only — serverless
-functions read `process.env` at runtime, which contains just what is set on the
-Vercel project. Without them, every endpoint that queries the database fails.
-
-Generate the two secrets with any random string, e.g.:
-
-```bash
-node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
-```
-
-Recipient vars accept a comma-separated list for more than one address.
-
-### 3. Database triggers
-
-Supabase's **Database Webhooks UI is Pro-only**, so the two event-driven emails
-are wired with `pg_net` triggers instead — which is exactly what that UI builds
-underneath. Same architecture, available on the free plan.
-
-Run `supabase_job_notifications.sql` (repo root) in the Supabase SQL editor,
-replacing `REPLACE_WITH_WEBHOOK_SECRET` with the `NOTIFY_WEBHOOK_SECRET` value
-first. The secret is not committed — this repo is not a place for it.
-
-It creates `public.notify_job_event()` plus two triggers on `mfg_jobs`:
-
-| Trigger | Fires | Calls |
-|---|---|---|
-| `mfg_jobs_notify_received` | After insert, `source = 'portal'` | `/api/notify/job-received` |
-| `mfg_jobs_notify_completed` | After update, status becomes `completed` | `/api/notify/job-completed` |
-
-The `WHEN` clauses filter in SQL so no pointless HTTP call is made, and the
-endpoints re-check the same conditions themselves. Requests go out through
-pg_net asynchronously after commit, so a slow or unreachable endpoint can never
-block saving a job.
-
-Run the migration only once the endpoints are live in production — before that
-the calls just 404, harmlessly but pointlessly.
-
-### 4. Cron
-
-Already declared in `vercel.json`; it activates on deploy. Vercel's Hobby tier
-allows two daily cron jobs, which is exactly what this uses — a third would need
-a paid plan or merging the digests.
-
-Schedules are in UTC (`0 21` and `30 21`), landing ~7am on the Australian east
-coast. The exact local time shifts an hour with daylight saving, and Hobby-tier
-crons fire within roughly an hour of the stated time. Neither matters for a
-daily digest.
+1. **Sending domain.** Verify `notifications.curtainideas.com.au` in Resend
+   (SPF + DKIM records on the subdomain only) and create an API key.
+2. **Vercel environment variables** (never in `.env`, which is committed):
+   `RESEND_API_KEY`, `NOTIFY_FROM`, `NOTIFY_ORDERS`, `NOTIFY_WEBHOOK_SECRET`,
+   and optionally `APP_URL` so the email links straight to the job.
+3. **Database trigger.** Run `supabase/legacy/supabase_job_notifications.sql`
+   in the Supabase SQL editor, replacing `REPLACE_WITH_WEBHOOK_SECRET` with the
+   `NOTIFY_WEBHOOK_SECRET` value first. Then run
+   `supabase/migrations/20261109090000_drop_completed_notification.sql`, which
+   removes the old "completed" trigger.
 
 ## Testing
 
-Recipients and both secrets can be changed without touching code. To verify a
-cron endpoint against the deployed app:
+The endpoint returns `200` with a `skipped` reason for inserts it ignores (any
+job not from the portal), so a `200` in the pg_net log does not by itself mean
+an email went out. Check the response body:
 
-```bash
-curl -H "Authorization: Bearer $CRON_SECRET" https://<your-app>/api/cron/due-soon
+```sql
+select id, status_code, content, created
+from net._http_response order by created desc limit 10;
 ```
 
-It returns JSON describing what it did — `{"ok":true,...}`, or `{"skipped":...}`
-when there is nothing to report. Both digests deliberately send nothing when
-there is nothing due or nothing below minimum.
-
-The webhook endpoints return `200` with a `skipped` reason for events they
-intentionally ignore, so a `200` in the Supabase webhook log does not by itself
-mean an email went out — check the response body.
-
-## Design notes
-
-- **Digests, not per-item alerts.** Re-sending today's list tomorrow is correct
-  behaviour, so the scheduled emails need no sent-log to avoid duplicates.
-- **No dedupe table.** A job reopened and re-completed sends a second pickup
-  email. Internally that is harmless; if it becomes noisy, add a
-  `notification_log` table with a unique constraint on `(kind, ref_id)`.
-- **Timezone.** "Today" is computed in `NOTIFY_TIMEZONE` (default
-  `Australia/Sydney`). Vercel runs UTC, and AEST is 10–11 hours ahead — without
-  this a job due today would read as due tomorrow.
-- **No deep links.** The app has no router (screens are state in `App.jsx`), so
-  emails link to the app root via `APP_URL`. Per-job links would need routing.
-- **Low stock is a full sweep**, unlike `checkAndGeneratePOs` in `App.jsx` which
-  only inspects components touched by a deduction. The sweep also catches
-  shortfalls that predate the last job. It does not create draft POs — that
-  stays with the existing hook.
-- **Mail failures never fail the write.** `sendMail` returns a result rather
-  than throwing, and the webhook endpoints always return `200` once
-  authenticated, so Supabase does not retry into duplicate sends.
+Mail failures never fail the write: `sendMail` returns a result rather than
+throwing, and the endpoint always returns `200` once authenticated.

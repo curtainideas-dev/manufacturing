@@ -983,10 +983,6 @@ export function calcWindowBOM(productComponents, widthMm, dropMm, priceMap = nul
       // The recipe's own part, when this line has been swapped away from it.
       // Null on every unswapped line — see applySubstitutions.
       substituted_from:     pc.substituted_from || null,
-      // The name this line is asked about under at job entry — "Base rail",
-      // "Winder" — or null on a line nobody is asked about. Rides along so the
-      // cut sheet can print the spec without re-reading the recipe.
-      job_role:             pc.job_role || null,
       // Added to this job by hand rather than named by the recipe. Costed and
       // stocked identically; flagged only so a screen can say where it came
       // from, and so it can be taken off again.

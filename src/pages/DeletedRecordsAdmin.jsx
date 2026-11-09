@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { ChevronLeftIcon } from '../components/Icons'
 
 /**
  * The recycle bin — what deletes left behind, and the way to put it back.
@@ -36,7 +35,7 @@ const contentsOf = (rec) => {
 }
 
 export default function DeletedRecordsAdmin({
-  records = [], onBack, onRestore, restoring, available = true,
+  records = [], onRestore, restoring, available = true,
 }) {
   const [openId, setOpenId] = useState(null)
 
@@ -94,9 +93,6 @@ export default function DeletedRecordsAdmin({
   return (
     <>
       <div className="header">
-        <button className="header-back" onClick={onBack}>
-          <ChevronLeftIcon size={18} /> Admin
-        </button>
         <div className="header-title" style={{ fontSize: 15 }}>Deleted Items</div>
       </div>
 
