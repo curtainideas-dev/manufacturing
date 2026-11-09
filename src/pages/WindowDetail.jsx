@@ -3,6 +3,7 @@ import { ChevronLeftIcon, TrashIcon } from '../components/Icons'
 import { buildWindowBOM, missingAnswers, resolveAnswers, fabricSelectionFor, substitutionsFor, fmt, fmtQty } from '../lib/bomEngine'
 import { windowSell, grossProfit } from '../lib/sellEngine'
 import CustomiseWindowModal from '../components/CustomiseWindowModal'
+import DraftInput from '../components/DraftInput'
 import SwapComponentModal from '../components/SwapComponentModal'
 import AddExtraLineModal from '../components/AddExtraLineModal'
 
@@ -200,8 +201,8 @@ export default function WindowDetail({
           <div className="card card-body" style={{ marginBottom: 16 }}>
             <div className="field" style={{ marginBottom: 12 }}>
               <label className="field-label">Label</label>
-              <input className="field-input" value={win.label || ''} disabled={readOnly}
-                onChange={e => onUpdate({ label: e.target.value })}
+              <DraftInput className="field-input" value={win.label || ''} disabled={readOnly}
+                onCommit={v => onUpdate({ label: v })}
                 placeholder={`Window ${windowIndex + 1}`} />
             </div>
 
@@ -214,21 +215,21 @@ export default function WindowDetail({
               <span style={{ fontSize: 20 }}>🔩</span>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{product?.name || '—'}</div>
-                <div style={{ fontSize: 11, color: 'var(--warm-300)' }}>{product?.category}</div>
+                <div style={{ fontSize: 11, color: 'var(--warm-300)', textTransform: 'capitalize' }}>{product?.product_type}</div>
               </div>
             </div>
 
             <div className="grid-2">
               <div>
                 <label className="field-label">Width (mm)</label>
-                <input className="field-input" type="number" value={win.width_mm} disabled={readOnly}
-                  onChange={e => onUpdate({ width_mm: e.target.value })}
+                <DraftInput className="field-input" type="number" value={win.width_mm} disabled={readOnly}
+                  onCommit={v => onUpdate({ width_mm: v })}
                   placeholder="e.g. 1800" style={{ textAlign: 'right' }} />
               </div>
               <div>
                 <label className="field-label">Drop (mm)</label>
-                <input className="field-input" type="number" value={win.drop_mm} disabled={readOnly}
-                  onChange={e => onUpdate({ drop_mm: e.target.value })}
+                <DraftInput className="field-input" type="number" value={win.drop_mm} disabled={readOnly}
+                  onCommit={v => onUpdate({ drop_mm: v })}
                   placeholder="e.g. 2100" style={{ textAlign: 'right' }} />
               </div>
             </div>
@@ -298,9 +299,10 @@ export default function WindowDetail({
           {(
             <div className="card card-body" style={{ marginBottom: 16 }}>
               <label className="field-label">Sell price override ($)</label>
-              <input className="field-input" type="number" step="0.01" min="0"
+              <DraftInput className="field-input" type="number" step="0.01" min="0"
                 value={win.sell_price ?? ''}
-                onChange={e => onUpdate({ sell_price: e.target.value === '' ? null : Number(e.target.value) })}
+                parse={v => v === '' ? null : Number(v)}
+                onCommit={v => onUpdate({ sell_price: v })}
                 placeholder={sell.source === 'grid' ? `List: ${fmt(sell.sell)}` : 'Enter the sell price'}
                 style={{ textAlign: 'right', maxWidth: '50%' }} />
               <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6, lineHeight: 1.5 }}>

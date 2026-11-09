@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ChevronLeftIcon, ChevronRightIcon, PlusIcon } from '../components/Icons'
+import { ChevronRightIcon, PlusIcon } from '../components/Icons'
 
 /**
  * Who we are, for documents that leave the building.
@@ -28,7 +28,7 @@ const FIELDS = [
 ]
 
 export default function CompanyDetailsAdmin({
-  company, addresses, onBack, onSave, saving, onNewAddress, onEditAddress,
+  company, addresses, onSave, saving, onNewAddress, onEditAddress,
 }) {
   // null means the table isn't there yet, which is not the same as "no
   // addresses" — one is a setup step, the other is a shop that hasn't added
@@ -46,9 +46,6 @@ export default function CompanyDetailsAdmin({
   return (
     <>
       <div className="header">
-        <button className="header-back" onClick={onBack}>
-          <ChevronLeftIcon size={18} /> Admin
-        </button>
         <div className="header-title" style={{ fontSize: 15 }}>Company Details</div>
       </div>
 

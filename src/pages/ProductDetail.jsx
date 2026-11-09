@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { ChevronLeftIcon, PlusIcon, TrashIcon, XIcon } from '../components/Icons'
 import ProductComponentModal from '../components/ProductComponentModal'
+import DraftInput from '../components/DraftInput'
+import InfoTip from '../components/InfoTip'
 import { allFabrics, categoryForFabric, fabricSqmRate } from '../lib/fabricEngine'
 import { gridPrice, grossProfit } from '../lib/sellEngine'
 import { calcCostAtWidth, calcCostAt, calcQty, previewConfig, fabricLineFor, buildFabricSelection, DEFAULT_ROLL_WIDTH_MM, GRID_WIDTHS, GRID_BLIND_WIDTHS, GRID_BLIND_DROPS, fmt, fmtQty, formulaDescription, fixedPerWidthLabel, groupRecipeLines, overlappingLines } from '../lib/bomEngine'
@@ -285,14 +287,19 @@ export default function ProductDetail({
             )}
           </div>
 
-          {/* Fabric — always priced at the category's flat rate, whichever
-              real fabric ends up picked per window. Not part of the editable
-              recipe below since it isn't a stored component line, but its
-              rate feeds the price grid at the bottom the same as if it were. */}
+          {/* Fabric — costed per metre off the roll for whichever fabric is
+              picked below, and sold on that fabric's category grid. Not a
+              recipe line, but it feeds the price grid at the bottom. */}
           {isBlind && (
             <div className="card card-body" style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--warm-300)', marginBottom: 8 }}>
                 Fabric
+                <InfoTip>
+                  Priced per metre off the roll, charged on the share of the roll's width the cut
+                  occupies. A blind can't be railroaded, but the width beside it isn't wasted — the
+                  next blind is cut alongside it, so a 750mm blind costs a quarter of what a 3000mm
+                  one does. The actual fabric is picked per window.
+                </InfoTip>
               </div>
               {fabrics.length > 0 ? (
                 <>
@@ -324,72 +331,28 @@ export default function ProductDetail({
                   No fabrics in the component library yet.
                 </div>
               )}
-              <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 6 }}>
-                Priced per metre off the roll, charged on the share of the roll's <em>width</em>
-                {' '}the cut occupies. A blind can't be railroaded, but the width beside it isn't
-                wasted — the next blind is cut alongside it, so a 750mm blind costs a quarter of
-                what a 3000mm one does. Folded into the grid below on top of the hardware recipe;
-                the actual fabric is picked per window.
-              </div>
               <div className="divider" style={{ margin: '12px 0' }} />
-              <div className="field">
-                <label className="field-label">Roll width (mm)</label>
-                <input className="field-input" type="number" step="1" min="1"
-                  value={product.fabric_roll_width_mm ?? DEFAULT_ROLL_WIDTH_MM}
-                  onChange={e => onUpdateProduct({ fabric_roll_width_mm: Number(e.target.value) || DEFAULT_ROLL_WIDTH_MM })}
-                  style={{ maxWidth: 140 }} />
-                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
-                  The roll width the category rate above is quoted against — the denominator of
-                  the share, and the width the cut chart nests into. Category rates on file were
-                  set against {DEFAULT_ROLL_WIDTH_MM.toLocaleString()}mm.
-                </div>
-              </div>
-              <div className="field">
-                <label className="field-label">Width deduction (mm)</label>
-                <input className="field-input" type="number" step="1" min="0"
-                  value={product.fabric_width_deduction_mm ?? 0}
-                  onChange={e => onUpdateProduct({ fabric_width_deduction_mm: Number(e.target.value) || 0 })}
-                  style={{ maxWidth: 140 }} />
-                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
-                  Cut-width spec — the fabric is cut this much narrower than the window's width.
-                  Now a cost driver as well as a factory instruction, since the cut width decides
-                  how much of the roll this blind is charged for.
-                </div>
-              </div>
-              <div className="field">
-                <label className="field-label">Width cut allowance (mm)</label>
-                <input className="field-input" type="number" step="1" min="0"
-                  value={product.fabric_width_cut_allowance_mm ?? 0}
-                  onChange={e => onUpdateProduct({ fabric_width_cut_allowance_mm: Number(e.target.value) || 0 })}
-                  style={{ maxWidth: 140 }} />
-                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
-                  The margin that makes side-by-side cutting possible — the blade needs somewhere
-                  to go and both edges need squaring. Counted once per blind, including the one
-                  at the roll's edge. Leave it at 0 only if blinds really are cut edge to edge.
-                </div>
-              </div>
-              <div className="field">
-                <label className="field-label">Drop allowance (mm)</label>
-                <input className="field-input" type="number" step="1" min="0"
-                  value={product.fabric_drop_allowance_mm ?? 0}
-                  onChange={e => onUpdateProduct({ fabric_drop_allowance_mm: Number(e.target.value) || 0 })}
-                  style={{ maxWidth: 140 }} />
-                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
-                  Fabric the finished blind actually needs beyond its drop — hem, pattern
-                  repeat, wrap onto the tube.
-                </div>
-              </div>
-              <div className="field" style={{ marginBottom: 0 }}>
-                <label className="field-label">Drop wastage allowance (mm)</label>
-                <input className="field-input" type="number" step="1" min="0"
-                  value={product.fabric_drop_wastage_mm ?? 0}
-                  onChange={e => onUpdateProduct({ fabric_drop_wastage_mm: Number(e.target.value) || 0 })}
-                  style={{ maxWidth: 140 }} />
-                <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 5 }}>
-                  Fabric lost making the cut at all — trim, squaring up, the bit that never
-                  reaches the blind. Kept separate from the allowance above so each can be
-                  tuned on its own.
-                </div>
+              <div className="grid-fields">
+                {[
+                  ['fabric_roll_width_mm', 'Roll width', DEFAULT_ROLL_WIDTH_MM, 1,
+                    `The roll width the fabric's rate is quoted against, and the width the cut chart nests into. Rates on file were set against ${DEFAULT_ROLL_WIDTH_MM.toLocaleString()}mm.`],
+                  ['fabric_width_deduction_mm', 'Width deduction', 0, 0,
+                    "The fabric is cut this much narrower than the window's width. Also drives cost, since the cut width decides how much of the roll the blind is charged for."],
+                  ['fabric_width_cut_allowance_mm', 'Width cut allowance', 0, 0,
+                    "The margin that makes side-by-side cutting possible: the blade needs somewhere to go and both edges need squaring. Counted once per blind. Leave at 0 only if blinds really are cut edge to edge."],
+                  ['fabric_drop_allowance_mm', 'Drop allowance', 0, 0,
+                    'Fabric the finished blind needs beyond its drop: hem, pattern repeat, wrap onto the tube.'],
+                  ['fabric_drop_wastage_mm', 'Drop wastage', 0, 0,
+                    "Fabric lost making the cut at all: trim, squaring up, the bit that never reaches the blind. Kept separate from the drop allowance so each can be tuned on its own."],
+                ].map(([key, label, fallback, min, tip]) => (
+                  <div className="field" key={key} style={{ marginBottom: 0 }}>
+                    <label className="field-label">{label} (mm) <InfoTip>{tip}</InfoTip></label>
+                    <DraftInput className="field-input" type="number" step="1" min={min}
+                      value={product[key] ?? fallback}
+                      parse={v => Number(v) || fallback}
+                      onCommit={v => onUpdateProduct({ [key]: v })} />
+                  </div>
+                ))}
               </div>
               {/* A worked example beats four abstract figures — this is the
                   arithmetic every window on this product goes through, on a
@@ -421,16 +384,12 @@ export default function ProductDetail({
                     {gridFabric && ` = $${(area * fabricSqmRate(gridFabric, roll)).toFixed(2)}`}.
                     {perBand > 1 && <> {perBand} of them fit side by side on one length off the roll.</>}
                     {perBand === 0 && <> <span style={{ color: 'var(--danger)' }}>It won't fit this roll width.</span></>}
-                    <div style={{ marginTop: 6 }}>
-                      That's the price grid's figure — one blind's own strip, nothing nested
-                      beside it. A real job's BOM is costed on what actually comes off the roll
-                      once its blinds are nested together, which is more: the strip past the last
-                      blind in a band, and the run under any blind shorter than the band, get
-                      pulled off either way. The BOM matches the cut sheet; this doesn't.
-                    </div>
-                    <div style={{ marginTop: 4 }}>
-                      None of these figures change the window's recorded width or drop.
-                    </div>
+                    <InfoTip>
+                      This is the price grid's figure: one blind's own strip, nothing nested beside it.
+                      A real job's BOM is costed on what actually comes off the roll once its blinds
+                      are nested together, which is more. None of these figures change the window's
+                      recorded width or drop.
+                    </InfoTip>
                   </div>
                 )
               })()}
@@ -604,7 +563,13 @@ export default function ProductDetail({
           {/* Blind price grid — width across, drop down */}
           {isBlind && productComponents.length > 0 && (
             <>
-              <div className="section-title" style={{ padding: '0 0 8px' }}>Pricing Grid</div>
+              <div className="section-title" style={{ padding: '0 0 8px' }}>
+                Pricing Grid
+                <InfoTip>
+                  Cost on top; sell price and gross margin beneath. Sizes in mm.
+                  {gridCategory ? ` Sell is the ${gridCategory.name || gridCategory.code} list price for that size; a size between bands prices at the next band up.` : ''}
+                </InfoTip>
+              </div>
               {assumed.length > 0 && (
                 <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginBottom: 8 }}>
                   Priced as {assumed.join(' · ')}
@@ -665,13 +630,10 @@ export default function ProductDetail({
                   </table>
                 </div>
               </div>
-              <div style={{ fontSize: 11.5, color: 'var(--warm-300)', marginBottom: 24, lineHeight: 1.6 }}>
-                Cost on top; sell price and gross margin beneath. Sizes in mm.
-                {gridCategory
-                  ? ` Sell is the ${gridCategory.name || gridCategory.code} list price for that size — a size between bands prices at the next band up.`
-                  : gridFabric
-                    ? ' No sell prices: tag this fabric with a category in the component library, and load that category\u2019s price list in Admin \u2192 Fabric Categories.'
-                    : ''}
+              <div style={{ fontSize: 11.5, color: 'var(--warning)', marginBottom: 24, lineHeight: 1.6 }}>
+                {!gridCategory && gridFabric
+                  ? 'No sell prices: tag this fabric with a category in the component library, and load that category’s price list in Setup → Fabric categories.'
+                  : ''}
               </div>
             </>
           )}

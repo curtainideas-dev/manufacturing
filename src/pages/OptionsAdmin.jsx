@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { PlusIcon, TrashIcon, ChevronRightIcon, ChevronLeftIcon } from '../components/Icons'
+import { PlusIcon, TrashIcon, ChevronRightIcon } from '../components/Icons'
 import OptionModal from '../components/OptionModal'
 
 const TYPES = [
@@ -13,7 +13,7 @@ const TYPES = [
  * because that is per product: TCO51's face-fix bracket isn't TCO52's.
  */
 export default function OptionsAdmin({
-  productOptions, onBack, onSaveOption, onDeleteOption,
+  productOptions, onSaveOption, onDeleteOption,
   onSaveChoice, onDeleteChoice, saving,
 }) {
   const [type, setType]           = useState('track')
@@ -53,9 +53,6 @@ export default function OptionsAdmin({
   return (
     <>
       <div className="header">
-        <button className="header-back" onClick={onBack}>
-          <ChevronLeftIcon size={18} /> Admin
-        </button>
         <div className="header-title" style={{ fontSize: 15 }}>Options</div>
         <div className="header-actions">
           <button onClick={openNew} style={{

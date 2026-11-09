@@ -8,6 +8,7 @@ import { exportCutSheetPDF, fabricCutGroups } from '../lib/exportCutSheet'
 import { fabricPlanKey } from '../lib/fabricEngine'
 import { exportPackagingLabels, exportTrackLabels, exportPartsLabels } from '../lib/exportLabels'
 import PartsListModal from '../components/PartsListModal'
+import DraftInput from '../components/DraftInput'
 import SwapComponentModal from '../components/SwapComponentModal'
 import AddExtraLineModal from '../components/AddExtraLineModal'
 import { useDragReorder } from '../hooks/useDragReorder'
@@ -571,14 +572,14 @@ export default function JobDetail({
             <div className="grid-2">
               <div className="field" style={{ marginBottom: 0 }}>
                 <label className="field-label">Customer</label>
-                <input className="field-input" value={job.customer_name || ''} disabled={locked}
-                  onChange={e => onUpdate({ customer_name: e.target.value })}
+                <DraftInput className="field-input" value={job.customer_name || ''} disabled={locked}
+                  onCommit={v => onUpdate({ customer_name: v })}
                   placeholder="Customer name" />
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
                 <label className="field-label">Job No.</label>
-                <input className="field-input" value={job.job_number || ''} disabled={isCompleted}
-                  onChange={e => onUpdate({ job_number: e.target.value })}
+                <DraftInput className="field-input" value={job.job_number || ''} disabled={isCompleted}
+                  onCommit={v => onUpdate({ job_number: v })}
                   placeholder="e.g. 2024-081" />
               </div>
             </div>

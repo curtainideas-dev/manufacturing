@@ -3,8 +3,8 @@ import { ChevronRightIcon } from '../components/Icons'
 /**
  * The front door.
  *
- * Five ways in, because there are five jobs to do here and they belong to
- * different people. Submitting and tracking a PO is Sandi's day; Manufacturing
+ * Four ways in, because there are four jobs to do here and they belong to
+ * different people. Submitting a PO is Sandi's day; Manufacturing
  * is the factory's; Admin is setup nobody touches weekly. Landing all of them
  * on the same seven-tab screen meant everyone navigating past the six tabs
  * that were not theirs.
@@ -27,17 +27,10 @@ const TILES = [
     tone:  'var(--accent-bg)',
   },
   {
-    href:  '/track',
-    emoji: '🔎',
-    title: 'Track a PO',
-    desc:  'Where every order is up to — received, in progress or completed — and anything held up waiting on stock.',
-    tone:  'var(--blue-bg)',
-  },
-  {
     href:  '/manufacturing',
     emoji: '🏭',
     title: 'Manufacturing',
-    desc:  'Jobs, components, products, stock and supplier orders. The day-to-day workshop screens.',
+    desc:  'Jobs, supplier orders, stock, components and products. The day-to-day workshop screens.',
     tone:  'var(--warning-bg)',
   },
   {
@@ -48,9 +41,9 @@ const TILES = [
     tone:  'var(--success-bg)',
   },
   {
-    href:  '/admin',
+    href:  '/manufacturing/setup/options',
     emoji: '🛠️',
-    title: 'Admin',
+    title: 'Setup',
     desc:  'Options, component kinds, fabric categories, and anything deleted by mistake.',
     tone:  'var(--warm-100)',
   },

@@ -6,10 +6,9 @@ import StockPage        from './pages/StockPage'
 import ProductList       from './pages/ProductList'
 import ProductDetail     from './pages/ProductDetail'
 import OptionsAdmin      from './pages/OptionsAdmin'
-import AdminHome              from './pages/AdminHome'
+import Sidebar                from './components/Sidebar'
 import FabricCategoriesAdmin  from './pages/FabricCategoriesAdmin'
 import ComponentKindsAdmin     from './pages/ComponentKindsAdmin'
-import TrackPO                 from './pages/TrackPO'
 import DeletedRecordsAdmin     from './pages/DeletedRecordsAdmin'
 import DeleteJobModal          from './components/DeleteJobModal'
 import BackToReceivedModal     from './components/BackToReceivedModal'
@@ -39,28 +38,18 @@ import PurchaseOrderModal    from './components/PurchaseOrderModal'
 import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
-import { buildStockMap, stockKey, getStock, planStockRestore, stockPositions, undeductedLines } from './lib/stockEngine'
+import { buildStockMap, stockKey, getStock, planStockRestore, undeductedLines } from './lib/stockEngine'
 import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines, resolveAnswers } from './lib/bomEngine'
 import { windowSell } from './lib/sellEngine'
 import { orderUnitInfo, openPOFor, poLineKey, poDisplayNumber, outstandingQty, isFullyReceived, receivedToStockQty, poFulfilment, poAddress } from './lib/poEngine'
 import { exportPurchaseOrderPDF } from './lib/exportPOPdf'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
 import { exportProductPricingXLSX } from './lib/exportPricing'
+import { buildPath, parsePath, DEFAULT_TAB } from './lib/route'
 import './index.css'
 
-const NAV_TABS = [
-  { id: 'components', label: 'Components', emoji: '📦' },
-  { id: 'suppliers',  label: 'Suppliers',  emoji: '🏭' },
-  { id: 'products',   label: 'Products',   emoji: '🔩' },
-  { id: 'bom',        label: 'Jobs',       emoji: '📋' },
-  { id: 'stock',      label: 'Stock',      emoji: '🏪' },
-  { id: 'orders',     label: 'Orders',     emoji: '🧾' },
-  // Not a tab — a way out. Takes the slot Admin left when it moved to /admin.
-  { id: 'home',       label: 'Home',       emoji: '🏠', href: '/' },
-]
-
-export default function App({ route = 'manufacturing' }) {
-  const [navTab, setNavTab] = useState(route === 'admin' ? 'admin' : 'components')
+export default function App() {
+  const [navTab, setNavTab] = useState(DEFAULT_TAB)
 
   // ---- Data ----
   const [components, setComponents]                     = useState([])
@@ -524,9 +513,7 @@ export default function App({ route = 'manufacturing' }) {
         // NOT NULL in the schema — omitting it made every duplicate fail.
         product_type:    currentProduct.product_type || currentProduct.category || 'track',
         notes:           currentProduct.notes,
-        markup:          currentProduct.markup ?? 1.6,
         fabric_category: currentProduct.fabric_category || null,
-        market_matrix:   currentProduct.market_matrix || null,
       })
       .select().single()
     if (pe) { showToast(pe.message || 'Duplicate failed', 'error'); setProdSaving(false); return }
@@ -549,11 +536,8 @@ export default function App({ route = 'manufacturing' }) {
         active_max_width:  pc.active_max_width ?? null,
         active_min_drop:   pc.active_min_drop ?? null,
         active_max_drop:   pc.active_max_drop ?? null,
-        // drop_limit / drop_limit_mode are NOT included: the migration that
-        // adds them (supabase_drop_limits.sql) hasn't been run against this
-        // database yet, and PostgREST rejects inserts naming unknown
-        // columns — including them here silently dropped every recipe line.
-        // Re-add once that migration has been applied.
+        drop_limit:        pc.drop_limit || null,
+        drop_limit_mode:   pc.drop_limit_mode || 'above',
         sort_order:        pc.sort_order,
       }))
       const { error: ce } = await supabase.from('product_components').insert(copies)
@@ -1030,6 +1014,9 @@ export default function App({ route = 'manufacturing' }) {
         status: 'received',
         price_snapshot: null,
         qty_snapshot: null,
+        // The sell figures were frozen at the same moment and go with them —
+        // left behind, they kept showing the old price after the windows changed.
+        sell_snapshot: null,
         locked_total: null,
       })
       setRevertPlan(null)
@@ -1084,29 +1071,6 @@ export default function App({ route = 'manufacturing' }) {
       setDeletingJob(false)
     }
   }
-
-  /**
-   * The stock position of every in-progress job, keyed by job id.
-   *
-   * Worked out together, not job by job. Measuring each job against the whole
-   * shelf on its own is what let three jobs each be told they could have the
-   * same ten parts — on live data that hid five genuinely short items. See
-   * stockPositions.
-   *
-   * Only in-progress jobs: a Received job has not been committed to and a
-   * Completed one was already built, so neither has a claim on the shelf.
-   * Only computed for /track, because it walks every window of every job and
-   * the workshop screens never ask for it.
-   */
-  const stockByJob = useMemo(() => {
-    if (route !== 'track') return {}
-    const entries = jobs
-      .filter(j => j.status === 'in_progress')
-      .map(job => ({ jobId: job.id, summary: calcJobSummary(buildJobWindows(job, true)) }))
-    // stockBars carries the loose pieces — offcuts and rolls — which are real
-    // stock for a bar or fabric and were being left out of the count.
-    return stockPositions(entries, stockMap, stockBars)
-  }, [route, jobs, buildJobWindows, stockMap, stockBars])
 
   // Compute the price snapshot + locked total for a job from current recipes
   const computeJobLock = useCallback((job) => {
@@ -1271,7 +1235,9 @@ export default function App({ route = 'manufacturing' }) {
     setCurrentJob(updated)
     setCurrentWindow({ win: windows[idx], idx })
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
-    await supabase.from('mfg_windows').update(updates).eq('id', windows[idx].id)
+    const { error } = await supabase.from('mfg_windows').update(updates).eq('id', windows[idx].id)
+    // Same rule as a job edit: a change that didn't save has to say so.
+    if (error) showToast(error.message || 'That change could not be saved', 'error')
   }
 
   // Copies everything but identity — product, dimensions, options, fabric —
@@ -2367,6 +2333,75 @@ export default function App({ route = 'manufacturing' }) {
 
   // ==== LOADING ====
 
+  // ==== ADDRESSES ====
+  //
+  // Screen state stays where it always was; these keep the address bar in
+  // step with it, so Back, refresh and bookmarks work. See lib/route.js.
+
+  /** Open the screen a path names. Returns the path it actually landed on. */
+  const applyPath = useCallback((pathname) => {
+    const r = parsePath(pathname)
+    // The open record is fresher than the list when it's the same one, since
+    // edits update it first — so a Back onto it must not swap in the stale copy.
+    const pick = (list, open) => !r.id ? null
+      : (open?.id === r.id ? open : list.find(x => x.id === r.id) || null)
+
+    const job     = r.tab === 'bom'       ? pick(jobs, currentJob) : null
+    const wIdx    = job && r.winId ? (job.windows || []).findIndex(w => w.id === r.winId) : -1
+    const win     = wIdx >= 0 ? { win: job.windows[wIdx], idx: wIdx } : null
+    const product = r.tab === 'products'  ? pick(products, currentProduct) : null
+    const supp    = r.tab === 'suppliers' ? pick(suppliers, currentSupplier) : null
+    const po      = r.tab === 'orders'    ? pick(purchaseOrders, currentPO) : null
+
+    setNavTab(r.tab)
+    setAdminSection(r.tab === 'admin' ? r.section : null)
+    setCurrentJob(job)
+    setCurrentWindow(win)
+    setCurrentProduct(product)
+    setCurrentSupplier(supp)
+    setCurrentPO(po)
+    return buildPath({ tab: r.tab, section: r.section, id: (job || product || supp || po)?.id, winId: win?.win.id })
+  }, [jobs, products, suppliers, purchaseOrders, currentJob, currentProduct, currentSupplier, currentPO])
+
+  /** Sidebar: a tab or setup section, at the top of its list. */
+  const goTab = (tab, section = null) => {
+    setNavTab(tab)
+    setAdminSection(tab === 'admin' ? section : null)
+    setCurrentJob(null); setCurrentWindow(null); setCurrentProduct(null)
+    setCurrentSupplier(null); setCurrentPO(null)
+  }
+
+  const currentPath = buildPath({
+    tab: navTab, section: adminSection,
+    id: navTab === 'bom' ? currentJob?.id
+      : navTab === 'products' ? currentProduct?.id
+      : navTab === 'suppliers' ? currentSupplier?.id
+      : navTab === 'orders' ? currentPO?.id : null,
+    winId: currentWindow?.win?.id,
+  })
+
+  // Once the data is in, open whatever the address asked for.
+  const routeReadyRef = useRef(false)
+  useEffect(() => {
+    if (loading || routeReadyRef.current) return
+    routeReadyRef.current = true
+    const landed = applyPath(window.location.pathname)
+    if (landed !== window.location.pathname) window.history.replaceState(null, '', landed)
+  }, [loading, applyPath])
+
+  // Every move after that is a history entry.
+  useEffect(() => {
+    if (!routeReadyRef.current) return
+    if (currentPath !== window.location.pathname) window.history.pushState(null, '', currentPath)
+  }, [currentPath])
+
+  // Back / Forward.
+  useEffect(() => {
+    const onPop = () => applyPath(window.location.pathname)
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [applyPath])
+
   if (loading) {
     return (
       <div className="app">
@@ -2379,17 +2414,6 @@ export default function App({ route = 'manufacturing' }) {
   // ==== ROUTING ====
 
   const renderScreen = () => {
-    // Tracking is its own read-only screen, not one of the workshop tabs.
-    if (route === 'track') {
-      return (
-        <TrackPO
-          jobs={jobs}
-          products={products}
-          stockByJob={stockByJob}
-        />
-      )
-    }
-
     // Window detail
     if (navTab === 'bom' && currentJob && currentWindow) {
       const win     = currentWindow.win
@@ -2494,7 +2518,6 @@ export default function App({ route = 'manufacturing' }) {
       return (
         <OptionsAdmin
           productOptions={productOptions}
-          onBack={() => setAdminSection(null)}
           onSaveOption={handleSaveOption}
           onDeleteOption={handleDeleteOption}
           onSaveChoice={handleSaveChoice}
@@ -2509,7 +2532,6 @@ export default function App({ route = 'manufacturing' }) {
         <FabricCategoriesAdmin
           categories={fabricCategories}
           components={components}
-          onBack={() => setAdminSection(null)}
           onSaveGrids={handleSaveFabricGrids}
           onTagFabrics={handleTagFabrics}
           saving={prodSaving}
@@ -2522,7 +2544,6 @@ export default function App({ route = 'manufacturing' }) {
         <CompanyDetailsAdmin
           company={companyDetails}
           addresses={companyAddresses}
-          onBack={() => setAdminSection(null)}
           onSave={handleSaveCompanyDetails}
           onNewAddress={() => { setEditingAddress(null); setAddressModalOpen(true) }}
           onEditAddress={(a) => { setEditingAddress(a); setAddressModalOpen(true) }}
@@ -2536,7 +2557,6 @@ export default function App({ route = 'manufacturing' }) {
         <DeletedRecordsAdmin
           records={deletedRecords || []}
           available={deletedRecords !== null}
-          onBack={() => setAdminSection(null)}
           onRestore={handleRestoreRecord}
           restoring={restoringId}
         />
@@ -2551,20 +2571,11 @@ export default function App({ route = 'manufacturing' }) {
         <ComponentKindsAdmin
           kinds={componentKinds}
           components={components}
-          onBack={() => setAdminSection(null)}
           onSave={handleSaveKind}
           onDelete={handleDeleteKind}
           saving={prodSaving}
         />
       )
-    }
-
-    if (navTab === 'admin') {
-      return <AdminHome onOpenOptions={() => setAdminSection('options')}
-               onOpenCompanyDetails={() => setAdminSection('company_details')}
-               onOpenFabricCategories={() => setAdminSection('fabric_categories')}
-               onOpenComponentKinds={() => setAdminSection('component_kinds')}
-               onOpenDeletedRecords={() => setAdminSection('deleted_records')} />
     }
 
     // Supplier detail
@@ -2663,40 +2674,10 @@ export default function App({ route = 'manufacturing' }) {
     )
   }
 
-  // Hide bottom nav when drilling into details
-  const showBottomNav = route === 'manufacturing'
-    && !currentProduct && !currentJob && !currentWindow && !currentSupplier && !currentPO && !adminSection
-
   return (
-    <div className="app">
-      {renderScreen()}
-
-      {showBottomNav && (
-        <div style={{
-          position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)',
-          width: '100%', maxWidth: 768,
-          background: '#fff', borderTop: '1px solid var(--warm-200)',
-          display: 'flex', zIndex: 50,
-          paddingBottom: 'env(safe-area-inset-bottom)',
-        }}>
-          {NAV_TABS.map(tab => (
-            <button key={tab.id}
-              onClick={() => tab.href ? (window.location.href = tab.href) : setNavTab(tab.id)}
-              style={{
-              flex: 1, padding: '10px 0 12px', border: 'none', background: 'none',
-              cursor: 'pointer', display: 'flex', flexDirection: 'column',
-              alignItems: 'center', gap: 3,
-              color: navTab === tab.id ? 'var(--accent)' : 'var(--warm-300)',
-              transition: 'color 0.15s',
-            }}>
-              <span style={{ fontSize: 20 }}>{tab.emoji}</span>
-              <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                {tab.label}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
+    <div className="shell">
+      <Sidebar tab={navTab} section={adminSection} onGo={goTab} />
+      <div className="app">{renderScreen()}</div>
 
       <ComponentModal
         open={compModalOpen}

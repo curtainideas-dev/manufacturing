@@ -1,9 +1,8 @@
 /**
  * Request guards for the notification endpoints.
  *
- * Nothing here is user-facing — these endpoints are called only by Supabase
- * database webhooks and by Vercel Cron, so both are protected by a shared
- * secret rather than a login. Secrets live in Vercel env vars, never in .env
+ * Nothing here is user-facing — the endpoint is called only by a Supabase
+ * database trigger, so it is protected by a shared secret rather than a login. Secrets live in Vercel env vars, never in .env
  * (that file is committed to the repo).
  */
 
@@ -22,12 +21,4 @@ export function isValidWebhook(req) {
   const expected = process.env.NOTIFY_WEBHOOK_SECRET
   if (!expected) return false
   return matches(req.headers['x-webhook-secret'] || '', expected)
-}
-
-// Vercel Cron sends `Authorization: Bearer $CRON_SECRET` when CRON_SECRET is set.
-export function isValidCron(req) {
-  const expected = process.env.CRON_SECRET
-  if (!expected) return false
-  const header = req.headers.authorization || ''
-  return matches(header, `Bearer ${expected}`)
 }
