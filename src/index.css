@@ -351,3 +351,5 @@ tbody tr { background: var(--row); }
 .stage-step { flex: 1; text-align: center; font-size: 11.5px; font-weight: 600; padding: 7px 2px; border-radius: 7px; background: var(--warm-100); color: var(--warm-300); }
 .stage-step.done { color: var(--accent-dark); background: var(--accent-bg); }
 .stage-step.now { color: #fff; background: var(--accent-dark); }
+.link-btn { background: none; border: none; padding: 0; color: var(--blue); font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.sidebar-badge { margin-left: auto; min-width: 20px; padding: 1px 6px; border-radius: 99px; background: var(--warning); color: #fff; font-size: 11px; font-weight: 700; text-align: center; }

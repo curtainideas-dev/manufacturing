@@ -5,6 +5,7 @@ import { fabricPieces } from '../lib/fabricEngine'
 import { exportStockTakeCSV } from '../lib/exportCSV'
 import SectionHeader, { UntaggedDivider } from '../components/SectionHeader'
 import { groupByKind } from '../lib/kindGroups'
+import StockHistory from '../components/StockHistory'
 
 const fmtQty = n => {
   const num = Number(n)
@@ -54,6 +55,7 @@ export default function StockPage({
   components, stockMap, stockBars, kinds = [],
   onEditStock, onReceiveBars, onStocktake, onAddOffcut, onEditOffcut,
   purchaseOrders = [], poLinesMap = {}, onAddToPO,
+  onLoadHistory, jobs = [],
 }) {
   const [tab, setTab]       = useState('components')
   const [search, setSearch] = useState('')
@@ -190,9 +192,19 @@ export default function StockPage({
         <button className={`tab-btn ${tab === 'fabrics' ? 'active' : ''}`} onClick={() => setTab('fabrics')}>
           Fabrics ({fabricComponents.length})
         </button>
+        <button className={`tab-btn ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
+          History
+        </button>
       </div>
 
       <div className="scroll-area">
+        {tab === 'history' && (
+          <div style={{ padding: 16 }}>
+            <StockHistory onLoad={onLoadHistory} components={components} jobs={jobs} />
+          </div>
+        )}
+
+        {tab !== 'history' && (<>
         {/* Total value of stock on hand */}
         <div style={{ padding: '12px 16px 0' }}>
           <div style={{
@@ -218,6 +230,7 @@ export default function StockPage({
           <input className="field-input" placeholder="Search..."
             value={search} onChange={e => setSearch(e.target.value)} style={{ fontSize: 14 }} />
         </div>
+        </>)}
 
         {/* ============ COMPONENTS TAB ============ */}
         {tab === 'components' && (

@@ -9,7 +9,7 @@
  *   /manufacturing/jobs/<jobId>/windows/<winId> one window on it
  *   /manufacturing/orders/<poId>                one purchase order
  *   /manufacturing/products/<id>, /suppliers/<id>
- *   /manufacturing/components, /stock
+ *   /manufacturing/components, /stock, /to-order
  *   /manufacturing/setup/<section>              options, fabric-categories, …
  *
  * Still no router library: App keeps its screen state, and this module only
@@ -21,7 +21,7 @@ export const BASE = '/manufacturing'
 // App's tab ids → the path segment people see. 'bom' predates the Jobs label.
 const TAB_TO_SEG = {
   components: 'components', suppliers: 'suppliers', products: 'products',
-  bom: 'jobs', stock: 'stock', orders: 'orders', admin: 'setup',
+  bom: 'jobs', stock: 'stock', orders: 'orders', reorder: 'to-order', admin: 'setup',
 }
 const SEG_TO_TAB = Object.fromEntries(Object.entries(TAB_TO_SEG).map(([t, s]) => [s, t]))
 

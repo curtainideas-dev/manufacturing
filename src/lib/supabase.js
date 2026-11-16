@@ -18,6 +18,12 @@ const readOnlyFetch = (input, init = {}) => {
   const method = (init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase()
   if (method === 'GET' || method === 'HEAD') return fetch(input, init)
   console.warn(`[read-only] blocked ${method} ${String(input instanceof Request ? input.url : input).split('?')[0]}`)
+  // For walking through a flow: with sessionStorage['readonly-simulate'] set,
+  // a blocked write answers "done" instead of failing, so the screen carries
+  // on as if it saved. Still nothing leaves the browser.
+  let simulate = false
+  try { simulate = sessionStorage.getItem('readonly-simulate') === '1' } catch { /* off */ }
+  if (simulate) return Promise.resolve(new Response(null, { status: 204 }))
   return Promise.resolve(new Response(
     JSON.stringify({ message: 'Read-only preview: changes are not saved', code: 'READ_ONLY' }),
     { status: 403, headers: { 'Content-Type': 'application/json' } },
