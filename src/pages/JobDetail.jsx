@@ -1,14 +1,16 @@
 import { useState, useMemo, useRef, Fragment } from 'react'
-import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, TrashIcon, CheckIcon, GripIcon } from '../components/Icons'
-import { buildWindowBOM, calcJobSummary, applyFabricNesting, missingAnswers, fabricSelectionFor, substitutionsFor, buildJobExtraLines, resolveAnswers, jobProductType, fmt, fmtQty } from '../lib/bomEngine'
+import { ChevronLeftIcon, ChevronRightIcon, TrashIcon, GripIcon, CopyIcon } from '../components/Icons'
+import { buildWindowBOM, calcJobSummary, applyFabricNesting, missingAnswers, fabricSelectionFor, substitutionsFor, buildJobExtraLines, jobProductType, fmt, fmtQty } from '../lib/bomEngine'
 import { describeCombo } from '../lib/pricingCombos'
-import { windowSell, grossProfit, jobGrossProfit } from '../lib/sellEngine'
+import { STAGES, MOVES, stageIndex, isEditableStage, isProductionStage } from '../lib/jobStages'
+import WindowGrid from '../components/WindowGrid'
 import { exportJobPack } from '../lib/exportJobPack'
 import { exportCutSheetPDF, fabricCutGroups } from '../lib/exportCutSheet'
 import { fabricPlanKey } from '../lib/fabricEngine'
 import { exportPackagingLabels, exportTrackLabels, exportPartsLabels } from '../lib/exportLabels'
 import PartsListModal from '../components/PartsListModal'
 import DraftInput from '../components/DraftInput'
+import InfoTip from '../components/InfoTip'
 import SwapComponentModal from '../components/SwapComponentModal'
 import AddExtraLineModal from '../components/AddExtraLineModal'
 import { useDragReorder } from '../hooks/useDragReorder'
@@ -110,7 +112,7 @@ const FabricRollChoice = ({ rolls = [], choice = {}, onChange, frozen = false })
 
       {frozen && (
         <div style={{ marginTop: 6, fontSize: 11 }}>
-          This job's cost was fixed when it was confirmed. Changes here alter the cut sheet and
+          This job's cost was fixed when it was checked. Changes here alter the cut sheet and
           fabric summary, not the cost.
         </div>
       )}
@@ -118,20 +120,14 @@ const FabricRollChoice = ({ rolls = [], choice = {}, onChange, frozen = false })
   )
 }
 
-const CopyIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="9" y="9" width="13" height="13" rx="2"/>
-    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
-  </svg>
-)
 
 export default function JobDetail({
   job, products, productComponentsMap, optionDefsFor,
-  allComponents = [], suppliers = [], fabricCategories = [], stockMap = {}, stockBars = [], kinds = [],
-  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onReorderWindows, onConfirm, onComplete, onReopen, onBackToReceived, onAttachPO, poUploading, onDeductStock, onRecordOffcuts, pendingOffcutCount = 0, onOrderFabric,
+  allComponents = [], suppliers = [], stockMap = {}, stockBars = [], kinds = [],
+  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onUpdateWindow, onReorderWindows, onMove, onAttachPO, poUploading, onDeductStock, onRecordOffcuts, pendingOffcutCount = 0, onOrderFabric,
 }) {
   const [tab, setTab]         = useState('windows')
-  const [exporting, setExporting] = useState(false)
+  const [exporting, setExporting] = useState(null) // 'workshop' | 'bom' | null
   const [cutting, setCutting]     = useState(false)
   const [ordering, setOrdering]   = useState(false)
   const [labeling, setLabeling]   = useState(null) // 'pack' | 'track' | 'parts' | null
@@ -216,42 +212,66 @@ export default function JobDetail({
   }, [jobSummary])
   const jobTotal   = jobSummary.reduce((s, r) => s + r.total_cost, 0)
 
-  /* ---------------------------------------------------------- sell and GP --
-   * The order's gross profit, built window by window.
-   *
-   * Windows with no sell price are counted, not costed in: folding their cost
-   * into the total while contributing no revenue would report a loss the
-   * business isn't making. So the headline is the GP of what IS priced, with
-   * the gap stated next to it.
-   *
-   * Job-level extras — a delivery, a bracket bought for the job — are real
-   * cost with no window to sell through, so they come straight off the margin.
-   * That is the point of showing them: they are invisible per window and they
-   * are exactly what erodes the profit on an order.
+  /* ------------------------------------------------------------- stages --
+   * Received and To check can still change; from Ready to make on the job is
+   * frozen. `isReceived` and `isInProgress` keep their old names for the
+   * gates further down: editable, and being made.
    * -------------------------------------------------------------------- */
-  const sellLines = useMemo(() => windowsWithBOM.map(win => {
-    const product   = products.find(p => p.id === win.product_id)
-    const optDefs   = optionDefsFor(win.product_id)
-    const fabricCmp = allComponents.find(c => c.id === win.config?.fabric?.component_id) || null
-    const cost      = win.bom.reduce((t, l) => t + l.line_cost, 0)
-    const sell      = windowSell({
-      win, product, fabricComponent: fabricCmp,
-      categories: fabricCategories, optionDefs: optDefs,
-      answers: resolveAnswers(optDefs, win.config),
-      sellSnapshot: job.sell_snapshot || null,
-    })
-    return { win, product, cost, sell: sell.sell, source: sell.source, reason: sell.reason }
-  }), [windowsWithBOM, products, optionDefsFor, allComponents, fabricCategories, job])
-
-  const extrasCost = jobExtraLines.reduce((t, l) => t + (Number(l.line_cost) || 0), 0)
-  const jobGP = useMemo(
-    () => jobGrossProfit(sellLines, extrasCost),
-    [sellLines, extrasCost])
-  const isReceived   = job.status === 'received'
-  const isInProgress = job.status === 'in_progress'
+  const editable     = isEditableStage(job.status)
+  const checking     = job.status === 'to_check'
+  const isReceived   = editable
+  const isInProgress = isProductionStage(job.status)
   const isCompleted  = job.status === 'completed'
-  const locked       = !isReceived   // BOM/inputs locked once past Received
+  const locked       = !editable
   const hasWindows   = (job.windows || []).length > 0
+  const moves        = MOVES[job.status] || {}
+
+  /* ------------------------------------------------------------- margin --
+   * One sell price for the whole job, typed in from the customer's PO.
+   * Margin is against the frozen cost once there is one, else today's.
+   * -------------------------------------------------------------------- */
+  const costBasis = job.locked_total != null ? Number(job.locked_total) : jobTotal
+  const sellPrice = job.sell_price != null && job.sell_price !== '' ? Number(job.sell_price) : null
+  const marginPct = sellPrice > 0 ? ((sellPrice - costBasis) / sellPrice) * 100 : null
+
+  /* -------------------------------------------------------------- ticks --
+   * While To check, each window is ticked by whoever checks it. A tick is
+   * stored with the window as it looked when ticked, so changing the window
+   * clears it. Kept for this browser tab only: checking is one sitting.
+   * -------------------------------------------------------------------- */
+  const tickKey = `checks:${job.id}`
+  const signature = (w) => JSON.stringify([w.label, w.product_id, w.width_mm, w.drop_mm, w.config, w.substitutions, w.bom_overrides, w.extra_lines])
+  const [tickSigs, setTickSigs] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem(tickKey) || '{}') } catch { return {} }
+  })
+  const ticked = Object.fromEntries((job.windows || []).map(w => [w.id, tickSigs[w.id] === signature(w)]))
+  const tickedCount = Object.values(ticked).filter(Boolean).length
+  const toggleTick = (win) => {
+    const next = { ...tickSigs }
+    if (ticked[win.id]) delete next[win.id]
+    else next[win.id] = signature(win)
+    setTickSigs(next)
+    try { sessionStorage.setItem(tickKey, JSON.stringify(next)) } catch { /* not kept */ }
+  }
+
+  const productOf = (w) => products.find(p => p.id === w.product_id)
+  const isBlindJobOf = (w) => productOf(w)?.product_type === 'blind'
+  // The window table only offers live products of the job's own type.
+  const jobTypeId = job.product_type || productOf((job.windows || [])[0] || {})?.product_type || null
+  const activeTypeProducts = products.filter(p => !p.archived && (!jobTypeId || p.product_type === jobTypeId))
+
+  // Why the next step can't happen yet, or null when it can.
+  const incomplete = (job.windows || []).filter(w =>
+    !(Number(w.width_mm) > 0) || !(Number(w.drop_mm) > 0)
+    || missingAnswers(optionDefsFor(w.product_id), w.config).length > 0
+    || (isBlindJobOf(w) && !w.config?.fabric?.component_id))
+  const blocked = job.status === 'received'
+    ? (!hasWindows ? 'Add the windows first.'
+      : incomplete.length ? `${incomplete.length} window${incomplete.length > 1 ? 's are' : ' is'} missing a size, an answer or a fabric.`
+      : null)
+    : checking && tickedCount < (job.windows || []).length
+      ? `Tick every window as it's checked (${tickedCount} of ${(job.windows || []).length}).`
+      : null
 
   // Order is arrangement, not specification: nothing costed depends on it —
   // the qty snapshot is keyed by window id, not position — so unlike the BOM
@@ -270,28 +290,28 @@ export default function JobDetail({
    * actually ordered. So the gap is stated, and going ahead anyway is a
    * decision rather than an accident.
    */
-  const handleExport = async () => {
-    if (!job.po_pdf_url && !window.confirm(
+  const handleExport = async (kind = 'workshop') => {
+    if (kind === 'workshop' && !job.po_pdf_url && !window.confirm(
       'This job has no PO attached, so the pack will end after the cut sheet '
       + 'with nothing to check the build against.\n\nGenerate it anyway?'
     )) return
 
-    setExporting(true)
+    setExporting(kind)
     try {
       const res = await exportJobPack(job, windowsWithBOM, {
         products, optionDefsFor, suppliers, kinds, jobExtras: jobExtraLines,
-        stock: { stockBars, stockMap },
+        stock: { stockBars, stockMap }, kind,
       })
       // Attached but unreachable is a different problem from never attached,
       // and the person who just downloaded a short pack needs to know which.
-      if (job.po_pdf_url && !res.merged) {
+      if (kind === 'workshop' && job.po_pdf_url && !res.merged) {
         window.alert(
           'The pack was saved, but the attached PO could not be read and is not in it.\n\n'
           + 'Open the PO from the job to check it is still there.'
         )
       }
     } finally {
-      setExporting(false)
+      setExporting(null)
     }
   }
 
@@ -442,9 +462,9 @@ export default function JobDetail({
           {/* Export button — always visible when there are windows */}
           {hasWindows && (
             <button
-              onClick={handleExport}
-              disabled={exporting}
-              title="Download the job pack — bill of materials, cut sheet, and the original PO"
+              onClick={() => handleExport('workshop')}
+              disabled={!!exporting}
+              title="Download the workshop pack: the cut sheet and the customer's PO"
               style={{
                 padding: '6px 12px', fontSize: 13, fontWeight: 600,
                 background: 'rgba(255,255,255,0.15)', color: '#fff',
@@ -455,18 +475,9 @@ export default function JobDetail({
               }}
             >
               <DownloadIcon />
-              {exporting ? 'Generating...' : 'PDF'}
+              {exporting === 'workshop' ? 'Generating…' : 'Workshop pack'}
             </button>
           )}
-          {/* Received → confirm into In Progress */}
-          {isReceived && (
-            <button onClick={onConfirm} style={{
-              padding: '6px 14px', fontSize: 13, fontWeight: 700,
-              background: 'var(--accent)', color: '#fff', border: 'none',
-              borderRadius: 8, cursor: 'pointer'
-            }}>Confirm</button>
-          )}
-
           {/* Cut sheet — what the saw and the cutting table need. Available
               from Received on, since it's read-only and gets checked against
               the order before anything is actually cut. */}
@@ -507,7 +518,7 @@ export default function JobDetail({
             </button>
           )}
 
-          {/* In Progress → deduct stock + mark complete */}
+          {/* Being made → deduct stock */}
           {isInProgress && hasWindows && (
             <button onClick={onDeductStock} style={{
               padding: '6px 12px', fontSize: 13, fontWeight: 600,
@@ -533,16 +544,6 @@ export default function JobDetail({
               ✂️ Record Offcuts ({pendingOffcutCount})
             </button>
           )}
-          {/* Completed → locked, allow reopen */}
-          {isCompleted && <span className="pill pill-green"><CheckIcon size={10} /> Completed</span>}
-          {isCompleted && (
-            <button onClick={onReopen} style={{
-              padding: '6px 12px', fontSize: 13, fontWeight: 600,
-              background: 'rgba(255,255,255,0.15)', color: '#fff',
-              border: '1px solid rgba(255,255,255,0.3)',
-              borderRadius: 8, cursor: 'pointer',
-            }}>← In Progress</button>
-          )}
         </div>
       </div>
 
@@ -557,6 +558,32 @@ export default function JobDetail({
 
       <div className="scroll-area">
         <div style={{ padding: 16 }}>
+
+          {/* Where the job is, and the one step forward or back from here. */}
+          <div className="card card-body" style={{ marginBottom: 16 }}>
+            <div className="stage-bar">
+              {STAGES.map((s, i) => (
+                <div key={s.id} className={`stage-step${i < stageIndex(job.status) ? ' done' : ''}${s.id === job.status ? ' now' : ''}`}>
+                  {s.label}
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 180, fontSize: 12.5, color: blocked ? 'var(--warning)' : 'var(--warm-300)' }}>
+                {blocked || (checking ? 'All windows checked. Prices freeze at the next step.' : '')}
+              </div>
+              {moves.back && (
+                <button className="btn btn-secondary btn-sm" onClick={() => onMove(moves.back.to)}>
+                  ← {moves.back.label}
+                </button>
+              )}
+              {moves.next && (
+                <button className="btn btn-primary btn-sm" disabled={!!blocked} onClick={() => onMove(moves.next.to)}>
+                  {moves.next.label} →
+                </button>
+              )}
+            </div>
+          </div>
 
           {/* Job info */}
           <div className="card card-body" style={{ marginBottom: 16 }}>
@@ -584,24 +611,30 @@ export default function JobDetail({
               </div>
             </div>
 
-            {/* Dates — manufacture/invoice print on labels; all editable until completed */}
+            {/* What the customer is paying, from their PO, against what it costs. */}
             <div className="grid-2" style={{ marginTop: 12 }}>
               <div className="field" style={{ marginBottom: 0 }}>
-                <label className="field-label">Date of Manufacture</label>
-                <input className="field-input" type="date" value={job.date_manufacture || ''} disabled={isCompleted}
-                  onChange={e => onUpdate({ date_manufacture: e.target.value || null })} />
+                <label className="field-label">
+                  Sell price ($)
+                  <InfoTip>The total from the customer's PO, excluding GST. Only used to show the margin.</InfoTip>
+                </label>
+                <DraftInput className="field-input" type="number" step="0.01" min="0"
+                  value={job.sell_price ?? ''} placeholder="From the customer's PO"
+                  parse={v => v === '' ? null : Number(v)}
+                  onCommit={v => onUpdate({ sell_price: v })} />
               </div>
-              <div className="field" style={{ marginBottom: 0 }}>
-                <label className="field-label">Date of Invoice</label>
-                <input className="field-input" type="date" value={job.date_invoice || ''} disabled={isCompleted}
-                  onChange={e => onUpdate({ date_invoice: e.target.value || null })} />
+              <div style={{ display: 'flex', gap: 18, alignItems: 'flex-end', paddingBottom: 6 }}>
+                <div>
+                  <div className="field-label" style={{ marginBottom: 2 }}>Cost{job.locked_total != null ? ' (frozen)' : ''}</div>
+                  <div style={{ fontSize: 17, fontWeight: 700 }}>${fmt(costBasis)}</div>
+                </div>
+                <div>
+                  <div className="field-label" style={{ marginBottom: 2 }}>Margin</div>
+                  <div style={{ fontSize: 17, fontWeight: 700, color: marginPct == null ? 'var(--warm-300)' : marginPct < 0 ? 'var(--danger)' : 'var(--accent-dark)' }}>
+                    {marginPct == null ? '—' : `${marginPct.toFixed(0)}%`}
+                  </div>
+                </div>
               </div>
-            </div>
-
-            <div className="field" style={{ marginBottom: 0, marginTop: 12, maxWidth: '50%' }}>
-              <label className="field-label">Delivery Date</label>
-              <input className="field-input" type="date" value={job.delivery_requirement || ''} disabled={isCompleted}
-                onChange={e => onUpdate({ delivery_requirement: e.target.value || null })} />
             </div>
 
             {/* Customer PO document */}
@@ -646,6 +679,23 @@ export default function JobDetail({
           {/* ---- WINDOWS TAB ---- */}
           {tab === 'windows' && (
             <>
+              {editable ? (
+                <WindowGrid
+                  windows={windowsWithBOM}
+                  products={activeTypeProducts}
+                  optionDefsFor={optionDefsFor}
+                  allComponents={allComponents}
+                  editable={editable}
+                  checking={checking}
+                  ticked={ticked}
+                  onTick={toggleTick}
+                  onUpdate={onUpdateWindow}
+                  onAddRow={onAddWindow}
+                  onDuplicate={onDuplicateWindow}
+                  onOpen={onOpenWindow}
+                  listRef={listRef} drag={drag} startDrag={startDrag} canReorder={canReorder}
+                />
+              ) : (
               <div className="card" style={{ marginBottom: 12 }} ref={listRef}>
                 {windowsWithBOM.length === 0 ? (
                   <div className="empty-state" style={{ padding: '28px 20px' }}>
@@ -759,11 +809,6 @@ export default function JobDetail({
                   )
                 })}
               </div>
-
-              {isReceived && (
-                <button className="btn btn-secondary btn-block" onClick={onAddWindow}>
-                  <PlusIcon size={16} /> Add Window
-                </button>
               )}
 
               {isInProgress && hasWindows && (
@@ -795,47 +840,7 @@ export default function JobDetail({
                 </div>
               )}
 
-              {isInProgress && (
-                <button
-                  className="btn btn-block"
-                  style={{ background: 'var(--success)', color: '#fff', border: 'none', marginTop: 12 }}
-                  onClick={onComplete}
-                >
-                  <CheckIcon size={15} /> Mark Complete
-                </button>
-              )}
-
-              {(isInProgress || isCompleted) && (
-                <>
-                  <div className="divider" />
-                  <div style={{
-                    fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-                    letterSpacing: '0.08em', color: 'var(--warm-300)', marginBottom: 8,
-                  }}>
-                    Move back
-                  </div>
-
-                  {isCompleted && (
-                    <button className="btn btn-secondary btn-block" onClick={onReopen}>
-                      ← Back to In Progress
-                    </button>
-                  )}
-
-                  {isInProgress && (
-                    <button className="btn btn-secondary btn-block" onClick={onBackToReceived}>
-                      ← Back to Received
-                    </button>
-                  )}
-
-                  <div style={{ fontSize: 11, color: 'var(--warm-300)', marginTop: 7, lineHeight: 1.45 }}>
-                    {isCompleted
-                      ? 'Reopens the job for stock and labels. Pricing stays locked.'
-                      : 'Makes the job editable again. Unlocks pricing, and asks what to do with any stock already deducted.'}
-                  </div>
-                </>
-              )}
-
-              {(isReceived || isInProgress) && (
+              {!isCompleted && (
                 <>
                   <div className="divider" />
                   <button className="btn btn-danger btn-block" onClick={onDelete}>
@@ -859,113 +864,21 @@ export default function JobDetail({
                 </div>
               ) : (
                 <>
-                  {/* The order, in the three figures that matter: what it
-                      costs to build, what it sells for, and what is left. */}
                   <div style={{
                     background: 'var(--accent-dark)', color: '#fff',
                     borderRadius: 'var(--radius)', padding: '16px 20px',
-                    marginBottom: 16,
+                    marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
                   }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <div>
-                        <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7, marginBottom: 4 }}>Total Job Cost</div>
-                        <div style={{ fontSize: 28, fontWeight: 700 }}>${fmt(jobTotal)}</div>
-                      </div>
-                      <div style={{ textAlign: 'right', opacity: 0.7, fontSize: 13 }}>
-                        <div>{(job.windows || []).length} window{(job.windows||[]).length !== 1 ? 's' : ''}</div>
-                        <div>{jobSummary.length} components</div>
-                        {job.price_snapshot && <div style={{ marginTop: 2 }}>🔒 Pricing locked</div>}
-                      </div>
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7, marginBottom: 4 }}>Total job cost</div>
+                      <div style={{ fontSize: 28, fontWeight: 700 }}>${fmt(jobTotal)}</div>
                     </div>
-
-                    <div style={{
-                      display: 'flex', gap: 24, flexWrap: 'wrap',
-                      marginTop: 14, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.18)',
-                    }}>
-                      <div>
-                        <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7, marginBottom: 3 }}>Sell</div>
-                        <div style={{ fontSize: 20, fontWeight: 700 }}>
-                          {jobGP.pricedCount === 0 ? '—' : `$${fmt(jobGP.sell)}`}
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7, marginBottom: 3 }}>Gross profit</div>
-                        <div style={{ fontSize: 20, fontWeight: 700, color: jobGP.gp < 0 ? '#fca5a5' : '#fff' }}>
-                          {jobGP.pricedCount === 0 ? '—' : `$${fmt(jobGP.gp)}`}
-                          {jobGP.pricedCount > 0 && jobGP.gpPct !== null && (
-                            <span style={{ fontSize: 13, fontWeight: 600, opacity: 0.75, marginLeft: 8 }}>
-                              {jobGP.gpPct.toFixed(1)}%
-                            </span>
-                          )}
-                        </div>
-                      </div>
+                    <div style={{ textAlign: 'right', opacity: 0.75, fontSize: 13 }}>
+                      <div>{(job.windows || []).length} window{(job.windows||[]).length !== 1 ? 's' : ''} · {jobSummary.length} components</div>
+                      {job.price_snapshot && <div style={{ marginTop: 2 }}>🔒 Prices frozen</div>}
+                      {marginPct != null && <div style={{ marginTop: 2 }}>Margin {marginPct.toFixed(0)}% on ${fmt(sellPrice)}</div>}
                     </div>
-
-                    {/* An incomplete answer that says it is incomplete beats a
-                        complete-looking wrong one. */}
-                    {jobGP.unpricedCount > 0 && (
-                      <div style={{ fontSize: 11.5, opacity: 0.8, marginTop: 10, lineHeight: 1.5 }}>
-                        {jobGP.unpricedCount} window{jobGP.unpricedCount !== 1 ? 's have' : ' has'} no sell price
-                        {' '}(${fmt(jobGP.unpricedCost)} of cost) — left out of the figures above.
-                        Open {jobGP.unpricedCount !== 1 ? 'them' : 'it'} to price
-                        {jobGP.unpricedCount !== 1 ? ' them' : ' it'}.
-                      </div>
-                    )}
-                    {jobGP.extrasCost > 0 && (
-                      <div style={{ fontSize: 11.5, opacity: 0.8, marginTop: 6, lineHeight: 1.5 }}>
-                        Includes ${fmt(jobGP.extrasCost)} of job-level extras, which sell through no window
-                        and so come straight off the margin.
-                      </div>
-                    )}
                   </div>
-
-                  {/* Per window, since one bad line is invisible in a total. */}
-                  {jobGP.pricedCount > 0 && (
-                    <div className="card" style={{ marginBottom: 16, overflow: 'hidden' }}>
-                      <div style={{
-                        padding: '10px 16px', background: 'var(--warm-100)',
-                        fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-                        letterSpacing: '0.06em', color: 'var(--warm-300)',
-                      }}>
-                        Gross profit by window
-                      </div>
-                      {sellLines.map((line, i) => {
-                        const g = grossProfit(line.cost, line.sell)
-                        return (
-                          <div key={line.win.id || i} style={{
-                            display: 'grid',
-                            gridTemplateColumns: 'minmax(0,1fr) 72px 72px 96px',
-                            gap: 8, alignItems: 'center',
-                            padding: '9px 16px', borderTop: '1px solid var(--warm-100)',
-                            fontSize: 13, fontVariantNumeric: 'tabular-nums',
-                          }}>
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {line.win.label || `Window ${i + 1}`}
-                              </div>
-                              <div style={{ fontSize: 11, color: 'var(--warm-300)' }}>
-                                {line.win.width_mm} × {line.win.drop_mm}
-                                {line.source === 'override' ? ' · price entered by hand' : ''}
-                                {line.source === 'snapshot' ? ' · locked' : ''}
-                              </div>
-                            </div>
-                            <div style={{ textAlign: 'right', color: 'var(--warm-300)' }}>${fmt(g.cost)}</div>
-                            <div style={{ textAlign: 'right' }}>
-                              {g.priced ? `$${fmt(g.sell)}` : '—'}
-                            </div>
-                            <div style={{ textAlign: 'right', fontWeight: 700, color: !g.priced ? 'var(--warm-300)' : g.gp < 0 ? 'var(--danger)' : 'var(--accent-dark)' }}>
-                              {g.priced ? `$${fmt(g.gp)}` : 'not priced'}
-                              {g.priced && g.gpPct !== null && (
-                                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--warm-300)', marginLeft: 5 }}>
-                                  {g.gpPct.toFixed(0)}%
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
 
                   {jobSwapList.length > 0 && (
                     <div className="card card-body" style={{ marginBottom: 16 }}>
@@ -1176,8 +1089,8 @@ export default function JobDetail({
 
                   {/* Export button in BOM tab too */}
                   <div style={{ marginTop: 16 }}>
-                    <button className="btn btn-secondary btn-block" onClick={handleExport} disabled={exporting}>
-                      <DownloadIcon /> {exporting ? 'Generating PDF...' : 'Download Job Pack PDF'}
+                    <button className="btn btn-secondary btn-block" onClick={() => handleExport('bom')} disabled={!!exporting}>
+                      <DownloadIcon /> {exporting === 'bom' ? 'Generating PDF…' : 'Download BOM PDF'}
                     </button>
                   </div>
                 </>

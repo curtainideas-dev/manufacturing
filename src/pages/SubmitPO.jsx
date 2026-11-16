@@ -12,9 +12,10 @@ import { useToast, ToastContainer } from '../hooks/useToast.jsx'
  * filled in is worth more than a field someone was asked to check, so the
  * form asks.
  *
- * Four answers are required, and they are the four nobody downstream can work
- * out for themselves: who it is for, what kind of order it is, and the two
- * dates the factory schedules against. Everything else is optional.
+ * It asks for what the workshop actually uses: the PO itself, who it is for,
+ * the job number, and whether it is tracks or blinds. The job date is the day
+ * it's submitted (it prints on the packing label), so it isn't asked. The
+ * submitter's name is remembered on this computer after the first time.
  */
 
 const MAX_MB = 15
@@ -23,11 +24,14 @@ const EMPTY = {
   customer_name: '',
   product_type: '',
   job_number: '',
-  date_invoice: '',
-  delivery_requirement: '',
   submitted_by: '',
-  contact_email: '',
 }
+
+// The submitter's name, kept between visits on this computer. Storage can be
+// unavailable (private windows, blocked site data), which just means asking.
+const NAME_KEY = 'submit.submitted_by'
+const savedName = () => { try { return localStorage.getItem(NAME_KEY) || '' } catch { return '' } }
+const saveName  = (v) => { try { localStorage.setItem(NAME_KEY, v) } catch { /* not remembered */ } }
 
 const ORDER_TYPES = [
   { val: 'track', label: 'Tracks', emoji: '📏' },
@@ -47,9 +51,8 @@ const todayISO = () => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
-// A fresh blank form. Job date starts on today, since that is what it almost
-// always is and it stays editable for the times it isn't.
-const newForm = () => ({ ...EMPTY, date_invoice: todayISO() })
+// A fresh blank form, with the remembered name already in.
+const newForm = () => ({ ...EMPTY, submitted_by: savedName() })
 
 // Where the PDF lands in the bucket. Module scope because it is genuinely
 // impure — a clock read and a random suffix, so two people submitting the same
@@ -63,10 +66,8 @@ const storagePath = (fileName) => {
 // Required fields, with the name to show when one is missing. Order matches
 // the form, so the message reads top to bottom.
 const REQUIRED = [
-  ['customer_name',        'Customer name'],
-  ['product_type',         'Order type'],
-  ['date_invoice',         'Job date'],
-  ['delivery_requirement', 'Delivery date'],
+  ['customer_name', 'Customer name'],
+  ['product_type',  'Tracks or blinds'],
 ]
 
 export default function SubmitPO() {
@@ -129,14 +130,13 @@ export default function SubmitPO() {
         customer_name:        form.customer_name.trim(),
         product_type:         form.product_type,
         job_number:           form.job_number.trim() || null,
-        date_invoice:         form.date_invoice || null,
-        delivery_requirement: form.delivery_requirement || null,
+        date_invoice:         todayISO(),
         submitted_by:         form.submitted_by.trim() || null,
-        notes:                form.contact_email.trim() ? `Contact: ${form.contact_email.trim()}` : null,
         po_pdf_url:           uploaded.url,
         po_pdf_name:          uploaded.name,
       })
       if (error) throw error
+      if (form.submitted_by.trim()) saveName(form.submitted_by.trim())
       setDone(true)
     } catch (err) {
       showToast(err.message || 'Submission failed — please try again', 'error')
@@ -145,8 +145,6 @@ export default function SubmitPO() {
   }
 
   const reset = () => {
-    // A new date, not the one this form loaded with — the tab may have been
-    // open since yesterday.
     setFile(null); setForm(newForm()); setDone(false); setTried(false)
   }
 
@@ -218,7 +216,7 @@ export default function SubmitPO() {
           {/* What kind of order this is. Asked rather than worked out from the
               windows, because a job that has just arrived has none yet — and
               this is the first thing whoever picks it up needs to know. */}
-          <Field label="Order type" required>
+          <Field label="Tracks or blinds" required>
             <div style={{
               display: 'flex', gap: 8,
               outline: flag('product_type') ? '1.5px solid #fca5a5' : 'none',
@@ -244,32 +242,14 @@ export default function SubmitPO() {
             </div>
           </Field>
 
-          <div className="grid-2">
-            <Field label="Job date" required>
-              <input className="field-input" type="date" value={form.date_invoice}
-                onChange={e => setField('date_invoice', e.target.value)}
-                style={flag('date_invoice') ? { outline: '1.5px solid #fca5a5', outlineOffset: 2 } : undefined} />
-            </Field>
-            <Field label="Delivery date" required>
-              <input className="field-input" type="date" value={form.delivery_requirement}
-                onChange={e => setField('delivery_requirement', e.target.value)}
-                style={flag('delivery_requirement') ? { outline: '1.5px solid #fca5a5', outlineOffset: 2 } : undefined} />
-            </Field>
-          </div>
-
-          <Field label="Job number">
-            <input className="field-input" value={form.job_number}
-              onChange={e => setField('job_number', e.target.value)} placeholder="Your PO / job number" />
-          </Field>
-
           <div className="grid-2" style={{ marginBottom: 0 }}>
-            <Field label="Your name / company" last>
-              <input className="field-input" value={form.submitted_by}
-                onChange={e => setField('submitted_by', e.target.value)} placeholder="Who's submitting" />
+            <Field label="Job number" last>
+              <input className="field-input" value={form.job_number}
+                onChange={e => setField('job_number', e.target.value)} placeholder="1002765" />
             </Field>
-            <Field label="Contact email" last>
-              <input className="field-input" type="email" value={form.contact_email}
-                onChange={e => setField('contact_email', e.target.value)} placeholder="For any questions" />
+            <Field label="Your name" last>
+              <input className="field-input" value={form.submitted_by}
+                onChange={e => setField('submitted_by', e.target.value)} placeholder="Sandi" />
             </Field>
           </div>
         </div>

@@ -199,13 +199,18 @@ export function drawBOMMatrix(doc, {
  * The pack
  * ------------------------------------------------------------------------ */
 
-/** `<order number>_<last name>_Job Pack.pdf` */
-export function jobPackFilename(job) {
-  return jobFilename(job, 'Job Pack')
+/** `<order number>_<last name>_Workshop Pack.pdf`, or `_BOM.pdf` for the office copy */
+export function jobPackFilename(job, kind = 'workshop') {
+  return jobFilename(job, kind === 'bom' ? 'BOM' : 'Workshop Pack')
 }
 
 /**
- * Build and download the pack.
+ * Build and download a pack. Two kinds:
+ *
+ *   'workshop'  what the floor needs: the cut sheet (which already lists the
+ *               carriers, chain length, base rail and so on per window) and the
+ *               customer's PO on the end.
+ *   'bom'       the office copy: the bill of materials matrix on its own.
  *
  * Returns what happened to the PO — `{ merged: true }`, or `{ merged: false,
  * reason }` when the job has none attached or the file could not be fetched.
@@ -214,7 +219,7 @@ export function jobPackFilename(job) {
  */
 export async function exportJobPack(job, windowsWithBOM = [], {
   products = [], optionDefsFor = () => [], suppliers = [], kinds = [],
-  jobExtras = [], includePO = true, stock = {},
+  jobExtras = [], kind = 'workshop', stock = {},
 } = {}) {
   const jsPDF = await loadJsPDF()
   const doc   = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
@@ -226,22 +231,22 @@ export async function exportJobPack(job, windowsWithBOM = [], {
     pageWidth: 297, marginX: 12, marginRight: 285,
   })
 
-  const pageNum = drawBOMMatrix(doc, { windowsWithBOM, jobExtras, drawHeader, pageNum: 1 })
+  if (kind === 'bom') {
+    drawBOMMatrix(doc, { windowsWithBOM, jobExtras, drawHeader, pageNum: 1 })
+    return downloadWithAppendix(doc, null, jobPackFilename(job, 'bom'))
+  }
 
   drawCutSheet(doc, {
     job, windowsWithBOM, optionDefsFor, suppliers, kinds, products, stock,
-    drawHeader, pageNum, startOnNewPage: true,
+    drawHeader, pageNum: 1, startOnNewPage: false,
   })
-
-  const po = includePO ? job?.po_pdf_url : null
-  return downloadWithAppendix(doc, po, jobPackFilename(job))
+  return downloadWithAppendix(doc, job?.po_pdf_url || null, jobPackFilename(job))
 }
 
 // Kept so a caller can describe what it is about to produce without building
 // it — the header of the confirm dialog that warns about a missing PO.
 export function jobPackSections(job, windowsWithBOM = [], products = []) {
   return [
-    'Bill of materials',
     jobProductType(job, windowsWithBOM, products) === 'track' ? 'Track cut sheet' : 'Blind cut sheet',
     job?.po_pdf_url ? 'Original PO' : null,
   ].filter(Boolean)

@@ -20,7 +20,7 @@ import StockRestoreChoice from './StockRestoreChoice'
  * next Confirm is the failure mode to avoid — but the deduction is not
  * repeated automatically either way, so it is put to the user plainly.
  */
-export default function BackToReceivedModal({ open, job, plan, onClose, onConfirm, working }) {
+export default function BackToReceivedModal({ open, job, plan, onClose, onConfirm, working, targetLabel = 'Received' }) {
   const [restore, setRestore] = useState(false)
 
   useEffect(() => { if (open) setRestore(false) }, [open])
@@ -36,7 +36,7 @@ export default function BackToReceivedModal({ open, job, plan, onClose, onConfir
         <div className="modal-handle" />
         <div className="modal-header">
           <div>
-            <div className="modal-title">Back to Received?</div>
+            <div className="modal-title">Back to {targetLabel}?</div>
             <div style={{ fontSize: 12, color: 'var(--warm-300)', marginTop: 2 }}>
               {job.customer_name || 'Untitled job'}
               {job.job_number ? ` · #${job.job_number}` : ''}
@@ -54,7 +54,7 @@ export default function BackToReceivedModal({ open, job, plan, onClose, onConfir
             </div>
           ) : (
             <StockRestoreChoice plan={plan} restore={restore} onChange={setRestore}
-              keepBody="The parts are already cut or fitted. Nothing changes on the shelf — deducting again after the next Confirm would take them twice." />
+              keepBody="The parts are already cut or fitted. Nothing changes on the shelf — deducting again later would take them twice." />
           )}
 
           {wasLocked && (
@@ -63,8 +63,8 @@ export default function BackToReceivedModal({ open, job, plan, onClose, onConfir
               borderRadius: 'var(--radius-sm)', padding: '10px 12px',
               fontSize: 12, color: 'var(--warning)', lineHeight: 1.45,
             }}>
-              The locked pricing will be dropped, so the job costs at today’s prices again
-              and can be edited. It is locked again on the next Confirm.
+              The frozen prices will be dropped, so the job costs at today’s prices again
+              and its windows can be edited. They freeze again when the job is checked.
             </div>
           )}
         </div>
@@ -78,7 +78,7 @@ export default function BackToReceivedModal({ open, job, plan, onClose, onConfir
             {working
               ? 'Moving…'
               : (!nothingDeducted && restore) ? 'Return stock & move back'
-              : 'Move back to Received'}
+              : `Move back to ${targetLabel}`}
           </button>
         </div>
       </div>

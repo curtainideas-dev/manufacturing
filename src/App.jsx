@@ -46,6 +46,7 @@ import { exportPurchaseOrderPDF } from './lib/exportPOPdf'
 import { exportPurchaseOrderXLSX } from './lib/exportPO'
 import { exportProductPricingXLSX } from './lib/exportPricing'
 import { buildPath, parsePath, DEFAULT_TAB } from './lib/route'
+import { stageOf, isEditableStage, isFrozenStage } from './lib/jobStages'
 import './index.css'
 
 export default function App() {
@@ -844,15 +845,37 @@ export default function App() {
     showToast('Answer deleted')
   }
 
-  const handleNewJob = async () => {
+  /**
+   * A new job, from the New job form: customer, job no., tracks or blinds, and
+   * optionally the customer's PO. The invoice date is the day it arrives — it
+   * prints on the packing label as DOI — so nobody has to type it.
+   */
+  const handleNewJob = async ({ customer_name, job_number, product_type, file }) => {
+    let uploaded = null
+    if (file) {
+      setPoUploading(true)
+      uploaded = await uploadPOFile(file)
+      setPoUploading(false)
+      if (!uploaded) return false
+    }
     const { data, error } = await supabase
       .from('mfg_jobs')
-      .insert({ customer_name: '', job_number: '', status: 'received' })
+      .insert({
+        customer_name: customer_name.trim(),
+        job_number:    job_number.trim(),
+        product_type,
+        status:        'received',
+        source:        'manual',
+        date_invoice:  new Date().toISOString().slice(0, 10),
+        po_pdf_url:    uploaded?.url || null,
+        po_pdf_name:   uploaded?.name || null,
+      })
       .select().single()
-    if (error) { showToast('Failed to create job', 'error'); return }
+    if (error) { showToast(error.message || 'Failed to create job', 'error'); return false }
     const job = { ...data, windows: [] }
     setJobs(prev => [job, ...prev])
     setCurrentJob(job)
+    return true
   }
 
   // Upload a PO PDF to Supabase Storage → returns { url, name } or null
@@ -875,47 +898,31 @@ export default function App() {
     return { url: data.publicUrl, name: file.name }
   }
 
-  // Upload a PO and create a new "received" job from it
-  const handleCreateJobFromPO = async (file) => {
-    setPoUploading(true)
-    const uploaded = await uploadPOFile(file)
-    if (!uploaded) { setPoUploading(false); return }
-    const { data, error } = await supabase
-      .from('mfg_jobs')
-      .insert({
-        customer_name: '', job_number: '', status: 'received',
-        po_pdf_url: uploaded.url, po_pdf_name: uploaded.name,
-      })
-      .select().single()
-    if (error) {
-      showToast('Failed to create job', 'error')
-    } else {
-      const job = { ...data, windows: [] }
-      setJobs(prev => [job, ...prev])
-      setCurrentJob(job)
-      showToast('PO uploaded — job created ✓', 'success')
-    }
-    setPoUploading(false)
-  }
-
   // Attach / replace the PO PDF on the current job
   const handleAttachPO = async (file) => {
     setPoUploading(true)
     const uploaded = await uploadPOFile(file)
     if (!uploaded) { setPoUploading(false); return }
-    await handleJobUpdate({ po_pdf_url: uploaded.url, po_pdf_name: uploaded.name })
-    showToast('PO attached ✓', 'success')
+    if (await handleJobUpdate({ po_pdf_url: uploaded.url, po_pdf_name: uploaded.name })) {
+      showToast('PO attached ✓', 'success')
+    }
     setPoUploading(false)
   }
 
+  // Shows the change at once, then saves it. A change that didn't save is put
+  // back on screen and says so — otherwise it looks saved until the next
+  // reload quietly undoes it. Returns whether it saved.
   const handleJobUpdate = async (updates) => {
+    const before  = currentJob
     const updated = { ...currentJob, ...updates }
     setCurrentJob(updated)
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
     const { error } = await supabase.from('mfg_jobs').update(updates).eq('id', currentJob.id)
-    // The screen has already moved on, so a change that didn't save has to say
-    // so — otherwise it looks saved until the next reload quietly undoes it.
-    if (error) showToast(error.message || 'That change could not be saved', 'error')
+    if (!error) return true
+    showToast(error.message || 'That change could not be saved', 'error')
+    setCurrentJob(cj => cj?.id === before.id ? before : cj)
+    setJobs(prev => prev.map(j => j.id === before.id ? before : j))
+    return false
   }
 
   /**
@@ -977,27 +984,26 @@ export default function App() {
     setDeleteJobPlan({ job: currentJob, plan: await buildRestorePlan(currentJob.id) })
   }
 
-  /* ---- Moving backwards through the statuses ----------------------------
-   * Completed -> In Progress is just a status change; nothing was locked or
-   * consumed by completing it.
-   *
-   * In Progress -> Received is not: confirming took a pricing snapshot and
-   * may have deducted stock, and both have to be dealt with. Hence the modal.
+  /* ---- Unfreezing ---------------------------------------------------------
+   * Moving from a frozen stage (Ready to make on) back to an editable one
+   * drops the price snapshot and may have stock to put back, so it goes
+   * through a modal that asks. Every other step back is just the status.
    * -------------------------------------------------------------------- */
-  const handleJobBackToReceivedRequest = async () => {
-    setRevertPlan({ job: currentJob, plan: await buildRestorePlan(currentJob.id) })
+  const requestUnfreeze = async (to) => {
+    setRevertPlan({ job: currentJob, to, plan: await buildRestorePlan(currentJob.id) })
   }
 
   const handleJobBackToReceivedConfirm = async ({ restoreStock }) => {
     const job = revertPlan?.job
     const plan = revertPlan?.plan
+    const to = revertPlan?.to || 'received'
     if (!job) return
     setReverting(true)
     try {
       if (restoreStock && plan) {
         const failures = await returnJobStock(plan)
         if (failures.length) {
-          showToast(`Stock not fully returned — job left In Progress. ${failures[0]}`, 'error')
+          showToast(`Stock not fully returned — job left where it was. ${failures[0]}`, 'error')
           return
         }
         // The deduction is undone, so its record has to go too — otherwise
@@ -1010,8 +1016,8 @@ export default function App() {
 
       // Drop the pricing lock: Received is editable, and an editable job
       // quoting a snapshot taken before the edits is worse than no snapshot.
-      await handleJobUpdate({
-        status: 'received',
+      const saved = await handleJobUpdate({
+        status: to,
         price_snapshot: null,
         qty_snapshot: null,
         // The sell figures were frozen at the same moment and go with them —
@@ -1020,7 +1026,7 @@ export default function App() {
         locked_total: null,
       })
       setRevertPlan(null)
-      showToast('Back to Received — pricing unlocked')
+      if (saved) showToast(`Back to ${stageOf(to).label} — prices unfrozen`)
       await loadAll()
     } finally {
       setReverting(false)
@@ -1119,7 +1125,7 @@ export default function App() {
     if (loading || backfilledRef.current) return
     if (jobs.length === 0 || Object.keys(productComponentsMap).length === 0) return
     const stale = jobs.filter(j =>
-      (j.status === 'in_progress' || j.status === 'completed') &&
+      isFrozenStage(j.status) &&
       (!j.price_snapshot || !j.qty_snapshot)
     )
     backfilledRef.current = true
@@ -1145,57 +1151,53 @@ export default function App() {
     })()
   }, [loading, jobs, productComponentsMap, computeJobLock, showToast])
 
-  const handleJobConfirm = async () => {
-    if (!window.confirm('Confirm this job? The BOM, its cost and its sell prices will be locked.')) return
-    const updates = { status: 'in_progress', ...computeJobLock(currentJob) }
-    // Default the manufacture date to today if not already set
-    if (!currentJob.date_manufacture) {
-      updates.date_manufacture = new Date().toISOString().slice(0, 10)
-    }
-    await handleJobUpdate(updates)
-    showToast('Job confirmed — pricing locked ✓', 'success')
-  }
-
-  const finishJob = async () => {
-    await handleJobUpdate({ status: 'completed' })
-    showToast('Job completed ✓', 'success')
-  }
-
   /**
-   * Completing asks about stock that was never taken off the shelf.
+   * Move the open job one stage, forward or back. What each step does beyond
+   * changing the status:
    *
-   * Deducting is a separate, manual step and nothing tied the two together, so
-   * a job could be finished — priced, labelled, out the door — with every part
-   * still counted as in stock. Nothing complained, and the mistake only turned
-   * up later as a stocktake that would not reconcile, or a reorder that never
-   * fired because the shelf said there was plenty.
-   *
-   * It asks rather than blocks: parts fitted from the van, or booked out by
-   * hand, are not mistakes and must not be stuck behind a rule. And a job with
-   * nothing outstanding keeps the plain confirm it always had — a warning that
-   * shows up every time is one nobody reads.
+   *   → Ready to make    freezes prices and quantities (computeJobLock)
+   *   → In production    stamps the manufacture date (it prints on labels)
+   *   → Made             asks first if stock was never deducted
+   *   frozen → editable  unfreezes, via a modal that also offers to return stock
    */
-  const handleJobComplete = async () => {
-    const owed = undeductedLines({ jobSummary: currentJobSummary, movements: jobMovements })
-    if (owed.length > 0) { setCompletePlan(owed); return }
+  const setStage = async (to, extra = {}) => {
+    if (await handleJobUpdate({ status: to, ...extra })) showToast(`${stageOf(to).label} ✓`, 'success')
+  }
 
-    if (!window.confirm('Mark this job as completed and ready for pickup?')) return
-    await finishJob()
+  const handleJobMove = async (to) => {
+    const from = currentJob.status
+    if (isEditableStage(to) && isFrozenStage(from)) return requestUnfreeze(to)
+    if (to === 'ready' && isEditableStage(from)) {
+      return setStage('ready', computeJobLock(currentJob))
+    }
+    if (to === 'in_progress' && from === 'ready') {
+      return setStage('in_progress', currentJob.date_manufacture
+        ? {} : { date_manufacture: new Date().toISOString().slice(0, 10) })
+    }
+    if (to === 'made' && from === 'in_progress') {
+      const owed = undeductedLines({ jobSummary: currentJobSummary, movements: jobMovements })
+      if (owed.length > 0) { setCompletePlan(owed); return }
+    }
+    return setStage(to)
   }
 
   const handleCompleteAnyway = async () => {
     setCompleting(true)
-    await finishJob()
+    await setStage('made')
     setCompleting(false)
     setCompletePlan(null)
   }
 
-  // Completed -> In Progress. Nothing was locked or consumed by completing a
-  // job, so there is nothing to undo but the status itself.
-  const handleJobReopen = async () => {
-    if (!window.confirm('Move this job back to In Progress?')) return
-    await handleJobUpdate({ status: 'in_progress' })
-    showToast('Back to In Progress')
+  /**
+   * A new row in the window table: a copy of the last window, so a run of
+   * similar windows is a change of label and size rather than a fresh set of
+   * answers each time. The first window still goes through Add window, since
+   * there's nothing to copy.
+   */
+  const handleAddWindowRow = async () => {
+    const list = currentJob.windows || []
+    if (list.length === 0) { setAddWindowOpen(true); return }
+    await handleWindowDuplicate(list.length - 1, { label: `Window ${list.length + 1}` })
   }
 
   const handleAddWindow = async (winData) => {
@@ -1233,7 +1235,9 @@ export default function App() {
     windows[idx] = { ...windows[idx], ...updates }
     const updated = { ...currentJob, windows }
     setCurrentJob(updated)
-    setCurrentWindow({ win: windows[idx], idx })
+    // Refresh the window page if it's the one open; an edit from the job's
+    // window table must not navigate into the window.
+    setCurrentWindow(cw => cw ? { win: windows[idx], idx } : cw)
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
     const { error } = await supabase.from('mfg_windows').update(updates).eq('id', windows[idx].id)
     // Same rule as a job edit: a change that didn't save has to say so.
@@ -1243,8 +1247,9 @@ export default function App() {
   // Copies everything but identity — product, dimensions, options, fabric —
   // so a near-identical window (same track/blind, same config, different
   // room and maybe a tweaked size) doesn't mean re-answering every option
-  // from scratch. Lands at the end of the list, ready to open and adjust.
-  const handleWindowDuplicate = async (idx) => {
+  // from scratch. Lands at the end of the list; the window table edits it in
+  // place, so it doesn't open.
+  const handleWindowDuplicate = async (idx, { label } = {}) => {
     const source = currentJob.windows[idx]
     const sortOrder = (currentJob.windows || []).length
     const { data, error } = await supabase
@@ -1252,7 +1257,7 @@ export default function App() {
       .insert({
         job_id:        currentJob.id,
         product_id:    source.product_id,
-        label:         source.label ? `${source.label} (copy)` : '',
+        label:         label ?? (source.label ? `${source.label} (copy)` : ''),
         width_mm:      source.width_mm,
         drop_mm:       source.drop_mm,
         sort_order:    sortOrder,
@@ -1269,7 +1274,6 @@ export default function App() {
     const updated = { ...currentJob, windows: [...(currentJob.windows || []), newWin] }
     setCurrentJob(updated)
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j))
-    setCurrentWindow({ win: newWin, idx: updated.windows.length - 1 })
   }
 
   // Move one window to another position. sort_order is renumbered 0..n-1 over
@@ -2437,7 +2441,7 @@ export default function App() {
           onBack={() => setCurrentWindow(null)}
           onUpdate={(updates) => handleWindowUpdate(currentWindow.idx, updates)}
           onDelete={() => handleWindowDelete(currentWindow.idx)}
-          readOnly={currentJob.status !== 'received'}
+          readOnly={!isEditableStage(currentJob.status)}
         />
       )
     }
@@ -2445,7 +2449,7 @@ export default function App() {
     // Job detail
     if (navTab === 'bom' && currentJob) {
       return (
-        <JobDetail
+        <JobDetail key={currentJob.id}
           job={currentJob}
           products={products}
           productComponentsMap={productComponentsMap}
@@ -2459,14 +2463,12 @@ export default function App() {
           onBack={() => setCurrentJob(null)}
           onUpdate={handleJobUpdate}
           onDelete={handleJobDeleteRequest}
-          onAddWindow={() => setAddWindowOpen(true)}
+          onAddWindow={handleAddWindowRow}
           onOpenWindow={(win, idx) => setCurrentWindow({ win, idx })}
           onDuplicateWindow={handleWindowDuplicate}
+          onUpdateWindow={handleWindowUpdate}
           onReorderWindows={handleWindowsReorder}
-          onConfirm={handleJobConfirm}
-          onBackToReceived={handleJobBackToReceivedRequest}
-          onComplete={handleJobComplete}
-          onReopen={handleJobReopen}
+          onMove={handleJobMove}
           onAttachPO={handleAttachPO}
           poUploading={poUploading}
           onDeductStock={handleOpenDeductModal}
@@ -2478,7 +2480,7 @@ export default function App() {
     }
 
     if (navTab === 'bom') {
-      return <JobList jobs={jobs} products={products} onOpen={setCurrentJob} onNew={handleNewJob} onUploadPO={handleCreateJobFromPO} poUploading={poUploading} />
+      return <JobList jobs={jobs} products={products} onOpen={setCurrentJob} onCreate={handleNewJob} creating={poUploading} />
     }
 
     // Product detail
@@ -2723,6 +2725,7 @@ export default function App() {
         open={!!revertPlan}
         job={revertPlan?.job}
         plan={revertPlan?.plan}
+        targetLabel={stageOf(revertPlan?.to || 'received').label}
         working={reverting}
         onClose={() => setRevertPlan(null)}
         onConfirm={handleJobBackToReceivedConfirm}
