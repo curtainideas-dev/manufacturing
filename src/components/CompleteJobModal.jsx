@@ -30,7 +30,7 @@ export default function CompleteJobModal({ open, job, lines = [], working, onClo
         <div className="modal-handle" />
         <div className="modal-header">
           <div>
-            <div className="modal-title">Complete without deducting?</div>
+            <div className="modal-title">Mark made without deducting?</div>
             <div style={{ fontSize: 12, color: 'var(--warm-300)', marginTop: 2 }}>
               {job.customer_name || 'Untitled job'}
               {job.job_number ? ` · #${job.job_number}` : ''}
@@ -48,7 +48,7 @@ export default function CompleteJobModal({ open, job, lines = [], working, onClo
             fontSize: 12.5, color: 'var(--warning)', lineHeight: 1.45, marginBottom: 14,
           }}>
             {n} part{n !== 1 ? 's' : ''} on this job {n !== 1 ? 'have' : 'has'} not been
-            taken off the shelf. Completing now leaves stock counting {n !== 1 ? 'them' : 'it'} as
+            taken off the shelf. Marking it made now leaves stock counting {n !== 1 ? 'them' : 'it'} as
             still there.
           </div>
 
@@ -83,7 +83,7 @@ export default function CompleteJobModal({ open, job, lines = [], working, onClo
 
           <div style={{ fontSize: 12, color: 'var(--warm-300)', lineHeight: 1.5 }}>
             If these were never going to come out of stock — fitted from the van, or
-            already booked out by hand — complete the job and nothing changes on the shelf.
+            already booked out by hand — mark it made and nothing changes on the shelf.
           </div>
         </div>
 
@@ -96,7 +96,7 @@ export default function CompleteJobModal({ open, job, lines = [], working, onClo
           </button>
           <button className="btn btn-secondary btn-block" style={{ marginTop: 8 }}
             onClick={onComplete} disabled={working}>
-            <CheckIcon size={15} /> {working ? 'Completing…' : 'Complete Anyway'}
+            <CheckIcon size={15} /> {working ? 'Saving…' : 'Mark made anyway'}
           </button>
         </div>
       </div>

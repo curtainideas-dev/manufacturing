@@ -36,8 +36,9 @@ export function formatDate(iso) {
  * Render a notification email.
  *
  * sections: [{ heading?, cards: [{ title, subtitle?, tag?, rows?: [[label, value]] }] }]
+ * path:     where the button goes, under APP_URL (e.g. /manufacturing/jobs/<id>)
  */
-export function renderEmail({ title, intro, sections = [], footnote }) {
+export function renderEmail({ title, intro, sections = [], footnote, path = '', button = 'Open the app' }) {
   const cardHtml = (card) => `
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${BORDER};border-radius:10px;margin:0 0 12px 0;">
       <tr><td style="padding:14px 16px;">
@@ -73,7 +74,7 @@ export function renderEmail({ title, intro, sections = [], footnote }) {
           ${intro ? `<div style="font:400 14px/1.5 Arial,sans-serif;color:#374151;margin:6px 0 16px;">${esc(intro)}</div>` : '<div style="height:12px;"></div>'}
           ${sectionHtml}
           ${APP_URL ? `<div style="margin-top:18px;">
-            <a href="${esc(APP_URL)}" style="display:inline-block;background:${ACCENT};color:#fff;text-decoration:none;font:600 14px Arial,sans-serif;padding:10px 18px;border-radius:8px;">Open the app</a>
+            <a href="${esc(APP_URL.replace(/\/+$/, '') + path)}" style="display:inline-block;background:${ACCENT};color:#fff;text-decoration:none;font:600 14px Arial,sans-serif;padding:10px 18px;border-radius:8px;">${esc(button)}</a>
           </div>` : ''}
           ${footnote ? `<div style="font:400 12px/1.5 Arial,sans-serif;color:${MUTED};margin-top:18px;border-top:1px solid ${BORDER};padding-top:12px;">${esc(footnote)}</div>` : ''}
         </td></tr>

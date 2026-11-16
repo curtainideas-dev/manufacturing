@@ -1,225 +1,128 @@
-import { useRef, useState, useMemo } from 'react'
+import { useState } from 'react'
 import { PlusIcon, ChevronRightIcon } from '../components/Icons'
+import NewJobModal from '../components/NewJobModal'
+import { STAGES, stageOf } from '../lib/jobStages'
 
 const formatDate = d => d ? new Date(d).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }) : ''
 
-// Visual config per job status
-const STATUS_META = {
-  received:    { label: 'Received',    emoji: '📥', avatarBg: 'var(--warm-100)',   pill: 'pill-orange' },
-  in_progress: { label: 'In Progress', emoji: '🔧', avatarBg: 'var(--accent-bg)',  pill: 'pill-green'  },
-  completed:   { label: 'Completed',   emoji: '✅', avatarBg: 'var(--success-bg)', pill: 'pill-green'  },
-}
-
-// What kind of work is in a job. Deliberately quieter than the status pill on
-// the right — status is what you act on, this is what you're looking at.
+// What kind of work is in a job. Deliberately quieter than the stage pill on
+// the right — the stage is what you act on, this is what you're looking at.
 const TYPE_META = {
   track: { label: 'Tracks', bg: 'var(--accent-bg)',  fg: 'var(--accent-dark)' },
   blind: { label: 'Blinds', bg: 'var(--blue-bg)',    fg: 'var(--blue)' },
-  sheer: { label: 'Sheers', bg: 'var(--warning-bg)', fg: 'var(--warning)' },
-}
-const TYPE_ORDER = ['track', 'blind', 'sheer']
-
-/**
- * The product types a job actually contains, in a fixed order so the same mix
- * always reads the same way down the list.
- *
- * Counts only ride along on a mixed job — on a single-type job the window
- * count in the line above already says it, and repeating it is noise.
- */
-export function productTypesIn(job, products) {
-  const counts = {}
-  ;(job.mfg_windows || []).forEach(w => {
-    const p = products.find(x => x.id === w.product_id)
-    const t = p?.product_type || p?.category
-    if (t) counts[t] = (counts[t] || 0) + 1
-  })
-  // Anything unrecognised still shows rather than silently vanishing.
-  const extra = Object.keys(counts).filter(t => !TYPE_ORDER.includes(t)).sort()
-  const types = [...TYPE_ORDER.filter(t => counts[t]), ...extra]
-  return types.map(t => ({
-    type:  t,
-    count: counts[t],
-    meta:  TYPE_META[t] || { label: t, bg: 'var(--warm-100)', fg: 'var(--warm-300)' },
-    showCount: types.length > 1,
-  }))
 }
 
-const PERIODS = [
-  { id: 'month', label: 'This month' },
-  { id: 'year',  label: 'This year' },
-  { id: 'all',   label: 'All time' },
-]
+/** A job's type: what it was created as, else what its windows are. */
+function jobType(job, products) {
+  if (job.product_type) return job.product_type
+  const first = (job.mfg_windows || job.windows || [])
+    .map(w => products.find(p => p.id === w.product_id)?.product_type)
+    .find(Boolean)
+  return first || null
+}
 
-const fmtMoney = n => Number(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+// Picked up jobs pile up; the list shows the latest few until asked for more.
+const PICKED_UP_SHOWN = 5
 
-// Completed jobs are dated by manufacture date where set, else when created
-const jobDate = (j) => new Date(j.date_manufacture || j.created_at)
-
-export default function JobList({ jobs, products = [], onOpen, onNew, onUploadPO, poUploading }) {
-  const fileRef    = useRef(null)
-  const [period, setPeriod] = useState('month')
-  const received   = jobs.filter(j => j.status === 'received')
-  const inProgress = jobs.filter(j => j.status === 'in_progress')
-  const completed  = jobs.filter(j => j.status === 'completed')
-
-  const completedValue = useMemo(() => {
-    const now = new Date()
-    const inPeriod = (j) => {
-      if (period === 'all') return true
-      const d = jobDate(j)
-      if (isNaN(d)) return false
-      if (d.getFullYear() !== now.getFullYear()) return false
-      return period === 'year' || d.getMonth() === now.getMonth()
-    }
-    const rows = completed.filter(inPeriod)
-    return { count: rows.length, total: rows.reduce((s, j) => s + (Number(j.locked_total) || 0), 0) }
-  }, [completed, period])
-
-  const handleFile = (e) => {
-    const file = e.target.files?.[0]
-    e.target.value = '' // allow re-selecting the same file later
-    if (file) onUploadPO(file)
-  }
-
-  const Section = ({ title, list }) => {
-    if (list.length === 0) return null
-    return (
-      <>
-        <div className="section-title" style={{ padding: '8px 16px' }}>{title}</div>
-        <div style={{ padding: '0 16px', marginBottom: 16 }}>
-          <div className="card">
-            {list.map(job => {
-              const meta  = STATUS_META[job.status] || STATUS_META.received
-              const types = productTypesIn(job, products)
-              return (
-                <div key={job.id} className="component-item" onClick={() => onOpen(job)}>
-                  <div className="component-avatar" style={{ background: meta.avatarBg }}>
-                    {meta.emoji}
-                  </div>
-                  <div className="component-info">
-                    <div className="component-name">{job.customer_name || 'Untitled Job'}</div>
-                    <div className="component-sub">
-                      {job.job_number ? `#${job.job_number} · ` : ''}{formatDate(job.created_at)}
-                      {' · '}{(job.mfg_windows || []).length} window{(job.mfg_windows||[]).length !== 1 ? 's' : ''}
-                    </div>
-                    {types.length > 0 && (
-                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 5 }}>
-                        {types.map(t => (
-                          <span key={t.type} style={{
-                            fontSize: 10, fontWeight: 700, padding: '1px 6px',
-                            borderRadius: 4, background: t.meta.bg, color: t.meta.fg,
-                          }}>
-                            {t.meta.label}{t.showCount ? ` ${t.count}` : ''}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <span className={`pill ${meta.pill}`}>{meta.label}</span>
-                  <ChevronRightIcon size={16} color="var(--warm-200)" style={{ flexShrink: 0 }} />
-                </div>
-              )
-            })}
-          </div>
+function JobRow({ job, products, onOpen }) {
+  const stage = stageOf(job.status)
+  const type  = TYPE_META[jobType(job, products)]
+  const count = (job.mfg_windows || job.windows || []).length
+  return (
+    <div className="component-item" onClick={() => onOpen(job)}>
+      <div className="component-avatar">{stage.emoji}</div>
+      <div className="component-info">
+        <div className="component-name">{job.customer_name || 'Untitled job'}</div>
+        <div className="component-sub">
+          {job.job_number ? `#${job.job_number} · ` : ''}{formatDate(job.created_at)}
+          {' · '}{count} window{count !== 1 ? 's' : ''}
         </div>
-      </>
-    )
-  }
+      </div>
+      {type && (
+        <span style={{
+          fontSize: 10.5, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+          background: type.bg, color: type.fg, flexShrink: 0,
+        }}>{type.label}</span>
+      )}
+      <ChevronRightIcon size={16} color="var(--warm-200)" style={{ flexShrink: 0 }} />
+    </div>
+  )
+}
+
+export default function JobList({ jobs, products = [], onOpen, onCreate, creating }) {
+  const [newOpen, setNewOpen]       = useState(false)
+  const [showAllDone, setShowAllDone] = useState(false)
+
+  const byStage = Object.fromEntries(STAGES.map(s => [s.id, jobs.filter(j => j.status === s.id)]))
+  // Anything with a status the app doesn't know yet still shows, under Received.
+  const known = new Set(STAGES.map(s => s.id))
+  byStage.received = [...byStage.received, ...jobs.filter(j => !known.has(j.status))]
+
+  const jump = (id) => document.getElementById(`stage-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 
   return (
     <>
       <div className="header">
         <div className="header-title">Jobs</div>
         <div className="header-actions">
-          <input
-            ref={fileRef}
-            type="file"
-            accept="application/pdf"
-            style={{ display: 'none' }}
-            onChange={handleFile}
-          />
-          <button
-            onClick={() => fileRef.current?.click()}
-            disabled={poUploading}
-            style={{
-              padding: '6px 12px', fontSize: 13, fontWeight: 600,
-              background: 'rgba(255,255,255,0.15)', color: '#fff',
-              border: '1px solid rgba(255,255,255,0.3)',
-              borderRadius: 8, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: 6,
-              opacity: poUploading ? 0.6 : 1,
-            }}
-          >
-            📥 {poUploading ? 'Uploading…' : 'Upload PO'}
+          <button className="btn btn-primary btn-sm" onClick={() => setNewOpen(true)}>
+            <PlusIcon size={15} /> New job
           </button>
         </div>
       </div>
+
       <div className="scroll-area">
-        <div className="summary-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
-          <div className="summary-card">
-            <div className="summary-val">{received.length}</div>
-            <div className="summary-lbl">Received</div>
-          </div>
-          <div className="summary-card">
-            <div className="summary-val">{inProgress.length}</div>
-            <div className="summary-lbl">In Progress</div>
-          </div>
-          <div className="summary-card">
-            <div className="summary-val">{completed.length}</div>
-            <div className="summary-lbl">Completed</div>
-          </div>
+        {/* Every stage at a glance; tap one to jump to it. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: 8, padding: 16 }}>
+          {STAGES.map(s => (
+            <button key={s.id} className="summary-card" onClick={() => jump(s.id)}
+              style={{ cursor: 'pointer', padding: '10px 4px' }}>
+              <div className="summary-val">{byStage[s.id].length}</div>
+              <div className="summary-lbl">{s.label}</div>
+            </button>
+          ))}
         </div>
 
-        {/* Value of completed jobs */}
-        <div style={{ padding: '0 16px 16px' }}>
-          <div style={{
-            background: 'var(--accent-dark)', color: '#fff',
-            borderRadius: 'var(--radius)', padding: '14px 18px',
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7, marginBottom: 4 }}>
-                  Completed Jobs Value
+        {STAGES.map(s => {
+          let list = byStage[s.id]
+          if (list.length === 0) return null
+          const isDone = s.id === 'completed'
+          const hidden = isDone && !showAllDone ? Math.max(0, list.length - PICKED_UP_SHOWN) : 0
+          if (hidden) list = list.slice(0, PICKED_UP_SHOWN)
+          return (
+            <div key={s.id} id={`stage-${s.id}`} style={{ scrollMarginTop: 70 }}>
+              <div className="section-title" style={{ padding: '8px 16px' }}>
+                {s.emoji} {s.label} · {byStage[s.id].length}
+              </div>
+              <div style={{ padding: '0 16px', marginBottom: 16 }}>
+                <div className="card">
+                  {list.map(job => <JobRow key={job.id} job={job} products={products} onOpen={onOpen} />)}
                 </div>
-                <div style={{ fontSize: 26, fontWeight: 700 }}>${fmtMoney(completedValue.total)}</div>
-              </div>
-              <div style={{ textAlign: 'right', opacity: 0.75, fontSize: 12 }}>
-                {completedValue.count} job{completedValue.count !== 1 ? 's' : ''}
+                {hidden > 0 && (
+                  <button className="btn btn-secondary btn-block btn-sm" style={{ marginTop: 8 }}
+                    onClick={() => setShowAllDone(true)}>
+                    Show {hidden} more
+                  </button>
+                )}
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
-              {PERIODS.map(p => (
-                <button key={p.id} onClick={() => setPeriod(p.id)} style={{
-                  flex: 1, padding: '6px 0', fontSize: 12, fontWeight: 600,
-                  borderRadius: 6, cursor: 'pointer',
-                  border: '1px solid rgba(255,255,255,0.25)',
-                  background: period === p.id ? 'rgba(255,255,255,0.22)' : 'transparent',
-                  color: '#fff', opacity: period === p.id ? 1 : 0.7,
-                }}>
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <Section title="Received"    list={received} />
-        <Section title="In Progress" list={inProgress} />
-        <Section title="Completed"   list={completed} />
+          )
+        })}
 
         {jobs.length === 0 && (
           <div style={{ padding: '0 16px' }}>
             <div className="card">
               <div className="empty-state">
                 <div className="empty-icon">📋</div>
-                <div className="empty-title">No jobs yet</div>
-                <div className="empty-desc">Tap + to create a new job and generate a BOM</div>
+                <div className="empty-title">Start your first job</div>
+                <div className="empty-desc">Jobs from Submit a PO land here too.</div>
               </div>
             </div>
           </div>
         )}
       </div>
-      <button className="fab" onClick={onNew}><PlusIcon size={26} /></button>
+
+      <NewJobModal open={newOpen} onClose={() => setNewOpen(false)} onCreate={onCreate} creating={creating} />
     </>
   )
 }

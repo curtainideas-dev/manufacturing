@@ -22,15 +22,13 @@ export default async function handler(req, res) {
     return res.status(200).json({ skipped: `source=${job.source || 'null'}` })
   }
 
+  const TYPES = { track: 'Tracks', blind: 'Blinds' }
   const rows = [
-    ['PO reference', job.po_reference || '—'],
-    ['Delivery required', formatDate(job.delivery_requirement)],
+    ['Type', TYPES[job.product_type] || '—'],
+    ['Submitted', formatDate(job.date_invoice || job.created_at)],
   ]
-  if (job.customer_address) rows.push(['Address', job.customer_address])
-  if (job.submitted_by)     rows.push(['Submitted by', job.submitted_by])
-  // The portal stores the contact email in notes as "Contact: someone@..."
-  if (job.notes)            rows.push(['Contact', String(job.notes).replace(/^Contact:\s*/i, '')])
-  if (job.po_pdf_name)      rows.push(['PO attached', job.po_pdf_name])
+  if (job.submitted_by) rows.push(['Submitted by', job.submitted_by])
+  if (job.po_pdf_name)  rows.push(['PO attached', job.po_pdf_name])
 
   const html = renderEmail({
     title: 'New order received',
@@ -42,6 +40,8 @@ export default async function handler(req, res) {
       rows,
     }] }],
     footnote: 'Sent automatically when an order arrives through the customer portal.',
+    path:     job.id ? `/manufacturing/jobs/${job.id}` : '',
+    button:   'Open the job',
   })
 
   const result = await sendMail({
