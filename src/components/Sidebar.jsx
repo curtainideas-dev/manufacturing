@@ -11,6 +11,7 @@ const GROUPS = [
     { tab: 'bom',    label: 'Jobs',   emoji: '📋' },
     { tab: 'orders', label: 'Orders', emoji: '🧾' },
     { tab: 'stock',  label: 'Stock',  emoji: '🏪' },
+    { tab: 'reorder', label: 'To order', emoji: '🛒' },
   ] },
   { title: 'Library', items: [
     { tab: 'components', label: 'Components', emoji: '📦' },
@@ -32,7 +33,7 @@ const LINKS = [
   { href: '/',            label: 'Home',         emoji: '🏠' },
 ]
 
-export default function Sidebar({ tab, section, onGo }) {
+export default function Sidebar({ tab, section, onGo, badges = {} }) {
   return (
     <nav className="sidebar" aria-label="Main">
       <a href="/" className="sidebar-brand">
@@ -51,6 +52,7 @@ export default function Sidebar({ tab, section, onGo }) {
                 aria-current={active ? 'page' : undefined}
                 onClick={() => onGo(it.tab, it.section || null)}>
                 <span className="sidebar-emoji">{it.emoji}</span>{it.label}
+                {badges[it.tab] > 0 && <span className="sidebar-badge">{badges[it.tab]}</span>}
               </button>
             )
           })}

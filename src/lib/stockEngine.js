@@ -512,42 +512,57 @@ export function stockPositions(entries = [], stockMap = {}, stockBars = []) {
 }
 
 /* ==========================================================================
- * What the job still owes the shelf
+ * What needs ordering
  *
- * Deducting is a separate, manual step from completing a job, and the two had
- * nothing to say to each other: a job could be marked complete — pricing done,
- * labels printed, out the door — with every part still sitting on the shelf as
- * far as the system was concerned. Nothing complains, and the error only
- * surfaces later as a stocktake that will not reconcile, or as a reorder that
- * never fires because the shelf says there is plenty.
+ * The one rule for "low", used by the To order screen and the stock page's
+ * dots, so the two can't disagree: a part is low when it has a minimum set
+ * and what's on hand is at or below it.
  *
- * So completing asks first. This works out what to ask about.
+ * Orders already placed count towards it. Whatever is still to arrive on a
+ * draft or sent order is converted into stock units and added to what's on
+ * hand before working out how much more to order — so a part that's already
+ * on its way is shown as covered, not suggested twice.
+ *
+ * Fabric is left out: it's bought per job (Order fabric on the job), not
+ * kept to a minimum.
  * ========================================================================== */
+export function isLow(stock) {
+  const min = Number(stock?.qty_minimum) || 0
+  return min > 0 && (Number(stock?.qty_on_hand) || 0) <= min
+}
 
-/**
- * The job's lines with no deduction against them.
- *
- * A line counts as deducted when a movement exists for its component+colour,
- * which is the same test the deduct modal uses to grey a line out. Deliberately
- * NOT a quantity comparison: the modal lets a picker adjust what actually came
- * off the shelf, so a deduction that differs from the BOM is the normal case,
- * not an error, and flagging it would train people to click past this.
- *
- * Two kinds of line are never owed:
- *
- *   labour   has no shelf and no stock row, so it can never be deducted. It is
- *            in the BOM to be costed, and every job carries it — leaving it in
- *            would make this prompt fire every single time, which is the fast
- *            way to have it clicked through unread.
- *   zero qty nothing to take.
- */
-export function undeductedLines({ jobSummary = [], movements = [] } = {}) {
-  const deducted = new Set(
-    movements.map(m => stockKey(m.component_id, m.colour_variant))
-  )
-  return jobSummary.filter(row =>
-    row.component
-    && row.component.order_type !== 'labour'
-    && Number(row.total_qty) > 0
-    && !deducted.has(stockKey(row.component.id, row.colour_variant)))
+export function reorderList({ stockRows = [], components = [], purchaseOrders = [], poLinesMap = {} } = {}) {
+  const byId = new Map(components.map(c => [c.id, c]))
+  const openPOs = purchaseOrders.filter(po => po.status === 'draft' || po.status === 'sent')
+  const onOrder = {}
+  openPOs.forEach(po => (poLinesMap[po.id] || []).forEach(l => {
+    const key = stockKey(l.component_id, l.colour_variant)
+    const outstanding = Math.max(0, (Number(l.qty_ordered) || 0) - (Number(l.qty_received) || 0))
+    ;(onOrder[key] ||= []).push({ po, qty: outstanding })
+  }))
+
+  return stockRows
+    .filter(isLow)
+    .map(row => {
+      const component = byId.get(row.component_id)
+      if (!component || ['fabric', 'labour'].includes(component.order_type)) return null
+      const isBar   = component.order_type === 'bar'
+      const perUnit = isBar ? 1 : (Number(component.pack_qty) || 1)   // stock units per order unit
+      const orders  = onOrder[stockKey(row.component_id, row.colour_variant)] || []
+      const onOrderUnits = orders.reduce((s, o) => s + o.qty, 0)
+      const onHand  = Number(row.qty_on_hand) || 0
+      const minimum = Number(row.qty_minimum) || 0
+      // Enough to take it back above its minimum, counting what's coming.
+      const gap = minimum - onHand - onOrderUnits * perUnit
+      return {
+        key: stockKey(row.component_id, row.colour_variant),
+        component, colour_variant: row.colour_variant || null,
+        supplier_id: component.supplier_id || null,
+        onHand, minimum, onOrderUnits, orders,
+        orderUnit: isBar ? 'bar' : (perUnit > 1 ? `pack of ${perUnit}` : component.unit || 'each'),
+        suggested: gap >= 0 ? Math.floor(gap / perUnit) + 1 : 0,
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.component.name.localeCompare(b.component.name))
 }
