@@ -124,7 +124,7 @@ const FabricRollChoice = ({ rolls = [], choice = {}, onChange, frozen = false })
 export default function JobDetail({
   job, products, productComponentsMap, optionDefsFor,
   allComponents = [], suppliers = [], stockMap = {}, stockBars = [], kinds = [],
-  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onUpdateWindow, onReorderWindows, onMove, onAttachPO, poUploading, onDeductStock, onRecordOffcuts, pendingOffcutCount = 0, onOrderFabric,
+  onBack, onUpdate, onDelete, onAddWindow, onOpenWindow, onDuplicateWindow, onUpdateWindow, onReorderWindows, onMove, onAttachPO, poUploading, onRecordOffcuts, pendingOffcutCount = 0, onOrderFabric,
 }) {
   const [tab, setTab]         = useState('windows')
   const [exporting, setExporting] = useState(null) // 'workshop' | 'bom' | null
@@ -518,18 +518,6 @@ export default function JobDetail({
             </button>
           )}
 
-          {/* Being made → deduct stock */}
-          {isInProgress && hasWindows && (
-            <button onClick={onDeductStock} style={{
-              padding: '6px 12px', fontSize: 13, fontWeight: 600,
-              background: 'rgba(255,255,255,0.15)', color: '#fff',
-              border: '1px solid rgba(255,255,255,0.3)',
-              borderRadius: 8, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: 6,
-            }}>
-              📦 Deduct Stock
-            </button>
-          )}
           {/* Cutting is done in bulk, so the leftovers come back after the
               deduction, not with it. Stays up until someone answers it —
               an offcut never entered is a bar the next plan can't use. */}

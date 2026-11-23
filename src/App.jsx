@@ -24,7 +24,8 @@ import ComponentModal        from './components/ComponentModal'
 import StockEditModal        from './components/StockEditModal'
 import BarModal              from './components/BarModal'
 import ReceiveBarsModal      from './components/ReceiveBarsModal'
-import DeductStockModal      from './components/DeductStockModal'
+import MadeConfirmModal      from './components/MadeConfirmModal'
+import ToOrder               from './pages/ToOrder'
 import RecordOffcutsModal    from './components/RecordOffcutsModal'
 import StocktakeModal        from './components/StocktakeModal'
 import AddToPOModal          from './components/AddToPOModal'
@@ -32,18 +33,17 @@ import ReceivePOModal        from './components/ReceivePOModal'
 import CompanyDetailsAdmin   from './pages/CompanyDetailsAdmin'
 import SupplierModal         from './components/SupplierModal'
 import AddressModal          from './components/AddressModal'
-import CompleteJobModal      from './components/CompleteJobModal'
 import AddWindowModal        from './components/AddWindowModal'
 import PurchaseOrderModal    from './components/PurchaseOrderModal'
 import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
-import { buildStockMap, stockKey, getStock, planStockRestore, undeductedLines } from './lib/stockEngine'
+import { buildStockMap, stockKey, getStock, planStockRestore, reorderList } from './lib/stockEngine'
 import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines, resolveAnswers } from './lib/bomEngine'
 import { windowSell } from './lib/sellEngine'
 import { orderUnitInfo, openPOFor, poLineKey, poDisplayNumber, outstandingQty, isFullyReceived, receivedToStockQty, poFulfilment, poAddress } from './lib/poEngine'
 import { exportPurchaseOrderPDF } from './lib/exportPOPdf'
-import { exportPurchaseOrderXLSX } from './lib/exportPO'
+import { planJobDeduction } from './lib/autoDeduct'
 import { exportProductPricingXLSX } from './lib/exportPricing'
 import { buildPath, parsePath, DEFAULT_TAB } from './lib/route'
 import { stageOf, isEditableStage, isFrozenStage } from './lib/jobStages'
@@ -128,12 +128,12 @@ export default function App() {
   const [receiveBarsColour, setReceiveBarsColour] = useState(null)
   const [receiveBarsStock, setReceiveBarsStock]   = useState(null)
 
-  const [deductOpen, setDeductOpen]               = useState(false)
   const [deductSaving, setDeductSaving]           = useState(false)
   const [recordOffcutsOpen, setRecordOffcutsOpen] = useState(false)
   const [jobMovements, setJobMovements]           = useState([])
   // The lines a job is about to be completed without deducting, or null when
   // there is nothing to ask about.
+  // What Mark made is about to take off the shelf (planJobDeduction), or null.
   const [completePlan, setCompletePlan]           = useState(null)
   const [completing, setCompleting]               = useState(false)
 
@@ -216,6 +216,11 @@ export default function App() {
     })
     return out
   }, [currentJob, buildJobWindows])
+
+  // Everything at or below its minimum — the To order screen and its count.
+  const toOrder = useMemo(
+    () => reorderList({ stockRows, components, purchaseOrders, poLinesMap }),
+    [stockRows, components, purchaseOrders, poLinesMap])
 
   // Superseded products stay in `products` so historical jobs can still name
   // the product they were built against — but they must never be pickable.
@@ -1157,7 +1162,7 @@ export default function App() {
    *
    *   → Ready to make    freezes prices and quantities (computeJobLock)
    *   → In production    stamps the manufacture date (it prints on labels)
-   *   → Made             asks first if stock was never deducted
+   *   → Made             shows what comes off the shelf, then deducts it all
    *   frozen → editable  unfreezes, via a modal that also offers to return stock
    */
   const setStage = async (to, extra = {}) => {
@@ -1175,10 +1180,20 @@ export default function App() {
         ? {} : { date_manufacture: new Date().toISOString().slice(0, 10) })
     }
     if (to === 'made' && from === 'in_progress') {
-      const owed = undeductedLines({ jobSummary: currentJobSummary, movements: jobMovements })
-      if (owed.length > 0) { setCompletePlan(owed); return }
+      const lines = planJobDeduction({ jobSummary: currentJobSummary, movements: jobMovements, stockMap, stockBars })
+      if (lines.length > 0) { setCompletePlan(lines); return }
     }
     return setStage(to)
+  }
+
+  // Mark made: take everything off the shelf, then move the job on.
+  const handleDeductAndMade = async () => {
+    setCompleting(true)
+    if (await handleDeductStock(completePlan || [])) {
+      await setStage('made')
+      setCompletePlan(null)
+    }
+    setCompleting(false)
   }
 
   const handleCompleteAnyway = async () => {
@@ -1324,6 +1339,14 @@ export default function App() {
   const handleSaveStock = async ({ qty_on_hand, qty_minimum }) => {
     setStockSaving(true)
     const key = stockKey(stockEditComp.id, stockEditColour)
+    const before = Number(stockEditRow?.qty_on_hand) || 0
+    if (Number(qty_on_hand) !== before) {
+      await logStockChange({
+        component_id: stockEditComp.id, colour_variant: stockEditColour || null,
+        qty: Number(qty_on_hand) - before, qty_on_hand_delta: Number(qty_on_hand) - before,
+        notes: `Set by hand: ${qty_on_hand} (was ${before})`,
+      })
+    }
     if (stockEditRow?.id) {
       await supabase.from('stock').update({ qty_on_hand, qty_minimum }).eq('id', stockEditRow.id)
     } else {
@@ -1442,46 +1465,53 @@ export default function App() {
     setAddToPOOpen(true)
   }
 
-  const handleSaveAddToPO = async ({ qty }) => {
-    setPoCreating(true)
-    const component = addToPOComp
-    const supplierId = component.supplier_id
+  /**
+   * Put parts on a supplier's open draft order, starting one only when there
+   * is none — so there's never more than one draft per supplier. A part
+   * that's already on the draft has its quantity topped up rather than
+   * appearing twice. items: [{ component, colour_variant, qty }] in order
+   * units (packs or bars). Returns whether it all saved.
+   */
+  const addToSupplierDraft = async (supplierId, items) => {
+    const supplier = suppliers.find(sp => sp.id === supplierId)
     let po = openPOFor(purchaseOrders, supplierId)
     let created = false
-
     if (!po) {
       const { data, error } = await supabase
         .from('purchase_orders')
         .insert({ supplier_id: supplierId, status: 'draft', notes: null })
         .select('*, supplier:suppliers(*)').single()
-      if (error || !data) {
-        showToast(error?.message || 'Could not start an order', 'error')
-        setPoCreating(false)
-        return
-      }
+      if (error || !data) { showToast(error?.message || 'Could not start an order', 'error'); return false }
       po = data
       created = true
     }
-
-    const info = orderUnitInfo(component, suppliers.find(sp => sp.id === supplierId))
-    const { error } = await supabase.from('purchase_order_lines').insert({
-      po_id:          po.id,
-      component_id:   component.id,
-      colour_variant: addToPOColour || null,
-      qty_ordered:    Number(qty) || 0,
-      unit_cost:      info.price,
-    })
-
-    if (error) {
-      showToast(error.message || 'Could not add to the order', 'error')
-    } else {
-      const unit = component.order_type === 'bar' ? 'bar' : 'pack'
-      showToast(
-        `${qty} ${unit}${qty !== 1 ? 's' : ''} → ${poDisplayNumber(po)}${created ? ' (new draft)' : ''} ✓`,
-        'success')
-      setAddToPOOpen(false)
-      await loadAll()
+    const existing = poLinesMap[po.id] || []
+    let failed = null
+    for (const it of items) {
+      const qty = Number(it.qty) || 0
+      if (qty <= 0) continue
+      const line = existing.find(l => poLineKey(l.component_id, l.colour_variant, l.roll_width_mm)
+        === poLineKey(it.component.id, it.colour_variant, null))
+      const { error } = line
+        ? await supabase.from('purchase_order_lines')
+            .update({ qty_ordered: (Number(line.qty_ordered) || 0) + qty }).eq('id', line.id)
+        : await supabase.from('purchase_order_lines').insert({
+            po_id: po.id, component_id: it.component.id, colour_variant: it.colour_variant || null,
+            qty_ordered: qty, unit_cost: orderUnitInfo(it.component, supplier).price,
+          })
+      if (error) { failed = error; break }
     }
+    if (failed) showToast(failed.message || 'Could not add to the order', 'error')
+    else showToast(`${items.length} line${items.length !== 1 ? 's' : ''} → ${poDisplayNumber(po)}${created ? ' (new draft)' : ''} ✓`, 'success')
+    await loadAll()
+    return !failed
+  }
+
+  const handleSaveAddToPO = async ({ qty }) => {
+    setPoCreating(true)
+    const ok = await addToSupplierDraft(addToPOComp.supplier_id,
+      [{ component: addToPOComp, colour_variant: addToPOColour || null, qty }])
+    if (ok) setAddToPOOpen(false)
     setPoCreating(false)
   }
 
@@ -1618,6 +1648,11 @@ export default function App() {
         status:         'available',
         ...widthCol,
       })
+      await logStockChange({
+        component_id: barModalComp.id, colour_variant: barModalColour || null,
+        qty: (Number(formData.length_mm) || 0) / 1000, qty_on_hand_delta: 0,
+        notes: `${noun} added: ${formData.label || ''} ${formData.length_mm}mm`.replace(/\s+/g, ' '),
+      })
       showToast(`${noun} added to stock ✓`, 'success')
     }
     setBarModalOpen(false)
@@ -1627,7 +1662,15 @@ export default function App() {
 
   const handleDeleteBar = async (barId) => {
     if (!window.confirm('Remove this bar from stock?')) return
+    const bar = stockBars.find(b => b.id === barId)
     await supabase.from('stock_bars').delete().eq('id', barId)
+    if (bar) {
+      await logStockChange({
+        component_id: bar.component_id, colour_variant: bar.colour_variant || null,
+        qty: -(Number(bar.length_mm) || 0) / 1000, qty_on_hand_delta: 0,
+        notes: `Removed: ${bar.label || ''} ${bar.length_mm}mm`.replace(/\s+/g, ' '),
+      })
+    }
     showToast('Bar removed')
     setBarModalOpen(false)
     await loadAll()
@@ -1642,9 +1685,17 @@ export default function App() {
     setJobMovements(data || [])
   }, [])
 
-  const handleOpenDeductModal = () => {
-    if (currentJob) loadJobMovements(currentJob.id)
-    setDeductOpen(true)
+  /** Every stock change, newest first, for the stock page's History tab. */
+  const loadStockHistory = useCallback(async () => {
+    const { data } = await supabase.from('stock_movements')
+      .select('*').order('created_at', { ascending: false }).limit(500)
+    return data || []
+  }, [])
+
+  // A hand change to stock goes in the history like anything else, so a
+  // count that looks wrong can be traced. Never fails the change it records.
+  const logStockChange = async (row) => {
+    await supabase.from('stock_movements').insert({ movement_type: 'adjust', ...row })
   }
 
   /* ------------------------------------------------------------------------
@@ -1693,6 +1744,7 @@ export default function App() {
         colour_variant: p.colour_variant || null,
         label:          p.label,
         length_mm:      p.length_mm,
+        roll_width_mm:  p.roll_width_mm ?? null,
         status:         'available',
         job_id:         currentJob.id,
       })))
@@ -1710,7 +1762,7 @@ export default function App() {
     setDeductSaving(false)
   }
 
-  // Deduct stock line by line after job confirmation
+  // Take a job's stock off the shelf (from Mark made). Returns whether it saved.
   const handleDeductStock = async (deductions) => {
     setDeductSaving(true)
     const movements     = []
@@ -1803,7 +1855,7 @@ export default function App() {
     }
 
     // Execute all updates
-    await Promise.all([
+    const results = await Promise.all([
       movements.length > 0
         ? supabase.from('stock_movements').insert(movements)
         : Promise.resolve(),
@@ -1815,89 +1867,31 @@ export default function App() {
       ),
     ])
 
-    // Check for low stock and auto-generate PO if needed. Passes the movements
-    // so the check can use what each deduction really took off the stock row.
-    await checkAndGeneratePOs(deductions, movements)
-
     if (offcutInserts.length > 0) {
-      await supabase.from('stock_bars').insert(offcutInserts)
+      results.push(await supabase.from('stock_bars').insert(offcutInserts))
     }
 
-    showToast('Stock deducted ✓', 'success')
-    setDeductOpen(false)
+    // No purchase orders are raised here any more: anything this pushed below
+    // its minimum shows on To order, where it's added to the supplier's draft.
+    const failed = results.find(r => r?.error)
+    if (failed) showToast(failed.error.message || 'Stock could not be fully deducted', 'error')
+    else showToast('Stock deducted ✓', 'success')
     await Promise.all([loadAll(), loadJobMovements(currentJob.id)])
     setDeductSaving(false)
-  }
-
-  // Auto-generate draft POs for components that fall below minimum after deduction
-  /**
-   * Raise draft POs for anything a deduction pushed under its minimum.
-   *
-   * qtyAfter has to be in the stock row's OWN unit, because that is what the
-   * minimum is in. For a bar that is whole bars, while d.qty is the length the
-   * BOM asked for — so subtracting d.qty took metres off a bar count, read ten
-   * bars minus 17.74m as "-7.74, reorder", and ordered bars by the metre.
-   *
-   * The deduction already worked out what it really took off the row and
-   * recorded it as qty_on_hand_delta (whole bars for a bar, the count for a
-   * pack, nothing for fabric). movements is built one per deduction, in order,
-   * so it lines up by index. The BOM qty is only a fallback for a movement
-   * that somehow carries no delta.
-   */
-  const checkAndGeneratePOs = async (deductions, movements = []) => {
-    const alerts = []
-    for (const [i, d] of deductions.entries()) {
-      const key   = stockKey(d.component.id, d.colour_variant)
-      const stock = stockMap[key]
-      if (!stock) continue
-      const delta    = movements[i]?.qty_on_hand_delta
-      const qtyAfter = (stock.qty_on_hand || 0) + (delta ?? -d.qty)
-      if (qtyAfter < (stock.qty_minimum || 0)) {
-        alerts.push({ component: d.component, colour_variant: d.colour_variant, stock, qtyAfter })
-      }
-    }
-    if (alerts.length === 0) return
-
-    // Group by supplier
-    const bySupplier = {}
-    alerts.forEach(a => {
-      const suppId = a.component.supplier_id || 'unknown'
-      if (!bySupplier[suppId]) bySupplier[suppId] = []
-      bySupplier[suppId].push(a)
-    })
-
-    // Create one draft PO per supplier
-    for (const [suppId, items] of Object.entries(bySupplier)) {
-      const { data: po } = await supabase.from('purchase_orders').insert({
-        supplier_id: suppId === 'unknown' ? null : suppId,
-        status: 'draft',
-        notes: `Auto-generated — low stock after job ${currentJob.job_number || currentJob.id}`,
-      }).select().single()
-
-      if (po) {
-        await supabase.from('purchase_order_lines').insert(
-          items.map(item => {
-            const info      = orderUnitInfo(item.component, suppliers.find(sp => sp.id === item.component.supplier_id))
-            const shortfall = (item.stock.qty_minimum || 0) - item.qtyAfter
-            const packQty   = item.component.order_type === 'bar' ? 1 : (Number(item.component.pack_qty) || 1)
-            return {
-              po_id:          po.id,
-              component_id:   item.component.id,
-              colour_variant: item.colour_variant || null,
-              qty_ordered:    shortfall > 0 ? Math.ceil(shortfall / packQty) : 1,
-              unit_cost:      info.price,
-            }
-          })
-        )
-      }
-    }
-
-    showToast(`⚠️ ${alerts.length} component${alerts.length !== 1 ? 's' : ''} below minimum — draft PO created`, 'success')
+    return !failed
   }
 
   // ==== PURCHASE ORDERS ====
 
   const handleNewPO = async ({ supplier_id, notes }) => {
+    // One draft per supplier: if there is one, that's the order to add to.
+    const existing = openPOFor(purchaseOrders, supplier_id)
+    if (existing) {
+      setCurrentPO(existing)
+      setPoModalOpen(false)
+      showToast(`Opened ${poDisplayNumber(existing)}, the draft already open for this supplier`)
+      return
+    }
     setPoCreating(true)
     const { data, error } = await supabase
       .from('purchase_orders')
@@ -2310,16 +2304,6 @@ export default function App() {
     await supabase.from('purchase_order_lines').delete().eq('id', lineId)
   }
 
-  const handleExportPO = async () => {
-    setPoExporting(true)
-    try {
-      const supplier = suppliers.find(s => s.id === currentPO.supplier_id) || currentPO.supplier
-      await exportPurchaseOrderXLSX(currentPO, supplier, poLinesMap[currentPO.id] || [], companyDetails, companyAddresses || [])
-    } finally {
-      setPoExporting(false)
-    }
-  }
-
   const handleExportPricing = async (product, fabric = null) => {
     setPricingExporting(true)
     try {
@@ -2471,7 +2455,6 @@ export default function App() {
           onMove={handleJobMove}
           onAttachPO={handleAttachPO}
           poUploading={poUploading}
-          onDeductStock={handleOpenDeductModal}
           onRecordOffcuts={() => setRecordOffcutsOpen(true)}
           pendingOffcutCount={pendingOffcuts.length}
           onOrderFabric={handleOrderFabric}
@@ -2625,6 +2608,25 @@ export default function App() {
           purchaseOrders={purchaseOrders}
           poLinesMap={poLinesMap}
           onAddToPO={handleAddToPO}
+          onLoadHistory={loadStockHistory}
+          jobs={jobs}
+        />
+      )
+    }
+
+    if (navTab === 'reorder') {
+      return (
+        <ToOrder
+          items={toOrder}
+          suppliers={suppliers}
+          purchaseOrders={purchaseOrders}
+          onAdd={async (supplierId, items) => {
+            setPoCreating(true)
+            await addToSupplierDraft(supplierId, items)
+            setPoCreating(false)
+          }}
+          onOpenPO={(po) => { setNavTab('orders'); setCurrentPO(po) }}
+          adding={poCreating}
         />
       )
     }
@@ -2642,7 +2644,6 @@ export default function App() {
           onUpdateLine={handleUpdatePOLine}
           onRemoveLine={handleRemovePOLine}
           onStatusChange={handlePOStatusChange}
-          onExport={handleExportPO}
           onExportPdf={handleExportPOPdf}
           onTogglePricing={handleTogglePricing}
           onSetFulfilment={handleSetFulfilment}
@@ -2678,7 +2679,7 @@ export default function App() {
 
   return (
     <div className="shell">
-      <Sidebar tab={navTab} section={adminSection} onGo={goTab} />
+      <Sidebar tab={navTab} section={adminSection} onGo={goTab} badges={{ reorder: toOrder.length }} />
       <div className="app">{renderScreen()}</div>
 
       <ComponentModal
@@ -2711,14 +2712,14 @@ export default function App() {
         saving={supplierSaving}
       />
 
-      <CompleteJobModal
+      <MadeConfirmModal
         open={!!completePlan}
         job={currentJob}
         lines={completePlan || []}
         working={completing}
         onClose={() => setCompletePlan(null)}
-        onDeduct={() => { setCompletePlan(null); handleOpenDeductModal() }}
-        onComplete={handleCompleteAnyway}
+        onDeduct={handleDeductAndMade}
+        onSkip={handleCompleteAnyway}
       />
 
       <BackToReceivedModal
@@ -2844,20 +2845,6 @@ export default function App() {
         onDelete={handleDeleteBar}
         saving={stockSaving}
       />
-
-      {currentJob && (
-        <DeductStockModal
-          open={deductOpen}
-          job={currentJob}
-          jobSummary={currentJobSummary}
-          jobMovements={jobMovements}
-          stockMap={stockMap}
-          stockBars={stockBars}
-          onClose={() => setDeductOpen(false)}
-          onDeduct={handleDeductStock}
-          saving={deductSaving}
-        />
-      )}
 
       {currentJob && (
         <RecordOffcutsModal

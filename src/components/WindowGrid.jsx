@@ -45,11 +45,11 @@ export default function WindowGrid({
             {canReorder && <th style={{ width: 22 }} />}
             {checking && <th style={{ width: 34 }}>✓</th>}
             <th style={{ minWidth: 130 }}>Window</th>
-            <th style={{ minWidth: 110 }}>Product</th>
-            <th style={{ width: 82 }}>Width</th>
-            <th style={{ width: 82 }}>Drop</th>
+            <th style={{ minWidth: 90 }}>Product</th>
+            <th style={{ minWidth: 78 }}>Width</th>
+            <th style={{ minWidth: 78 }}>Drop</th>
             {isBlind && <th style={{ minWidth: 170 }}>Fabric</th>}
-            {optionDefs.map(o => <th key={o.id} style={{ minWidth: 110 }}>{o.name}</th>)}
+            {optionDefs.map(o => <th key={o.id} style={{ minWidth: 90 }}>{o.name}</th>)}
             <th style={{ minWidth: 110 }}>
               Notes <InfoTip>Swaps, extra parts and quantity changes made on the window's own page. Click the row's arrow to change them.</InfoTip>
             </th>

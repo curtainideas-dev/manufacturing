@@ -32,6 +32,8 @@ export default function RecordOffcutsModal({ open, job, pending = [], onClose, o
         keep:      true,
         label:     o.label || '',
         length_mm: Math.round(Number(o.length_mm) || 0),
+        // Fabric pieces carry a width too; a bar remnant doesn't.
+        roll_width_mm: o.roll_width_mm != null ? Math.round(Number(o.roll_width_mm)) : null,
         from:      o.from_label || null,
       }))
     })
@@ -47,7 +49,10 @@ export default function RecordOffcutsModal({ open, job, pending = [], onClose, o
 
   const addRow = (gi) => setDraft(prev => ({
     ...prev,
-    [gi]: [...(prev[gi] || []), { keep: true, label: '', length_mm: 0, from: null, added: true }],
+    [gi]: [...(prev[gi] || []), {
+      keep: true, label: '', length_mm: 0, from: null, added: true,
+      roll_width_mm: pending[gi]?.component?.order_type === 'fabric' ? 0 : null,
+    }],
   }))
 
   const removeRow = (gi, ri) => setDraft(prev => ({
@@ -72,6 +77,7 @@ export default function RecordOffcutsModal({ open, job, pending = [], onClose, o
           colour_variant: g.colour_variant || null,
           label:          (r.label || '').trim() || `${Math.round(r.length_mm)}mm`,
           length_mm:      Math.round(Number(r.length_mm)),
+          roll_width_mm:  r.roll_width_mm != null ? Math.round(Number(r.roll_width_mm)) || null : null,
         })
       })
     })
@@ -96,9 +102,9 @@ export default function RecordOffcutsModal({ open, job, pending = [], onClose, o
 
         <div style={{ maxHeight: '65vh', overflowY: 'auto' }}>
           <div style={{ padding: '12px 20px', fontSize: 12, color: 'var(--warm-300)', lineHeight: 1.5, borderBottom: '1px solid var(--warm-100)' }}>
-            Lengths below are what the cutting plan expected. Correct anything that came out
-            different, untick what went in the bin, and add any piece the plan didn&apos;t predict.
-            These are the lengths the next job will be planned against.
+            Sizes below are what the cutting plan expected, for the bars and the fabric. Correct
+            anything that came out different, untick what went in the bin, and add any piece the
+            plan didn&apos;t predict. These are the sizes the next job will be planned against.
           </div>
 
           {pending.length === 0 && (
@@ -137,8 +143,18 @@ export default function RecordOffcutsModal({ open, job, pending = [], onClose, o
                       value={r.label}
                       onChange={e => setRow(gi, ri, { label: e.target.value })} />
 
+                    {r.roll_width_mm != null && (
+                      <div style={{ position: 'relative', flex: 1, minWidth: 92 }}>
+                        <input className="field-input" type="number" min="0" step="1" aria-label="Width"
+                          style={{ fontSize: 13, paddingRight: 44, textAlign: 'right', opacity: r.keep ? 1 : 0.5 }}
+                          value={r.roll_width_mm}
+                          onFocus={e => e.target.select()}
+                          onChange={e => setRow(gi, ri, { roll_width_mm: Number(e.target.value) })} />
+                        <span style={{ position: 'absolute', right: 9, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'var(--warm-300)', pointerEvents: 'none' }}>wide</span>
+                      </div>
+                    )}
                     <div style={{ position: 'relative', flex: 1, minWidth: 92 }}>
-                      <input className="field-input" type="number" min="0" step="1"
+                      <input className="field-input" type="number" min="0" step="1" aria-label="Length"
                         style={{ fontSize: 13, paddingRight: 34, textAlign: 'right', opacity: r.keep ? 1 : 0.5 }}
                         value={r.length_mm}
                         onFocus={e => e.target.select()}

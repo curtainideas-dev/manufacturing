@@ -47,7 +47,7 @@ function TextCell({ value, placeholder, disabled, onCommit, style }) {
 
 export default function PurchaseOrderDetail({
   po, lines, addresses, onBack, onDelete, onAddLines, onUpdateLine,
-  onRemoveLine, onStatusChange, onExport, onExportPdf, onTogglePricing,
+  onRemoveLine, onStatusChange, onExportPdf, onTogglePricing,
   onSetFulfilment, onReceive, onDuplicate, exporting,
 }) {
   const supplier = po.supplier
@@ -88,7 +88,6 @@ export default function PurchaseOrderDetail({
 <div className="header-actions" style={{ display: 'flex', gap: 6 }}>
           {[
             { label: 'PDF',   onClick: onExportPdf, primary: true },
-            { label: 'Excel', onClick: onExport,    primary: false },
           ].map(b => (
             <button key={b.label}
               onClick={b.onClick}
