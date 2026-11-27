@@ -13,6 +13,7 @@ import DeletedRecordsAdmin     from './pages/DeletedRecordsAdmin'
 import DeleteJobModal          from './components/DeleteJobModal'
 import BackToReceivedModal     from './components/BackToReceivedModal'
 import JobList           from './pages/JobList'
+import StatsPage         from './pages/StatsPage'
 import JobDetail         from './pages/JobDetail'
 import WindowDetail      from './pages/WindowDetail'
 import SupplierList      from './pages/SupplierList'
@@ -39,7 +40,7 @@ import AddPOLinesModal       from './components/AddPOLinesModal'
 
 import { useToast, ToastContainer } from './hooks/useToast.jsx'
 import { buildStockMap, stockKey, getStock, planStockRestore, reorderList } from './lib/stockEngine'
-import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines, resolveAnswers } from './lib/bomEngine'
+import { calcJobSummary, buildWindowBOM, buildPriceSnapshot, buildQtySnapshot, fabricSelectionFor, substitutionsFor, applyFabricNesting, buildJobExtraLines, resolveAnswers, jobProductType } from './lib/bomEngine'
 import { windowSell } from './lib/sellEngine'
 import { orderUnitInfo, openPOFor, poLineKey, poDisplayNumber, outstandingQty, isFullyReceived, receivedToStockQty, poFulfilment, poAddress } from './lib/poEngine'
 import { exportPurchaseOrderPDF } from './lib/exportPOPdf'
@@ -216,6 +217,24 @@ export default function App() {
     })
     return out
   }, [currentJob, buildJobWindows])
+
+  // Each job's cost, for the jobs list and the Statistics screen: the frozen
+  // total once there is one, else today's — the same basis the job's own
+  // margin uses. A job with no windows has no cost yet (null), not $0.
+  const jobCosts = useMemo(() => {
+    const out = {}
+    jobs.forEach(job => {
+      if (job.locked_total != null) { out[job.id] = { cost: Number(job.locked_total), frozen: true }; return }
+      if (!(job.windows || []).length) { out[job.id] = { cost: null, frozen: false }; return }
+      const summary = calcJobSummary(
+        buildJobWindows(job, true),
+        buildJobExtraLines(job, components, job.price_snapshot || null))
+      out[job.id] = { cost: summary.reduce((s, r) => s + r.total_cost, 0), frozen: false }
+    })
+    return out
+  }, [jobs, buildJobWindows, components])
+
+  const jobTypeOf = useCallback((job) => jobProductType(job, job.windows || [], products), [products])
 
   // Everything at or below its minimum — the To order screen and its count.
   const toOrder = useMemo(
@@ -927,6 +946,21 @@ export default function App() {
     showToast(error.message || 'That change could not be saved', 'error')
     setCurrentJob(cj => cj?.id === before.id ? before : cj)
     setJobs(prev => prev.map(j => j.id === before.id ? before : j))
+    return false
+  }
+
+  // A sell price typed in from a list rather than the job itself (Statistics).
+  // Same shape as handleJobUpdate: shown at once, put back if it didn't save.
+  const handleSetSellPrice = async (jobId, sellPrice) => {
+    const before = jobs.find(j => j.id === jobId)
+    if (!before) return false
+    setJobs(prev => prev.map(j => j.id === jobId ? { ...j, sell_price: sellPrice } : j))
+    setCurrentJob(cj => cj?.id === jobId ? { ...cj, sell_price: sellPrice } : cj)
+    const { error } = await supabase.from('mfg_jobs').update({ sell_price: sellPrice }).eq('id', jobId)
+    if (!error) { showToast(`Sell price saved for ${before.customer_name || 'the job'}`); return true }
+    showToast(error.message || 'That sell price could not be saved', 'error')
+    setJobs(prev => prev.map(j => j.id === jobId ? { ...j, sell_price: before.sell_price } : j))
+    setCurrentJob(cj => cj?.id === jobId ? { ...cj, sell_price: before.sell_price } : cj)
     return false
   }
 
@@ -2463,7 +2497,15 @@ export default function App() {
     }
 
     if (navTab === 'bom') {
-      return <JobList jobs={jobs} products={products} onOpen={setCurrentJob} onCreate={handleNewJob} creating={poUploading} />
+      return <JobList jobs={jobs} products={products} costs={jobCosts} onOpen={setCurrentJob} onCreate={handleNewJob} creating={poUploading} />
+    }
+
+    if (navTab === 'stats') {
+      return (
+        <StatsPage jobs={jobs} costs={jobCosts} typeOf={jobTypeOf}
+          onOpen={(job) => { setNavTab('bom'); setCurrentJob(job) }}
+          onSetSellPrice={handleSetSellPrice} />
+      )
     }
 
     // Product detail

@@ -24,7 +24,29 @@ function jobType(job, products) {
 // Picked up jobs pile up; the list shows the latest few until asked for more.
 const PICKED_UP_SHOWN = 5
 
-function JobRow({ job, products, onOpen }) {
+const money = n => `$${Number(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+/**
+ * Sell price and margin, once a sell price is in. Margin is against the
+ * frozen cost, else today's — the same figure the job's own page shows.
+ */
+function SellMargin({ job, cost }) {
+  if (job.sell_price == null || job.sell_price === '') return null
+  const sell = Number(job.sell_price)
+  const margin = sell > 0 && cost != null && cost > 0 ? ((sell - cost) / sell) * 100 : null
+  const tone = margin == null ? 'var(--warm-300)' : margin < 0 ? 'var(--danger)' : 'var(--accent-dark)'
+  return (
+    <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 96 }}
+      title={cost != null && cost > 0 ? `Cost ${money(cost)}` : 'No cost yet'}>
+      <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--ink)' }}>{money(sell)}</div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: tone }}>
+        {margin == null ? 'No cost yet' : `${margin < 0 ? '−' : ''}${Math.abs(margin).toFixed(1)}% margin`}
+      </div>
+    </div>
+  )
+}
+
+function JobRow({ job, products, cost, onOpen }) {
   const stage = stageOf(job.status)
   const type  = TYPE_META[jobType(job, products)]
   const count = (job.mfg_windows || job.windows || []).length
@@ -38,6 +60,7 @@ function JobRow({ job, products, onOpen }) {
           {' · '}{count} window{count !== 1 ? 's' : ''}
         </div>
       </div>
+      <SellMargin job={job} cost={cost} />
       {type && (
         <span style={{
           fontSize: 10.5, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
@@ -49,7 +72,7 @@ function JobRow({ job, products, onOpen }) {
   )
 }
 
-export default function JobList({ jobs, products = [], onOpen, onCreate, creating }) {
+export default function JobList({ jobs, products = [], costs = {}, onOpen, onCreate, creating }) {
   const [newOpen, setNewOpen]       = useState(false)
   const [showAllDone, setShowAllDone] = useState(false)
 
@@ -96,7 +119,7 @@ export default function JobList({ jobs, products = [], onOpen, onCreate, creatin
               </div>
               <div style={{ padding: '0 16px', marginBottom: 16 }}>
                 <div className="card">
-                  {list.map(job => <JobRow key={job.id} job={job} products={products} onOpen={onOpen} />)}
+                  {list.map(job => <JobRow key={job.id} job={job} products={products} cost={costs[job.id]?.cost ?? null} onOpen={onOpen} />)}
                 </div>
                 {hidden > 0 && (
                   <button className="btn btn-secondary btn-block btn-sm" style={{ marginTop: 8 }}
