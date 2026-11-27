@@ -12,6 +12,7 @@ const GROUPS = [
     { tab: 'orders', label: 'Orders', emoji: '🧾' },
     { tab: 'stock',  label: 'Stock',  emoji: '🏪' },
     { tab: 'reorder', label: 'To order', emoji: '🛒' },
+    { tab: 'stats',  label: 'Statistics', emoji: '📊' },
   ] },
   { title: 'Library', items: [
     { tab: 'components', label: 'Components', emoji: '📦' },
